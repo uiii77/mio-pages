@@ -151,13 +151,9 @@ function setupPhotoVideoSystem() {
     const pvTextInput = document.getElementById('pv-text-input');
 
     photoVideoBtn.addEventListener('click', () => {
-        document.getElementById('image-recognition-btn').click();
-    });
-    document.getElementById('photo-description-open-btn')?.addEventListener('click', () => {
         sendPvForm.reset();
-        sendPvForm.hidden = false;
+        sendPvForm.hidden = true;
         sendPvModal.classList.add('visible');
-        pvTextInput.focus();
     });
     document.getElementById('photo-description-btn').addEventListener('click', () => {
         sendPvForm.hidden = false;

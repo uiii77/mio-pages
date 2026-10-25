@@ -51,20 +51,6 @@ function initMoreMenu() {
             showToast('小号功能正在开发中…');
         } else if (action === 'moments') {
             if (window.Moments) window.Moments.open();
-        } else if (action === 'live-room') {
-            if (window.LiveModule) {
-                const activeCharacterId = typeof currentChatId !== 'undefined' ? currentChatId : null;
-                const character = (typeof db !== 'undefined' && Array.isArray(db.characters))
-                    ? db.characters.find(character => character.id === activeCharacterId) || db.characters[0]
-                    : null;
-                window.LiveModule.enterLiveRoom(
-                    character?.remarkName || character?.realName || '测试主播',
-                    character?.avatar || character?.avatarUrl || '',
-                    item.closest('#personal-preferences-screen') ? 'personal-preferences-screen' : 'more-screen'
-                );
-            } else {
-                showToast('直播间加载中…');
-            }
         } else if (action === 'online') {
             showToast('联机功能正在开发中…');
         } else if (action === 'tavern-bridge') {
@@ -128,10 +114,10 @@ function arrangePersonalMenu() {
     preferences.innerHTML = '<div class="menu-icon-wrapper"><svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/><path d="M8 3v6M16 9v6M10 15v6"/></svg></div><span class="menu-item-label">偏好</span>';
     const preferenceList = document.querySelector('#personal-preferences-screen .menu-grid');
     container.querySelectorAll('.commerce-preference').forEach(item=>preferenceList.append(item));
-    for (const action of ['status-bar', 'cot-settings', 'regex-filter', 'live-room', 'small-account', 'online', 'tavern-bridge']) {
+    for (const action of ['status-bar', 'cot-settings', 'regex-filter', 'small-account', 'online', 'tavern-bridge']) {
         const item = entry(action);
         if (!item) continue;
-        const names = { 'live-room': '直播预览', 'small-account': '小号', online: '联机', 'tavern-bridge': '互通酒馆' };
+        const names = { 'small-account': '小号', online: '联机', 'tavern-bridge': '互通酒馆' };
         if (names[action]) item.querySelector('.menu-item-label').textContent = names[action];
         if (['small-account','online','tavern-bridge'].includes(action)) {
             const status = document.createElement('small'); status.className = 'preference-status'; status.textContent = '未开放'; item.append(status);

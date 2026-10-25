@@ -107,7 +107,11 @@
         const cards = value.cards.map(card);
         if (cards.some(c => !c.id) || new Set(cards.map(c => c.id)).size !== cards.length) throw new Error('角色卡 ID 无效');
         const events = value.events.map(e => {
-            if (!e || !text(e.id, 180) || e.rulesVersion !== VERSION || !['card', 'check', 'sanity', 'adjust', 'dice', 'progress', 'story','knowledge','state'].includes(e.kind)) throw new Error('事件记录无效');
+            if (!e || !text(e.id, 180) || e.rulesVersion !== VERSION || !['card', 'check', 'sanity', 'adjust', 'dice', 'progress', 'story','knowledge','state','dialogue'].includes(e.kind)) throw new Error('事件记录无效');
+            if (e.kind === 'dialogue') {
+                if (!['player','kp','character'].includes(e.speaker) || typeof e.content !== 'string' || !e.content.trim() || e.content.length > 4000) throw new Error('剧情对话格式无效');
+                global.TrpgStateCore.audience(e.audience);
+            }
             if (['knowledge','state'].includes(e.kind)&&(!e.cause||!e.requestFingerprint))throw Error('剧情事件依据缺失');
             if (e.kind === 'story' && !e.operation) throw new Error('公开记录无效');
             if (['check', 'sanity'].includes(e.kind)) {
@@ -131,7 +135,10 @@
         if (!id) throw new Error('事件 ID 不能为空');
         const previous=next.events.find(e=>e.id===id);if(previous){if(['knowledge','state'].includes(command.kind)&&previous.requestFingerprint!==global.TrpgStateCore.fingerprint(command))throw Error('同一事件 ID 的内容冲突');return next;}
         const event = { id, kind: command.kind, rulesVersion: VERSION, cardId: command.cardId || '', at: command.at ?? Date.now() };
-        if (['knowledge','state'].includes(command.kind)) {
+        if (command.kind === 'dialogue') {
+            if (!['player','kp','character'].includes(command.speaker) || typeof command.content !== 'string' || !command.content.trim() || command.content.length > 4000) throw new Error('请输入不超过 4000 字的剧情对话');
+            Object.assign(event,{speaker:command.speaker,name:text(command.name),content:command.content.trim(),audience:global.TrpgStateCore.audience(command.audience)});
+        } else if (['knowledge','state'].includes(command.kind)) {
             global.TrpgStateCore.apply(next,command,event);
         } else if (command.kind === 'card') {
             const item = card(command.card); if (!item.id) throw new Error('角色卡 ID 不能为空');

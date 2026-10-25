@@ -24,11 +24,11 @@
             const next = core().campaign(core().apply(previous, command)); await table().put(next); return next;
         });
     }
-    async function exportSave(id) { return JSON.stringify({ format: 'mio-coc7', version: 2, campaign: await get(id) }, null, 2); }
+    async function exportSave(id) { const campaign=await get(id); return JSON.stringify({ format: 'mio-coc7', version: campaign.events.some(event=>event.kind==='dialogue')?3:2, campaign }, null, 2); }
     async function importSave(source) {
         if (typeof source !== 'string') throw new Error('存档必须为 JSON 文本');
         const parsed = JSON.parse(source);
-        if (parsed.format !== 'mio-coc7' || ![1,2].includes(parsed.version)) throw new Error('不是受支持的 Mio CoC 存档');
+        if (parsed.format !== 'mio-coc7' || ![1,2,3].includes(parsed.version)) throw new Error('不是受支持的 Mio CoC 存档');
         const record = core().campaign(parsed.campaign); record.id = uid(); record.title = `${record.title.slice(0, 110)}（导入）`; record.updatedAt = Date.now();
         await table().add(record); return record;
     }
@@ -118,6 +118,7 @@
     }
     const levels = { critical: '大成功', extreme: '极难成功', hard: '困难成功', regular: '普通成功', failure: '失败', fumble: '大失败' };
     function describe(e) {
+        if(e.kind==='dialogue')return `${e.name || e.speaker}：${e.content}`;
         if(e.kind==='knowledge')return '知识事件：'+e.operation+' · '+e.cause;
         if(e.kind==='state')return '剧情状态：'+e.domain+' · '+e.cause;
         if (e.kind === 'story') return `场景记录：${e.operation} · ${e.after?.title || e.before?.title || ''}`;
@@ -296,5 +297,6 @@
         field('import').addEventListener('change', event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void run(async () => { current = await importSave(await file.text()); selectedCard = ''; }); });
         root().addEventListener('toggle', () => { if (root().open) void run(async () => { if (current) current = await get(current.id); }); });
     }
-    global.CoC7 = Object.freeze({ setup, list, get, create, dispatch, exportSave, importSave, remove, buildContext, archiveContext, prepareBroadcast });
+    async function selectCampaign(id) { current=await get(id);selectedCard='';await render(); }
+    global.CoC7 = Object.freeze({ setup, list, get, create, dispatch, exportSave, importSave, remove, buildContext, archiveContext, prepareBroadcast, selectCampaign });
 })(window);

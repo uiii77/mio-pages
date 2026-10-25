@@ -1255,7 +1255,7 @@ function freeHomeOpenCreateFolder() {
 }
 
 function freeHomeOpenApp(appId) {
-    if (appId === 'trpg-broadcast-app') { window.TRPGBroadcast?.open?.(); return; }
+    if (appId === 'trpg-broadcast-app') { window.TrpgPlayUI?.open?.(); return; }
     if (appId === 'biekan-app') { if (window.McpManager) window.McpManager.open(); return; }
     if (appId === 'piggy-bank-screen') { switchScreen(appId); return; }
     if (appId === 'music-screen') { void window.MioMusic.open(); return; }

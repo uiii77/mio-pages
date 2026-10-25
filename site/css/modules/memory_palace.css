@@ -41,6 +41,13 @@
 .memory-palace-event-box-member span { min-width: 0; white-space: pre-wrap; word-break: break-word; }
 .memory-palace-empty { padding: 55px 15px; color: #aaa; text-align: center; }
 .memory-palace-editor { max-width: 680px; }
+#memory-palace-editor-modal { box-sizing: border-box; padding: 12px; }
+#memory-palace-editor-modal .memory-palace-editor { box-sizing: border-box; display: flex; flex-direction: column; max-height: calc(100dvh - 24px); overflow: hidden; padding-bottom: max(16px, env(safe-area-inset-bottom)); }
+#memory-palace-editor-modal h3, #memory-palace-editor-modal .memory-palace-editor-actions { flex-shrink: 0; }
+.memory-palace-editor-body { overflow-y: auto; min-height: 0; overscroll-behavior: contain; padding: 2px 2px 12px; scroll-padding: 16px; }
+.memory-palace-editor-more { margin-top: 12px; }
+.memory-palace-editor-advanced[hidden] { display: none; }
+#memory-palace-editor-modal textarea { min-height: 100px; max-height: 220px; resize: vertical; }
 .memory-palace-editor-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
 .memory-palace-editor-grid label { display: flex; flex-direction: column; gap: 5px; color: #666; font-size: 12px; }
 .memory-palace-editor-grid .memory-palace-pin { flex-direction: row; align-items: center; }

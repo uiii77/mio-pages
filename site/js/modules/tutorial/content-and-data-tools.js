@@ -42,9 +42,6 @@ function renderTutorialContent(targetId = 'tutorial-content-area') {
 
     const docsContainer = isModern ? modernGroups.docs : tutorialContentArea;
 
-    if (!isDataView) {
-        renderUpdateLog(docsContainer);
-    }
 
     const createActionItem = (tag, text, classicClass, isDanger = false) => {
         const el = document.createElement(tag);

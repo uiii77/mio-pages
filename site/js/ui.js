@@ -577,7 +577,7 @@ function setupHomeScreen() {
         renderTutorialContent();
     });
     document.querySelector('[data-action="biekan-app"]')?.addEventListener('click', (e) => { e.preventDefault(); if (window.McpManager) window.McpManager.open(); });
-    document.querySelector('[data-action="trpg-broadcast-app"]')?.addEventListener('click', (e) => { e.preventDefault(); window.TRPGBroadcast?.open?.(); });
+    document.querySelector('[data-action="trpg-broadcast-app"]')?.addEventListener('click', (e) => { e.preventDefault(); window.TrpgPlayUI?.open?.(); });
     document.querySelector('[data-action="magic-room-app"]')?.addEventListener('click', (e) => { 
         e.preventDefault(); 
         if (typeof setupMagicRoomApp === 'function') setupMagicRoomApp();

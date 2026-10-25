@@ -1048,13 +1048,7 @@ window.selectDeliveryOption = function(type) {
 // 导出供 main.js 使用
 window.setupShopSystem = function() {
     initShopSystem();
-    // 绑定返回按钮
-    const backBtn = document.querySelector('#shop-screen .back-btn');
-    if (backBtn) {
-        backBtn.onclick = () => {
-            switchScreen('chat-room-screen');
-        };
-    }
+    // 返回由 MioNavigation 的统一委托恢复入口及滚动位置。
     
     // 绑定弹窗关闭
     document.getElementById('shop-delivery-cancel').onclick = () => {

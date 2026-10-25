@@ -41,3 +41,7 @@
     margin: 10px 0 0 28px;
     line-height: 1.45;
 }
+/* Character cards reuse the original confirmation sheet. */
+#import-confirm-modal .modal-window { box-sizing: border-box; max-height: calc(100dvh - 24px); overflow-y: auto; overscroll-behavior: contain; }
+#import-confirm-form textarea { width: 100%; box-sizing: border-box; padding: 12px; border: 1px solid #eee; border-radius: 10px; font: inherit; resize: vertical; }
+.card-greeting-preview, .card-notes-preview { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 160px; overflow-y: auto; font-size: 13px; line-height: 1.6; }

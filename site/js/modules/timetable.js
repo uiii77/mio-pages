@@ -145,7 +145,7 @@
         const days = await Promise.all(dates.map(date => getEffectiveDate(grant.provider, grant.scopeKey, grant.semester, date)));
         const currentGrant = await getRoleShare(roleId);
         if (sharingSaves.has(roleId) || version !== (sharingVersions.get(roleId) || 0) || JSON.stringify(currentGrant) !== JSON.stringify(grant) || !global.db?.characters?.some(role => String(role.id) === roleId)) return '';
-        return core().summaryForChat(days, grant, grant.semester, grant.provider === 'manual' ? '用户手工课表（未经教务核验）' : grant.provider === 'sdmu-weekly' ? '山东管理学院教务系统（含用户手动调整）' : '用户课表本地缓存（含手动调整）');
+        return core().summaryForChat(days, grant, grant.semester, grant.provider === 'manual' ? '用户手工课表（未经教务核验）' : grant.provider === 'sdmu-weekly' ? '学校教务系统（含用户手动调整）' : '用户课表本地缓存（含手动调整）');
     }
     function canRefresh(provider, scopeKey) {
         const entry = providers.get(provider);

@@ -103,9 +103,9 @@ async function handleCharacterImport(file) {
     showToast('正在解析角色卡...');
     try {
         let result;
-        if (file.name.endsWith('.png')) {
+        if (file.name.toLowerCase().endsWith('.png')) {
             result = await parseCharPng(file);
-        } else if (file.name.endsWith('.json')) {
+        } else if (file.name.toLowerCase().endsWith('.json')) {
             result = await parseCharJson(file);
         } else {
             throw new Error('不支持的文件格式。请选择 .png 或 .json 文件。');
@@ -120,98 +120,65 @@ async function handleCharacterImport(file) {
     }
 }
 
-function parseCharPng(file) {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.readAsArrayBuffer(file);
-        reader.onload = (e) => {
-            try {
-                const buffer = e.target.result;
-                const view = new DataView(buffer);
-                const signature = [137, 80, 78, 71, 13, 10, 26, 10];
-                for (let i = 0; i < signature.length; i++) {
-                    if (view.getUint8(i) !== signature[i]) {
-                        return reject(new Error('文件不是一个有效的PNG。'));
-                    }
-                }
-
-                let offset = 8;
-                let charaData = null;
-
-                while (offset < view.byteLength) {
-                    const length = view.getUint32(offset);
-                    const type = String.fromCharCode(view.getUint8(offset + 4), view.getUint8(offset + 5), view.getUint8(offset + 6), view.getUint8(offset + 7));
-
-                    if (type === 'tEXt') {
-                        const textChunk = new Uint8Array(buffer, offset + 8, length);
-                        let separatorIndex = -1;
-                        for (let i = 0; i < textChunk.length; i++) {
-                            if (textChunk[i] === 0) {
-                                separatorIndex = i;
-                                break;
-                            }
-                        }
-
-                        if (separatorIndex !== -1) {
-                            const keyword = new TextDecoder('utf-8').decode(textChunk.slice(0, separatorIndex));
-                            if (keyword === 'chara') {
-                                const base64Data = new TextDecoder('utf-8').decode(textChunk.slice(separatorIndex + 1));
-                                try {
-                                    const decodedString = atob(base64Data);
-                                    const bytes = new Uint8Array(decodedString.length);
-                                    for (let i = 0; i < decodedString.length; i++) {
-                                        bytes[i] = decodedString.charCodeAt(i);
-                                    }
-                                    const utf8Decoder = new TextDecoder('utf-8');
-                                    charaData = JSON.parse(utf8Decoder.decode(bytes));
-                                    break;
-                                } catch (decodeError) {
-                                    return reject(new Error(`解析角色数据失败: ${decodeError.message}`));
-                                }
-                            }
-                        }
-                    }
-                    offset += 12 + length;
-                }
-
-                if (charaData) {
-                    const imageReader = new FileReader();
-                    imageReader.readAsDataURL(file);
-                    imageReader.onload = (imgEvent) => {
-                        resolve({ data: charaData, avatar: imgEvent.target.result });
-                    };
-                    imageReader.onerror = () => {
-                        resolve({ data: charaData, avatar: 'https://i.postimg.cc/Y96LPskq/o-o-2.jpg' });
-                    };
-                } else {
-                    reject(new Error('在PNG中未找到有效的角色数据 (tEXt chunk not found or invalid)。'));
-                }
-            } catch (error) {
-                reject(new Error(`解析PNG失败: ${error.message}`));
-            }
-        };
-        reader.onerror = () => reject(new Error('读取PNG文件失败。'));
-    });
+function validateCharacterCard(data) {
+    const card = data?.data || data;
+    if (!card || Array.isArray(card) || typeof card.name !== 'string' || !card.name.trim()) throw new Error('角色卡缺少有效名称');
+    if (!['description','persona','personality','scenario','first_mes','mes_example'].some(key => typeof card[key] === 'string')) throw new Error('未找到角色设定，这不是可识别的角色卡');
+    for (const key of ['description','persona','personality','scenario','first_mes','mes_example','system_prompt','post_history_instructions','creator_notes']) {
+        if (card[key] != null && typeof card[key] !== 'string') throw new Error(`角色字段 ${key} 必须是文字`);
+    }
+    if (card.alternate_greetings != null && (!Array.isArray(card.alternate_greetings) || card.alternate_greetings.some(text => typeof text !== 'string'))) throw new Error('备选开场白格式错误');
+    return card;
 }
 
-function parseCharJson(file) {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.readAsText(file, 'UTF-8');
-        reader.onload = (e) => {
-            try {
-                const data = JSON.parse(e.target.result);
-                resolve({ data: data, avatar: 'https://i.postimg.cc/Y96LPskq/o-o-2.jpg' });
-            } catch (error) {
-                reject(new Error(`解析JSON失败: ${error.message}`));
+async function parseCharPng(file) {
+    if (file.size > 32 * 1024 * 1024) throw new Error('角色卡图片不能超过 32 MB');
+    const buffer = await file.arrayBuffer(), bytes = new Uint8Array(buffer), view = new DataView(buffer);
+    const signature = [137,80,78,71,13,10,26,10];
+    if (bytes.length < 20 || !signature.every((n,i) => bytes[i] === n)) throw new Error('不是有效的 PNG 图片');
+    const cards = new Map(); let offset = 8, ended = false;
+    while (offset + 12 <= bytes.length) {
+        const length = view.getUint32(offset);
+        if (length > bytes.length - offset - 12) throw new Error('PNG 数据不完整');
+        const type = new TextDecoder().decode(bytes.subarray(offset+4,offset+8));
+        if (type === 'tEXt') {
+            const chunk = bytes.subarray(offset+8,offset+8+length), zero = chunk.indexOf(0);
+            const key = new TextDecoder().decode(chunk.subarray(0,zero));
+            if (zero >= 0 && ['chara','ccv3'].includes(key)) {
+                if (length > 8 * 1024 * 1024 || cards.has(key)) throw new Error('角色数据过大或包含重复字段');
+                let crc = 0xffffffff;
+                for (const byte of bytes.subarray(offset+4,offset+8+length)) {
+                    crc ^= byte;
+                    for (let bit=0;bit<8;bit++) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
+                }
+                if (((crc ^ 0xffffffff) >>> 0) !== view.getUint32(offset+8+length)) throw new Error('角色数据校验失败，文件可能已损坏');
+                const text = new TextDecoder().decode(chunk.subarray(zero+1));
+                cards.set(key, JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(Uint8Array.from(atob(text),c=>c.charCodeAt(0)))));
             }
-        };
-        reader.onerror = () => reject(new Error('读取JSON文件失败。'));
-    });
+        }
+        offset += length+12;
+        if (type === 'IEND') { ended = true; break; }
+    }
+    if (!ended) throw new Error('PNG 文件未完整结束');
+    const data = cards.get('ccv3') || cards.get('chara');
+    if (!data) throw new Error('这是普通图片，未包含角色卡数据');
+    validateCharacterCard(data);
+    const avatar = await new Promise((resolve,reject) => { const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(new Error('图片读取失败'));reader.readAsDataURL(file); });
+    return { data, avatar };
+}
+
+async function parseCharJson(file) {
+    if (file.size > 8 * 1024 * 1024) throw new Error('角色卡 JSON 不能超过 8 MB');
+    const data = JSON.parse((await file.text()).replace(/^\uFEFF/,''));
+    validateCharacterCard(data);
+    return {data, avatar:'https://i.postimg.cc/Y96LPskq/o-o-2.jpg'};
 }
 
 async function createCharacterFromData(data, avatar, options) {
-    const charData = data.data || data;
+    const charData = validateCharacterCard(data);
+    const sourceCard = structuredClone(data);
+    const newBooks = [];
+    const books = [...db.worldBooks];
 
     if (!charData || !charData.name) {
         throw new Error('角色卡数据无效，缺少角色名称。');
@@ -219,10 +186,11 @@ async function createCharacterFromData(data, avatar, options) {
 
     const newChar = {
         peekData: {},
-        id: `char_${Date.now()}`,
+        id: `char_${crypto.randomUUID()}`,
             realName: charData.name || '未命名',
             remarkName: charData.name || '未命名',
-            persona: charData.description || charData.persona || '',
+            persona: options?.persona ?? [charData.description || charData.persona, charData.personality && '性格：'+charData.personality, charData.scenario && '情境：'+charData.scenario, charData.mes_example && '示例对话：\n'+charData.mes_example].filter(Boolean).join('\n\n'),
+            importedCharacterCard: sourceCard,
             birthday: '',
             enableDynamicAge: false,
             avatar: avatar || 'https://i.postimg.cc/Y96LPskq/o-o-2.jpg',
@@ -289,26 +257,13 @@ async function createCharacterFromData(data, avatar, options) {
     // 解析开场白：仅在用户选择导入时处理；优先 data.alternate_greetings，否则用 first_mes
     const importGreeting = !(typeof options === 'object' && options && options.importGreeting === false);
     if (importGreeting) {
-        const greetings = [];
-        const inner = charData.data || charData;
-        if (inner.alternate_greetings && Array.isArray(inner.alternate_greetings) && inner.alternate_greetings.length > 0) {
-            inner.alternate_greetings.forEach(t => {
-                if (t && typeof t === 'string' && t.trim() !== '') greetings.push(t.trim());
-            });
-        }
-        if (greetings.length === 0 && charData.first_mes && typeof charData.first_mes === 'string' && charData.first_mes.trim() !== '') {
-            greetings.push(charData.first_mes.trim());
-        }
-        if (inner.first_mes && typeof inner.first_mes === 'string' && inner.first_mes.trim() !== '' && !greetings.includes(inner.first_mes.trim())) {
-            const fm = inner.first_mes.trim();
-            if (!greetings.length) greetings.push(fm);
-        }
+        const greetings = [...new Set([charData.first_mes, ...(charData.alternate_greetings || [])].filter(t => typeof t === 'string' && t.trim()).map(t => t.trim()))];
         if (greetings.length > 0) {
             newChar.alternateGreetings = greetings;
             newChar.currentGreetingIndex = 0;
             const firstContent = greetings[0];
             newChar.history = [{
-                id: `msg_${Date.now()}_greeting`,
+                id: `msg_${crypto.randomUUID()}_greeting`,
                 role: 'assistant',
                 senderId: newChar.id,
                 content: firstContent,
@@ -322,28 +277,29 @@ async function createCharacterFromData(data, avatar, options) {
     if (charData.character_book && Array.isArray(charData.character_book.entries)) {
         const categoryName = data.name || charData.name;
         charData.character_book.entries.forEach(entry => {
-            const name = entry.comment;
+            if (entry.enabled === false) return;
+            const name = entry.comment || entry.name || (entry.keys || []).join('、') || '角色资料';
             const content = entry.content;
             if (name && content) {
                 // 策略：内容相同则复用，内容不同则重命名导入
-                const exactMatch = db.worldBooks.find(wb => wb.name.toLowerCase() === name.toLowerCase() && wb.content === content);
+                const exactMatch = books.find(wb => wb.name.toLowerCase() === name.toLowerCase() && wb.content === content);
                 if (exactMatch) {
                     if (!importedWorldBookIds.includes(exactMatch.id)) importedWorldBookIds.push(exactMatch.id);
                 } else {
                     // 检查是否已经导入过重命名版本
                     const renamedName = `${name} (${categoryName})`;
-                    const renamedMatch = db.worldBooks.find(wb => wb.name.toLowerCase() === renamedName.toLowerCase() && wb.content === content);
+                    const renamedMatch = books.find(wb => wb.name.toLowerCase() === renamedName.toLowerCase() && wb.content === content);
 
                     if (renamedMatch) {
                         if (!importedWorldBookIds.includes(renamedMatch.id)) importedWorldBookIds.push(renamedMatch.id);
                     } else {
                         // 需要新建
                         let newBookName = name;
-                        const nameConflict = db.worldBooks.find(wb => wb.name.toLowerCase() === name.toLowerCase());
+                        const nameConflict = books.find(wb => wb.name.toLowerCase() === name.toLowerCase());
                         if (nameConflict) {
                             newBookName = renamedName;
                             // 二次冲突检查
-                            if (db.worldBooks.some(wb => wb.name.toLowerCase() === newBookName.toLowerCase())) {
+                            if (books.some(wb => wb.name.toLowerCase() === newBookName.toLowerCase())) {
                                 newBookName = `${newBookName}_${Math.random().toString(36).substr(2, 4)}`;
                             }
                         }
@@ -355,7 +311,7 @@ async function createCharacterFromData(data, avatar, options) {
                             position: 'after',
                             category: categoryName
                         };
-                        db.worldBooks.push(newBook);
+                        books.push(newBook); newBooks.push(newBook);
                         importedWorldBookIds.push(newBook.id);
                     }
                 }
@@ -374,24 +330,24 @@ async function createCharacterFromData(data, avatar, options) {
                     if (name && content) {
                         const categoryName = '导入的角色设定';
                         // 策略：内容相同则复用，内容不同则重命名导入
-                        const exactMatch = db.worldBooks.find(wb => wb.name.toLowerCase() === name.toLowerCase() && wb.content === content);
+                        const exactMatch = books.find(wb => wb.name.toLowerCase() === name.toLowerCase() && wb.content === content);
                         if (exactMatch) {
                             if (!importedWorldBookIds.includes(exactMatch.id)) importedWorldBookIds.push(exactMatch.id);
                         } else {
                             // 检查是否已经导入过重命名版本
                             const renamedName = `${name} (${charData.name || '未命名'})`;
-                            const renamedMatch = db.worldBooks.find(wb => wb.name.toLowerCase() === renamedName.toLowerCase() && wb.content === content);
+                            const renamedMatch = books.find(wb => wb.name.toLowerCase() === renamedName.toLowerCase() && wb.content === content);
 
                             if (renamedMatch) {
                                 if (!importedWorldBookIds.includes(renamedMatch.id)) importedWorldBookIds.push(renamedMatch.id);
                             } else {
                                 // 需要新建
                                 let newBookName = name;
-                                const nameConflict = db.worldBooks.find(wb => wb.name.toLowerCase() === name.toLowerCase());
+                                const nameConflict = books.find(wb => wb.name.toLowerCase() === name.toLowerCase());
                                 if (nameConflict) {
                                     newBookName = renamedName;
                                     // 二次冲突检查
-                                    if (db.worldBooks.some(wb => wb.name.toLowerCase() === newBookName.toLowerCase())) {
+                                    if (books.some(wb => wb.name.toLowerCase() === newBookName.toLowerCase())) {
                                         newBookName = `${newBookName}_${Math.random().toString(36).substr(2, 4)}`;
                                     }
                                 }
@@ -403,7 +359,7 @@ async function createCharacterFromData(data, avatar, options) {
                                     position: 'after',
                                     category: categoryName
                                 };
-                                db.worldBooks.push(newBook);
+                                books.push(newBook); newBooks.push(newBook);
                                 importedWorldBookIds.push(newBook.id);
                             }
                         }
@@ -415,13 +371,15 @@ async function createCharacterFromData(data, avatar, options) {
 
     if (importedWorldBookIds.length > 0) {
         newChar.worldBookIds = importedWorldBookIds;
-        setTimeout(() => {
-            showToast(`同时导入了 ${importedWorldBookIds.length} 条世界书设定。`);
-        }, 1600);
+
     }
 
+    await dexieDB.transaction('rw', dexieDB.characters, dexieDB.worldBooks, async () => {
+        await dexieDB.characters.add(newChar);
+        if (newBooks.length) await dexieDB.worldBooks.bulkAdd(newBooks);
+    });
     db.characters.push(newChar);
-    await saveData();
+    db.worldBooks.push(...newBooks);
     renderChatList();
     if (typeof renderContactList === 'function') renderContactList();
     showToast(`角色“${newChar.remarkName}”导入成功！`);
@@ -453,14 +411,17 @@ function setupImportConfirmModal() {
 
         const importGreetingCheckbox = document.getElementById('import-greeting-checkbox');
         const importGreeting = importGreetingCheckbox ? importGreetingCheckbox.checked : true;
+        const submit = form.querySelector('[type=submit]');
+        if (submit.disabled) return;
+        submit.disabled = true;
         try {
-            await createCharacterFromData(pendingImportData.data, pendingImportData.avatar, { importGreeting });
+            await createCharacterFromData(pendingImportData.data, pendingImportData.avatar, { importGreeting, persona: form.querySelector('[name=card-persona]').value });
             modal.classList.remove('visible');
             pendingImportData = null;
         } catch (error) {
             console.error(error);
             showToast('创建角色失败: ' + error.message);
-        }
+        } finally { submit.disabled = false; }
     });
 
     cancelBtn.addEventListener('click', () => {
@@ -485,6 +446,12 @@ function showImportConfirmModal(data, avatar) {
         originalName = data.name;
     }
 
+    const card = validateCharacterCard(data);
+    const form = document.getElementById('import-confirm-form');
+    form.querySelector('[name=card-persona]').value = [card.description || card.persona,card.personality && '性格：'+card.personality,card.scenario && '情境：'+card.scenario,card.mes_example && '示例对话：\n'+card.mes_example].filter(Boolean).join('\n\n');
+    form.querySelector('.card-greeting-preview').textContent = card.first_mes || card.alternate_greetings?.[0] || '无开场白';
+    form.querySelector('.card-notes-preview').textContent = card.creator_notes || '';
+    form.querySelector('.card-field-summary').textContent = `备选开场白 ${card.alternate_greetings?.length || 0} 条 · 世界资料 ${card.character_book?.entries?.length || 0} 条 · 扩展 ${Object.keys(card.extensions || {}).length} 项`;
     nameInput.value = originalName;
     modal.classList.add('visible');
 }

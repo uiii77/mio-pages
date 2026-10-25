@@ -937,6 +937,16 @@
 
     function openEditor(node) {
         renderRoomOptions();
+        const editor = document.getElementById('memory-palace-editor-modal');
+        const more = editor.querySelector('.memory-palace-editor-more');
+        const advanced = editor.querySelector('.memory-palace-editor-advanced');
+        advanced.hidden = true;
+        more.setAttribute('aria-expanded', 'false');
+        more.onclick = () => {
+            advanced.hidden = !advanced.hidden;
+            more.setAttribute('aria-expanded', String(!advanced.hidden));
+        };
+        editor.querySelector('.memory-palace-editor-body').scrollTop = 0;
         ui.editingId = node?.id || '';
         document.getElementById('memory-palace-editor-title').textContent = node ? '编辑记忆' : '新增记忆';
         document.getElementById('memory-palace-content').value = node?.content || '';

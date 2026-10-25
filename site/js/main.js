@@ -111,7 +111,6 @@ const init = async () => {
     try { setupCustomizeApp(); } catch(e) { console.error("setupCustomizeApp failed:", e); }
     try { setupTutorialApp(); } catch(e) { console.error("setupTutorialApp failed:", e); }
     
-    checkForUpdates();
     setupPeekFeature();
     setupMemoryJournalScreen(); 
     if (typeof setupMemoryTableScreen === 'function') setupMemoryTableScreen();
