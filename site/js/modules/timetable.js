@@ -79,6 +79,17 @@
         return updateState(provider, scopeKey, { autoSyncEnabled: enabled });
     }
     async function listSnapshots() { return tables().snapshots.toArray(); }
+    async function createManualSemester(value) {
+        const snapshot = core().createManualSnapshot(value, `manual:${global.crypto.randomUUID()}`);
+        const { database, snapshots } = tables();
+        return database.transaction('rw', snapshots, async () => {
+            if (await snapshots.get(snapshot.id)) throw new Error('手工课表标识冲突，请重试');
+            const now = Date.now();
+            const record = { ...snapshot, revision: 1, createdAt: now, updatedAt: now };
+            await snapshots.put(record);
+            return record;
+        });
+    }
     async function getRoleShare(roleId) {
         const matches = (await tables().states.toArray()).flatMap(state => core().normalizeShares(state.roleShares)
             .filter(share => share.roleId === String(roleId)).map(share => ({ ...share, provider: state.provider, scopeKey: state.scopeKey })));
@@ -134,7 +145,7 @@
         const days = await Promise.all(dates.map(date => getEffectiveDate(grant.provider, grant.scopeKey, grant.semester, date)));
         const currentGrant = await getRoleShare(roleId);
         if (sharingSaves.has(roleId) || version !== (sharingVersions.get(roleId) || 0) || JSON.stringify(currentGrant) !== JSON.stringify(grant) || !global.db?.characters?.some(role => String(role.id) === roleId)) return '';
-        return core().summaryForChat(days, grant, grant.semester, grant.provider === 'sdmu-weekly' ? '山东管理学院教务系统（含用户手动调整）' : '用户课表本地缓存（含手动调整）');
+        return core().summaryForChat(days, grant, grant.semester, grant.provider === 'manual' ? '用户手工课表（未经教务核验）' : grant.provider === 'sdmu-weekly' ? '山东管理学院教务系统（含用户手动调整）' : '用户课表本地缓存（含手动调整）');
     }
     function canRefresh(provider, scopeKey) {
         const entry = providers.get(provider);
@@ -157,6 +168,7 @@
     async function ingestSnapshot(value, options = {}) {
         const now = Math.max(0, Number(options.now) || Date.now());
         const normalized = core().normalizeSnapshot(value, { provider: options.provider, scopeKey: options.scopeKey, semester: options.semester, now });
+        if (normalized.provider === 'manual') throw new Error('手工课表只能通过个人调整修改，不能导入教务来源');
         const { database, snapshots, changes, states } = tables();
         return database.transaction('rw', snapshots, changes, states, async () => {
             const current = await snapshots.get(normalized.id);
@@ -198,6 +210,7 @@
         if (new Set(dates.map(item => item.date)).size !== 7) throw new Error('重复教学周日期');
         const now = Date.now();
         const normalized = core().normalizeSnapshot({ ...value, complete: true }, { now });
+        if (normalized.provider === 'manual') throw new Error('手工课表不能被学校同步覆盖');
         if (normalized.courses.some(course => course.weeks.length !== 1 || course.weeks[0] !== week)) throw new Error('课程超出查询周');
         const { database, snapshots, states, changes } = tables();
         return database.transaction('rw', snapshots, states, changes, async () => {
@@ -238,6 +251,7 @@
 
     function registerProvider(id, provider) {
         const providerId = clean(id, 80);
+        if (providerId === 'manual') throw new Error('手工课表不注册学校同步服务');
         if (!providerId || !provider || typeof provider.fetchSnapshot !== 'function' && typeof provider.fetchWeeks !== 'function') throw new Error('课程表 provider 必须提供 fetchSnapshot 或 fetchWeeks');
         const entry = Object.freeze({ fetchSnapshot: provider.fetchSnapshot, fetchWeeks: provider.fetchWeeks, isAvailable: provider.isAvailable, disconnect: typeof provider.disconnect === 'function' ? provider.disconnect : null });
         providers.set(providerId, entry);
@@ -298,6 +312,7 @@
         return database.transaction('rw', snapshots, adjustments, async () => {
             const snapshot = await snapshots.get(clean(snapshotIdValue, 240));
             if (!snapshot) throw new Error('找不到课程表快照');
+            core().validateManualAdjustment(snapshot, value);
             const normalized = core().normalizeAdjustment(value, { provider: snapshot.provider, semester: snapshot.semester, scopeKey: snapshot.scopeKey, now: options.now });
             const current = await adjustments.get(normalized.id);
             if (current && current.snapshotId !== snapshot.id) throw new Error('该调整属于其他课表，请刷新后重试');
@@ -321,6 +336,7 @@
     }
 
     async function getEffectiveWeek(provider, scopeKey, semester, week, context = {}) {
+        context = { ...context, scopeKey, semester };
         const snapshot = await getSnapshot(provider, scopeKey, semester);
         if (!snapshot) return { snapshot: null, courses: [], conflicts: [] };
         const adjustments = await listAdjustments(snapshot.id);
@@ -336,7 +352,7 @@
         const snapshot = await getSnapshot(provider, scopeKey, semester);
         if (!snapshot) return { snapshot: null, courses: [], conflicts: [] };
         const adjustments = await listAdjustments(snapshot.id);
-        return { snapshot, ...core().coursesForDay(snapshot.courses, adjustments, week, weekday, context) };
+        return { snapshot, ...core().coursesForDay(snapshot.courses, adjustments, week, weekday, { ...context, scopeKey, semester }) };
     }
 
     function schoolDate(now = Date.now()) {
@@ -437,5 +453,6 @@
         saveAdjustment, deleteAdjustment, listAdjustments, getEffectiveWeek, getEffectiveDay, getEffectiveDate, schoolDate,
         listChanges, acknowledgeChanges, disconnect, clearScope,
         getRoleShare, setRoleShare, prepareChatContext, getCalendarDays,
+        createManualSemester,
     });
 })(window);

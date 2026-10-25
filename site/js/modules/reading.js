@@ -1175,9 +1175,11 @@
         const empty = documentRef('reading-empty');
         if (list) {
             const labels = { 'want-to-read': '想读', reading: '在读', finished: '读完' };
-            list.innerHTML = documents.map(({ document: item, entry }) => `<article class="reading-book-card" data-reading-entry="${escapeHtml(entry.id)}"><button type="button" class="reading-book-open" data-reading-document="${escapeHtml(item.id)}"><span class="reading-book-icon">${escapeHtml(item.format.toUpperCase())}</span><span class="reading-book-copy"><strong>${escapeHtml(item.title)}</strong><small>${item.segmentCount} 段 · ${item.totalChars.toLocaleString()} 字</small></span><span class="reading-book-arrow">›</span></button><div class="reading-book-meta"><select data-reading-status="${escapeHtml(item.id)}" aria-label="《${escapeHtml(item.title)}》阅读状态">${core().LIBRARY_STATUSES.map(status => `<option value="${status}"${entry.status === status ? ' selected' : ''}>${labels[status]}</option>`).join('')}</select><button type="button" class="reading-favorite-btn${entry.favorite ? ' is-active' : ''}" data-reading-favorite="${escapeHtml(item.id)}" aria-pressed="${entry.favorite}">${entry.favorite ? '★ 已收藏' : '☆ 收藏'}</button></div><input class="reading-recommendation-input" data-reading-recommendation="${escapeHtml(item.id)}" value="${escapeHtml(entry.recommendation)}" maxlength="500" placeholder="写一句推荐语（可选）" aria-label="《${escapeHtml(item.title)}》推荐语"></article>`).join('');
+            list.innerHTML = documents.map(({ document: item, entry }) => `<article class="reading-book-card" data-reading-entry="${escapeHtml(entry.id)}"><button type="button" class="reading-book-open" data-reading-document="${escapeHtml(item.id)}"><span class="reading-book-icon">${escapeHtml(item.format.toUpperCase())}</span><span class="reading-book-copy"><strong>${escapeHtml(item.title)}</strong><small>${item.segmentCount} 段 · ${item.totalChars.toLocaleString()} 字</small></span><span class="reading-book-arrow">›</span></button><div class="reading-book-meta"><select data-reading-status="${escapeHtml(item.id)}" aria-label="《${escapeHtml(item.title)}》阅读状态">${core().LIBRARY_STATUSES.map(status => `<option value="${status}"${entry.status === status ? ' selected' : ''}>${labels[status]}</option>`).join('')}</select><button type="button" class="reading-favorite-btn${entry.favorite ? ' is-active' : ''}" data-reading-favorite="${escapeHtml(item.id)}" aria-pressed="${entry.favorite}">${entry.favorite ? '★ 已收藏' : '☆ 收藏'}</button><button type="button" class="reading-delete-btn" data-reading-delete-document="${escapeHtml(item.id)}" aria-label="删除《${escapeHtml(item.title)}》">删除</button></div><input class="reading-recommendation-input" data-reading-recommendation="${escapeHtml(item.id)}" value="${escapeHtml(entry.recommendation)}" maxlength="500" placeholder="写一句推荐语（可选）" aria-label="《${escapeHtml(item.title)}》推荐语"></article>`).join('');
         }
         if (empty) empty.style.display = documents.length ? 'none' : '';
+        const heading = documentRef('reading-library-view')?.querySelector('.reading-library-heading strong');
+        if (heading) heading.textContent = `${currentCharacterName()}的书架 · ${documents.length} 本`;
         if (state.documentId) {
             const document = await getDocument(state.documentId);
             const session = document && await getSession(state.characterId, state.documentId);
@@ -1257,6 +1259,20 @@
         documentRef('reading-speak-stop-btn')?.addEventListener('click', stopSpeech);
         document.addEventListener('ttsStateChange', updateSpeechControls);
         documentRef('reading-document-list')?.addEventListener('click', event => {
+            const remove = event.target.closest('[data-reading-delete-document]');
+            if (remove) queueReaderOperation(async () => {
+                const id = remove.dataset.readingDeleteDocument, book = await getDocument(id);
+                if (!book) return;
+                const result = await global.showAppConfirmDialog({
+                    title: '删除读物', confirmText: '删除读物', cancelText: '取消', dismissText: '',
+                    message: `删除《${book.title}》？这会从所有角色的书架移除，并清除这本书的阅读进度、批注和学习记录，无法撤销。仍被其他内容引用的附件会保留。`,
+                });
+                if (result !== 'confirm') { remove.focus(); return; }
+                await removeDocument(id);
+                await render();
+                documentRef('reading-import-btn')?.focus();
+                notify('读物已删除');
+            });
             const button = event.target.closest('[data-reading-document]');
             if (button) void openDocument(button.dataset.readingDocument);
             const favorite = event.target.closest('[data-reading-favorite]');

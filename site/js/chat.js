@@ -18,11 +18,11 @@ function arrangeChatExpansionItems() {
     const order = [
         'voice-message-btn', 'photo-video-btn', 'camera-capture-btn', 'video-call-btn',
         'location-btn', 'wallet-btn', 'gift-btn', 'abort-reply-btn',
-        'schedule-open-btn', 'emotion-open-btn', 'memory-palace-btn', 'regenerate-btn',
+        'schedule-open-btn', 'chat-calendar-btn', 'memory-palace-btn', 'regenerate-btn',
         'capture-btn', 'memory-journal-btn', 'char-gallery-manage-btn', 'memory-table-btn',
         'chat-trpg-btn', 'reading-btn', 'listen-together-btn', 'watch-together-btn',
         'collaboration-btn', 'exchange-diary-btn', 'reminder-btn', 'node-system-btn',
-        'delete-history-btn',
+        'delete-history-btn', 'photo-description-open-btn',
         'time-skip-btn', 'vector-memory-btn', 'shop-btn', 'msg-version-btn', 'group-poke-expansion-btn',
     ];
     order.forEach(id => {
@@ -33,6 +33,9 @@ function arrangeChatExpansionItems() {
 }
 
 function setupChatRoom() {
+    document.getElementById('chat-calendar-btn')?.addEventListener('click', () => { showPanel('none'); switchScreen('health-screen'); });
+    document.getElementById('chat-records-search-btn')?.addEventListener('click', () => { switchScreen('chat-room-screen'); SearchSystem.open({chatType:currentChatType,chatId:currentChatId}); });
+    for(const id of ['chat-calendar-btn','photo-description-open-btn'])document.getElementById(id)?.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();event.currentTarget.click();}});
     document.getElementById('chat-trpg-btn')?.addEventListener('click', () => {
         window.TRPGBroadcast?.open({ returnTarget: 'chat-room-screen' });
     });
@@ -790,8 +793,18 @@ function openChatRoom(chatId, type) {
     const chat = (type === 'private') ? db.characters.find(c => c.id === chatId) : db.groups.find(g => g.id === chatId);
     if (!chat) return;
 
+    const requestedLocation = window._pendingMessageLocation;
+    if (currentChatId === chatId && currentChatType === type && requestedLocation?.chatId === chatId && requestedLocation.chatType === type) {
+        window._pendingMessageLocation = null;
+        switchScreen('chat-room-screen');
+        if (!ChatHistoryViewport.locate(type, chatId, requestedLocation.messageId)) showToast('该记录已不存在或当前不可显示');
+        return;
+    }
+
     currentChatId = chatId;
     currentChatType = type;
+    ChatHistoryViewport.reset();
+    window.SearchSystem?.onChatOpened?.(chatId, type);
 
     // 迁移旧的私聊数据 (仅群聊)
     if (type === 'group' && chat.privateSessions && typeof migratePrivateSessionsToHistory === 'function') {
@@ -939,33 +952,12 @@ function openChatRoom(chatId, type) {
 
     const pendingLocation = window._pendingMessageLocation;
     const legacyMessageId = window._searchScrollToMessageId;
-    const locationMatchesChat = pendingLocation
-        && pendingLocation.chatId === chatId
-        && pendingLocation.chatType === type;
+    const locationMatchesChat = pendingLocation && pendingLocation.chatId === chatId && pendingLocation.chatType === type;
     const messageIdToLocate = locationMatchesChat ? pendingLocation.messageId : legacyMessageId;
-    if (messageIdToLocate) {
-        const messageId = messageIdToLocate;
-        if (locationMatchesChat) window._pendingMessageLocation = null;
-        window._searchScrollToMessageId = null;
-        const pageSize = (typeof MESSAGES_PER_PAGE !== 'undefined') ? MESSAGES_PER_PAGE : 50;
-        setTimeout(() => {
-            const curChat = (currentChatType === 'private') ? db.characters.find(c => c.id === currentChatId) : db.groups.find(g => g.id === currentChatId);
-            if (!curChat || !curChat.history) return;
-            const msgIndex = curChat.history.findIndex(m => m.id === messageId);
-            if (msgIndex === -1) return;
-            const targetPage = Math.ceil((curChat.history.length - msgIndex) / pageSize);
-            currentPage = targetPage;
-            renderMessages(false, false);
-            setTimeout(() => {
-                const el = messageArea && Array.from(messageArea.querySelectorAll('.message-wrapper[data-id]'))
-                    .find(node => node.dataset.id === messageId);
-                if (el) {
-                    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    el.classList.add('message-locate-highlight');
-                    setTimeout(() => el.classList.remove('message-locate-highlight'), 2200);
-                }
-            }, 50);
-        }, 100);
+    if (locationMatchesChat) window._pendingMessageLocation = null;
+    window._searchScrollToMessageId = null;
+    if (messageIdToLocate != null && !ChatHistoryViewport.locate(type, chatId, messageIdToLocate)) {
+        showToast('该记录已不存在或当前不可显示');
     }
 
     requestAnimationFrame(() => {

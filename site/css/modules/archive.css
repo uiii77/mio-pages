@@ -222,3 +222,14 @@
 #create-archive-modal .modal-actions {
     justify-content: flex-end;
 }
+
+/* Equal side columns keep the title clear of both actions at narrow widths. */
+#archive-screen .app-header { display:grid; grid-template-columns:84px minmax(0,1fr) 84px; padding-inline:12px; }
+#archive-screen .app-header .title-container { position:static; transform:none; min-width:0; }
+#archive-screen .app-header .title { font-size:16px; white-space:nowrap; }
+#archive-screen .app-header .action-btn-group { gap:4px; justify-content:flex-end; }
+#archive-screen .app-header .action-btn-group .action-btn { width:40px; height:40px; padding:0; font:inherit; font-size:13px; font-weight:500; border-radius:8px; background:transparent; }
+#archive-screen .action-btn:disabled { opacity:.35; cursor:default; }
+#archive-screen .archive-btn-load, #archive-screen .archive-btn-rename { background:#f1f2f4; color:var(--text-color, #333); }
+#archive-screen .archive-btn-delete { background:#fff1f0; color:#c74747; }
+#archive-screen .archive-multi-select-bar { flex-wrap:wrap; }

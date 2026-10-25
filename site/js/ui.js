@@ -21,6 +21,39 @@ const messageInput = document.getElementById('message-input');
 const getReplyBtn = document.getElementById('get-reply-btn');
 const regenerateBtn = document.getElementById('regenerate-btn');
 
+// Navigation keeps entry points and scroll anchors, never copies application data.
+const MioNavigation = window.MioNavigation = {
+    frames: [], returning: false,
+    capture(screen) {
+        return { id: screen.id, chat: screen.id === 'chat-room-screen' ? window.ChatHistoryViewport?.capture() : null,
+            scroll: [...screen.querySelectorAll('.content, [data-navigation-scroll]')].map((node,index) => ({index,top:node.scrollTop})) };
+    },
+    beforeSwitch(target) {
+        if (this.returning) return;
+        const previous = document.querySelector('.phone-screen > .screen.active');
+        if (!previous || previous.id === target) return;
+        if (['home-screen','chat-list-screen','contacts-screen','more-screen','phone-screen','moments-screen'].includes(target)) { this.frames=[]; return; }
+        this.frames.push({target,origin:this.capture(previous)});
+        if (this.frames.length > 40) this.frames.shift();
+    },
+    back(fallback) {
+        const active = document.querySelector('.phone-screen > .screen.active')?.id;
+        const frame = this.frames.at(-1);
+        if (!frame || frame.target !== active) { switchScreen(fallback || 'home-screen'); return; }
+        this.frames.pop(); this.returning=true;
+        try {
+            if (frame.origin.chat) {
+                switchScreen('chat-room-screen');
+                ChatHistoryViewport.restore(frame.origin.chat);
+            } else switchScreen(frame.origin.id);
+            requestAnimationFrame(() => {
+                const nodes = document.getElementById(frame.origin.id)?.querySelectorAll('.content, [data-navigation-scroll]');
+                frame.origin.scroll.forEach(item => { if(nodes?.[item.index]) nodes[item.index].scrollTop=item.top; });
+            });
+        } finally { this.returning=false; }
+    }
+};
+
 // 屏幕切换
 const switchScreen = (targetId) => {
     // The shared music player survives in-app navigation, including returning to chat.
@@ -32,6 +65,8 @@ const switchScreen = (targetId) => {
         window.__MioAppearanceSection = appearanceAlias;
         targetId = 'appearance-settings-screen';
     }
+    if (!document.getElementById(targetId)) return;
+    MioNavigation.beforeSwitch(targetId);
     // 阅读会话与聊天共用 TTS 播放器；离开阅读器时停止当前段落，避免与聊天朗读串音。
     if (targetId !== 'reading-screen' && window.Reading?.stopSpeech) window.Reading.stopSpeech();
     // TRPG 播报与聊天/阅读共享 TTS 服务但保持会话边界；离开页面时取消当前队列。
@@ -474,7 +509,7 @@ function setupHomeScreen() {
                     <span class="app-name">${getName('forum-screen')}</span>
                 </a>
                 <a href="#" class="app-icon" data-target="piggy-bank-screen">
-                    <img src="${getIcon('piggy-bank-screen')}" alt="存钱罐" class="icon-img">
+                    <img src="${getIcon('piggy-bank-screen')}" alt="钱包" class="icon-img">
                     <span class="app-name">${getName('piggy-bank-screen')}</span>
                 </a>
                 <a href="#" class="app-icon" data-target="health-screen">

@@ -86,7 +86,7 @@ const defaultIcons = {
     'forum-screen': {name: '论坛', url: 'https://i.postimg.cc/fyPVBZf1/1758451183605.png'},
     'music-screen': {name: '音乐', url: 'assets/icons/music-pixel.png'},
     'diary-screen': {name: '日记本', url: 'https://i.postimg.cc/bJBLzmFH/chan-70.png'},
-    'piggy-bank-screen': {name: '存钱罐', url: 'https://i.postimg.cc/3RmWRRtS/chan-18.png'},
+    'piggy-bank-screen': {name: '钱包', url: 'https://i.postimg.cc/3RmWRRtS/chan-18.png'},
     'period-screen': {name: '生理期', url: 'assets/icons/period-pixel.png'},
     'health-screen': {name: '日历', url: 'assets/icons/period-pixel.png'},
     'couple-space-screen': {name: '情侣空间', url: 'assets/icons/couple-space-pixel.png'},

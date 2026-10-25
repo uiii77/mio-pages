@@ -4,6 +4,7 @@
     const runtime = new Map();
     const archiveLocks = new Set();
     const roomPlateWriteQueues = new Map();
+    const roomLayoutWriteQueues = new Map();
     const anticipationWriteQueues = new Map();
     function withTimeout(promise, milliseconds = 45000) {
         let timer;
@@ -749,6 +750,148 @@
 
     function currentCharacter() { return (db.characters || []).find(item => item.id === ui.characterId) || null; }
 
+    // Custom rooms store references on the character; semantic room IDs and memory records stay unchanged.
+    function isCustomRoom(id) { return typeof id === 'string' && /^custom_[a-zA-Z0-9_-]+$/.test(id); }
+
+    function getRoomLayout(characterId) {
+        const character = (db.characters || []).find(item => item.id === characterId);
+        const saved = Array.isArray(character?.memoryPalaceRoomLayout) ? character.memoryPalaceRoomLayout : [];
+        const ids = [...new Set([...saved.map(room => room?.id), ...Object.keys(Core.ROOMS)])].filter(id => Object.hasOwn(Core.ROOMS, id) || isCustomRoom(id));
+        return ids.map(id => {
+            const room = saved.find(item => item?.id === id);
+            const label = String(room?.label || Core.ROOMS[id]?.label || '自定义房间').trim().slice(0, 24);
+            return { id, label: label || Core.ROOMS[id]?.label || '自定义房间', hidden: room?.hidden === true,
+                ...(isCustomRoom(id) ? { nodeIds: [...new Set((Array.isArray(room?.nodeIds) ? room.nodeIds : []).filter(id => typeof id === 'string' && id))] } : {}) };
+        });
+    }
+
+    function validateRoomLayout(rooms) {
+        if (!Array.isArray(rooms) || new Set(rooms.map(room => room?.id)).size !== rooms.length || Object.keys(Core.ROOMS).some(id => !rooms.some(room => room?.id === id))
+            || rooms.some(room => !(Object.hasOwn(Core.ROOMS, room?.id) || isCustomRoom(room?.id)) || typeof room.label !== 'string' || !room.label.trim() || room.label.trim().length > 24
+                || isCustomRoom(room.id) && (!Array.isArray(room.nodeIds) || room.nodeIds.some(id => typeof id !== 'string' || !id)))) throw Error('房间名称需为 1–24 字，基础房间不可删除');
+    }
+
+    function saveRoomLayout(characterId, rooms) {
+        const draft = Array.isArray(rooms) ? rooms.map(room => room && ({ ...room, ...(Array.isArray(room.nodeIds) ? { nodeIds: room.nodeIds.slice() } : {}) })) : rooms;
+        const next = (roomLayoutWriteQueues.get(characterId) || Promise.resolve()).catch(() => {}).then(() => persistRoomLayout(characterId, draft));
+        roomLayoutWriteQueues.set(characterId, next);
+        return next.finally(() => { if (roomLayoutWriteQueues.get(characterId) === next) roomLayoutWriteQueues.delete(characterId); });
+    }
+
+    async function persistRoomLayout(characterId, rooms) {
+        const character = (db.characters || []).find(item => item.id === characterId);
+        if (!character) throw Error('角色不存在');
+        validateRoomLayout(rooms);
+        const nodeIds = [...new Set(rooms.flatMap(room => isCustomRoom(room.id) ? room.nodeIds : []))];
+        const nodes = nodeIds.length ? await dexieDB.memoryPalaceNodes.bulkGet(nodeIds) : [];
+        if (nodes.some(node => node && node.characterId !== characterId)) throw Error('只能整理当前角色的记忆');
+        const existingIds = new Set(nodes.filter(Boolean).map(node => node.id));
+        if (!(db.characters || []).includes(character)) throw Error('角色已重新载入，请重试房间整理');
+        const previous = character.memoryPalaceRoomLayout;
+        const draft = rooms.map(room => ({ id: room.id, label: room.label.trim(), hidden: room.hidden === true,
+            ...(isCustomRoom(room.id) ? { nodeIds: [...new Set(room.nodeIds)].filter(id => existingIds.has(id)) } : {}) }));
+        character.memoryPalaceRoomLayout = draft;
+        try { if (await global.saveCharacter(characterId) === false) throw Error('房间设置保存失败，请重试'); }
+        catch (error) {
+            // A shared saveCharacter queue may commit once before a later pass fails.
+            let saved = previous;
+            if (typeof dexieDB !== 'undefined' && dexieDB.characters) {
+                try { saved = (await dexieDB.characters.get(characterId))?.memoryPalaceRoomLayout; }
+                catch (readError) { console.warn('[MemoryPalace] could not reread room settings after failed save:', readError); }
+            }
+            if (character.memoryPalaceRoomLayout === draft) {
+                if (saved === undefined) delete character.memoryPalaceRoomLayout;
+                else character.memoryPalaceRoomLayout = saved;
+            }
+            throw error;
+        }
+        return getRoomLayout(characterId);
+    }
+
+    function renderRoomOptions() {
+        const rooms = getRoomLayout(ui.characterId);
+        if (ui.room !== 'all' && !rooms.some(room => room.id === ui.room && !room.hidden)) ui.room = 'all';
+        const filter = document.getElementById('memory-palace-room-filter');
+        if (filter) {
+            filter.replaceChildren(new Option('全部房间', 'all'), ...rooms.filter(room => !room.hidden).map(room => new Option((isCustomRoom(room.id) ? '自定义 · ' : '') + room.label, room.id)));
+            filter.value = ui.room;
+        }
+        const editor = document.getElementById('memory-palace-room');
+        if (editor) {
+            const selected = editor.value;
+            editor.replaceChildren(...rooms.filter(room => !isCustomRoom(room.id)).map(room => new Option(room.label + (room.hidden ? '（已收起）' : ''), room.id)));
+            editor.value = selected || 'living_room';
+        }
+    }
+
+    function renderRoomManager() {
+        const list = document.getElementById('memory-palace-rooms-list');
+        const rooms = getRoomLayout(ui.characterId);
+        list.innerHTML = rooms.map((room, index) => `<div class="memory-palace-room-row" data-room-id="${room.id}">
+            <div><strong>${escapeHtml(room.label)}</strong><small>${isCustomRoom(room.id) ? '自定义房间' : escapeHtml(Core.ROOMS[room.id].description)}${room.hidden ? ' · 已收起' : ''}</small></div>
+            <div class="memory-palace-room-controls">
+                <button type="button" data-room-action="rename">改名</button>
+                <button type="button" data-room-action="up" aria-label="上移${escapeHtml(room.label)}" ${index === 0 ? 'disabled' : ''}>↑</button>
+                <button type="button" data-room-action="down" aria-label="下移${escapeHtml(room.label)}" ${index === rooms.length - 1 ? 'disabled' : ''}>↓</button>
+                <button type="button" data-room-action="${isCustomRoom(room.id) ? 'delete' : 'toggle'}">${isCustomRoom(room.id) ? '删除' : room.hidden ? '恢复' : '收起'}</button>
+            </div>
+        </div>`).join('');
+    }
+
+    async function handleRoomLayoutAction(event) {
+        const button = event.target.closest('[data-room-action]');
+        const character = currentCharacter();
+        if (!button || !character) return;
+        const list = document.getElementById('memory-palace-rooms-list');
+        if (list.getAttribute('aria-busy') === 'true') return;
+        list.setAttribute('aria-busy', 'true');
+        try {
+            const rooms = getRoomLayout(character.id);
+            const index = rooms.findIndex(room => room.id === button.closest('[data-room-id]')?.dataset.roomId);
+            let room = rooms[index];
+            const action = button.dataset.roomAction;
+            if (action === 'add' || action === 'rename') {
+                const result = await showAppFormDialog({ title: action === 'add' ? '新建自定义房间' : '房间名称', fields: [{ name: 'name', label: '名称（最多 24 字）', value: room?.label || '', required: true, maxLength: 24 }], confirmText: action === 'add' ? '新建' : '保存' });
+                if (!result) return;
+                if (action === 'add') { room = { id: Core.id('custom'), label: result.name, hidden: false, nodeIds: [] }; rooms.push(room); }
+                else room.label = result.name;
+            } else if (action === 'delete' && isCustomRoom(room?.id)) {
+                if (await showAppConfirmDialog({ title: '删除自定义房间', message: `删除“${room.label}”？其中的记忆会完整保留，仍可在全部房间及其他房间查看。`, confirmText: '删除房间', dismissText: '' }) !== 'confirm') return;
+                rooms.splice(index, 1);
+            } else if (action === 'toggle' && room && !isCustomRoom(room.id)) {
+                if (!room.hidden && await showAppConfirmDialog({ title: '收起房间', message: `收起“${room.label}”？其中的记忆仍可在“全部房间”查看，随时可以恢复房间。`, confirmText: '收起', dismissText: '' }) !== 'confirm') return;
+                room.hidden = !room.hidden;
+            } else if ((action === 'up' || action === 'down') && room) {
+                const target = index + (action === 'up' ? -1 : 1);
+                if (target < 0 || target >= rooms.length) return;
+                [rooms[index], rooms[target]] = [rooms[target], rooms[index]];
+            } else return;
+            await saveRoomLayout(character.id, rooms);
+            if (ui.characterId === character.id) {
+                renderRoomManager(); renderRoomOptions(); await render();
+                const focus = list.querySelector(`[data-room-id="${room.id}"] [data-room-action="${action === 'add' ? 'rename' : action}"]`);
+                (focus && !focus.disabled ? focus : document.getElementById('memory-palace-rooms-close')).focus();
+            }
+        } catch (error) { showToast(error.message || '房间设置保存失败'); }
+        finally { list.removeAttribute('aria-busy'); }
+    }
+
+    async function organizeNodeRooms(node) {
+        const rooms = getRoomLayout(node.characterId).filter(room => isCustomRoom(room.id));
+        if (!rooms.length) { document.getElementById('memory-palace-rooms-btn').click(); return; }
+        const result = await showAppFormDialog({ title: '整理到房间', message: '同一条记忆可放入多个房间。取消勾选只移出房间，记忆会保留。',
+            fields: rooms.map(room => ({ name: room.id, label: room.label, type: 'checkbox', value: room.nodeIds.includes(node.id) })), confirmText: '保存' });
+        if (!result) return;
+        const latest = getRoomLayout(node.characterId);
+        latest.forEach(room => {
+            if (!isCustomRoom(room.id) || !Object.hasOwn(result, room.id)) return;
+            room.nodeIds = room.nodeIds.filter(id => id !== node.id);
+            if (result[room.id]) room.nodeIds.push(node.id);
+        });
+        try { await saveRoomLayout(node.characterId, latest); await render(); showToast('房间已整理'); }
+        catch (error) { showToast(error.message || '房间整理失败'); }
+    }
+
     async function render() {
         const container = document.getElementById('memory-palace-list');
         const summary = document.getElementById('memory-palace-summary');
@@ -756,7 +899,10 @@
         const character = currentCharacter();
         if (!character) { container.innerHTML = '<div class="memory-palace-empty">未选择角色</div>'; return; }
         const allNodes = await listNodes(character.id);
-        let nodes = ui.room === 'all' ? allNodes.slice() : allNodes.filter(node => node.room === ui.room);
+        const rooms = getRoomLayout(character.id);
+        const roomLabels = new Map(rooms.map(room => [room.id, room.label]));
+        const customRoom = rooms.find(room => room.id === ui.room && isCustomRoom(room.id));
+        let nodes = ui.room === 'all' ? allNodes.slice() : allNodes.filter(node => customRoom ? customRoom.nodeIds.includes(node.id) : node.room === ui.room);
         const layer = document.getElementById('palace-layer-filter')?.value || 'all';
         nodes = nodes.filter(node => layer === 'archived' ? node.archived : !node.archived && (layer === 'all' || node.layer === layer));
         const [allLinks, eventBoxes] = await Promise.all([listLinks(character.id), listEventBoxes(character.id)]);
@@ -780,20 +926,21 @@
         }
         global.MemoryPalaceMaintenance?.updateStatus(character);
         container.innerHTML = nodes.length ? nodes.map(node => `<article class="memory-palace-card" data-id="${node.id}">
-            <div class="memory-palace-card-head"><span>${Core.ROOMS[node.room].label}</span><span>重要性 ${node.importance}</span>${node.pinned ? '<span>📌</span>' : ''}${node.embedded ? '<span>向量已就绪</span>' : '<span class="is-warning">关键词检索</span>'}</div>
+            <div class="memory-palace-card-head"><span>${escapeHtml(roomLabels.get(node.room) || Core.ROOMS[node.room]?.label || node.room)}</span><span>重要性 ${node.importance}</span>${node.pinned ? '<span>📌</span>' : ''}${node.embedded ? '<span>向量已就绪</span>' : '<span class="is-warning">关键词检索</span>'}</div>
             <div class="memory-palace-card-content">${escapeHtml(node.content)}</div>
             <div class="memory-palace-source">${escapeHtml(global.MemoryGovernanceCore?.LAYERS[node.layer] || '')}${node.archived ? ` · ${escapeHtml(node.archiveReason)} <button class="btn btn-small btn-secondary" data-action="restore">恢复并核对</button>` : ''}</div>
             <div class="memory-palace-tags">${node.tags.map(tag => `<span>${escapeHtml(tag)}</span>`).join('')}</div>
             <div class="memory-palace-source">${escapeHtml(sourceSummary(node))}${node.eventBoxId && eventBoxById.has(node.eventBoxId) ? ` · 事件盒：${escapeHtml(eventBoxById.get(node.eventBoxId).name)}` : ''}</div>
-            <div class="memory-palace-actions"><button class="btn btn-small btn-secondary" data-action="links">关联 ${linkCounts.get(node.id) || 0}</button><button class="btn btn-small btn-secondary" data-action="event-box">事件盒</button><button class="btn btn-small btn-secondary" data-action="edit">编辑</button><button class="btn btn-small btn-secondary" data-action="embed">重嵌入</button><button class="btn btn-small btn-danger" data-action="delete">删除</button></div>
+            <div class="memory-palace-actions"><button class="btn btn-small btn-secondary" data-action="rooms">整理到房间</button><button class="btn btn-small btn-secondary" data-action="links">关联 ${linkCounts.get(node.id) || 0}</button><button class="btn btn-small btn-secondary" data-action="event-box">事件盒</button><button class="btn btn-small btn-secondary" data-action="edit">编辑</button><button class="btn btn-small btn-secondary" data-action="embed">重嵌入</button><button class="btn btn-small btn-danger" data-action="delete">删除</button></div>
         </article>`).join('') : '<div class="memory-palace-empty">这个房间还没有记忆</div>';
     }
 
     function openEditor(node) {
+        renderRoomOptions();
         ui.editingId = node?.id || '';
         document.getElementById('memory-palace-editor-title').textContent = node ? '编辑记忆' : '新增记忆';
         document.getElementById('memory-palace-content').value = node?.content || '';
-        document.getElementById('memory-palace-room').value = node?.room || (ui.room === 'all' ? 'living_room' : ui.room);
+        document.getElementById('memory-palace-room').value = node?.room || (Object.hasOwn(Core.ROOMS, ui.room) ? ui.room : 'living_room');
         document.getElementById('memory-palace-tags').value = (node?.tags || []).join(', ');
         document.getElementById('memory-palace-entities').value = (node?.entities || []).join(', ');
         document.getElementById('memory-palace-importance').value = node?.importance || 5;
@@ -909,7 +1056,7 @@
                 showToast('房间铭牌已更新');
                 return;
             }
-            if (action === 'delete' && confirm('确定删除这条房间铭牌吗？')) {
+            if (action === 'delete' && (await showAppConfirmDialog({ title: '确认删除', message: '确定删除这条房间铭牌吗？', confirmText: '删除', dismissText: '' }) === 'confirm')) {
                 await deleteRoomPlateEntry(character.id, room, entryId);
                 await renderRoomPlates(character.id);
                 showToast('房间铭牌已删除');
@@ -962,7 +1109,7 @@
                 document.getElementById('memory-palace-anticipation-content').focus();
                 return;
             }
-            if (action === 'delete' && confirm('确定删除这条窗台期盼吗？删除后不会自动恢复。')) {
+            if (action === 'delete' && (await showAppConfirmDialog({ title: '确认删除', message: '确定删除这条窗台期盼吗？删除后不会自动恢复。', confirmText: '删除', dismissText: '' }) === 'confirm')) {
                 await deleteAnticipation(id);
                 if (ui.anticipationEditingId === id) ui.anticipationEditingId = '';
                 await renderAnticipations(character.id);
@@ -1022,7 +1169,7 @@
         const row = button?.closest('[data-digest-report-id]');
         const character = currentCharacter();
         if (!button || !row || !character) return;
-        if (!confirm('确定删除这条整理记录吗？不会删除记忆正文。')) return;
+        if (!(await showAppConfirmDialog({ title: '确认删除', message: '确定删除这条整理记录吗？不会删除记忆正文。', confirmText: '删除', dismissText: '' }) === 'confirm')) return;
         try {
             await deleteDigestReport(row.dataset.digestReportId);
             await renderDigestReports(character.id);
@@ -1039,7 +1186,7 @@
         const roomPlates = await listRoomPlates(character.id);
         const anticipations = await listAnticipations(character.id, { advance: false });
         const digestReports = await listDigestReports(character.id);
-        const blob = new Blob([JSON.stringify({ format: 'ovo-memory-palace', version: 6, characterId: character.id, nodes, vectors, links, eventBoxes, roomPlates, anticipations, digestReports }, null, 2)], { type: 'application/json;charset=utf-8' });
+        const blob = new Blob([JSON.stringify({ format: 'ovo-memory-palace', version: 6, characterId: character.id, nodes, vectors, links, eventBoxes, roomPlates, anticipations, digestReports, roomLayout: getRoomLayout(character.id), customRooms: getRoomLayout(character.id).filter(room => isCustomRoom(room.id)) }, null, 2)], { type: 'application/json;charset=utf-8' });
         const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = `${character.remarkName || character.name}-记忆宫殿.json`; link.click(); URL.revokeObjectURL(url);
     }
 
@@ -1047,6 +1194,10 @@
         const character = currentCharacter(); if (!character || !file) return;
         const data = JSON.parse(await file.text());
         if (data.format !== 'ovo-memory-palace' || !Array.isArray(data.nodes)) throw new Error('不是有效的 Mio 记忆宫殿文件');
+        const roomLayout = data.roomLayout;
+        if (roomLayout !== undefined) validateRoomLayout(roomLayout);
+        const customRooms = roomLayout !== undefined ? roomLayout.filter(room => isCustomRoom(room.id)) : data.customRooms === undefined ? [] : data.customRooms;
+        if (!Array.isArray(customRooms) || customRooms.some(room => typeof room?.label !== 'string' || !room.label.trim() || room.label.length > 24 || !Array.isArray(room.nodeIds) || room.nodeIds.some(id => typeof id !== 'string'))) throw Error('自定义房间数据无效');
         const idMap = new Map();
         const eventBoxIdMap = new Map();
         const importedBoxes = Array.isArray(data.eventBoxes) && dexieDB.memoryPalaceEventBoxes
@@ -1101,6 +1252,15 @@
                 .filter(link => link.sourceId && link.targetId && link.sourceId !== link.targetId);
             if (links.length) await dexieDB.memoryPalaceLinks.bulkPut(links);
         }
+        if (roomLayout !== undefined || customRooms.length) {
+            const importedRooms = customRooms.map(room => ({ id: Core.id('custom'), label: room.label, hidden: room.hidden === true, nodeIds: room.nodeIds.map(id => idMap.get(id)).filter(Boolean) }));
+            const current = getRoomLayout(character.id);
+            const restored = roomLayout === undefined ? [...current, ...importedRooms]
+                : [...roomLayout.map(room => isCustomRoom(room.id) ? importedRooms[customRooms.indexOf(room)] : room), ...current.filter(room => isCustomRoom(room.id))];
+            try { await saveRoomLayout(character.id, restored); }
+            catch (error) { throw Error('记忆已导入，但房间布局未保存；请在全部房间重新整理，无需重复导入'); }
+        }
+        renderRoomOptions();
         runtime.delete(character.id);
         return nodes.length;
     }
@@ -1111,13 +1271,33 @@
         const back = document.querySelector('#memory-palace-screen .back-btn');
         if (back) back.dataset.target = backTarget;
         const searchInput = document.getElementById('memory-palace-search'); if (searchInput) searchInput.value = '';
-        document.getElementById('memory-palace-room-filter').value = 'all';
+        renderRoomOptions();
         switchScreen('memory-palace-screen');
         global.MemoryPalaceMaintenance?.loadSettings(currentCharacter());
         void render();
     }
 
     function setup() {
+        document.getElementById('memory-palace-rooms-btn')?.addEventListener('click', () => {
+            if (!currentCharacter()) return;
+            renderRoomManager();
+            document.getElementById('memory-palace-rooms-modal').classList.add('visible');
+            document.getElementById('memory-palace-room-create-btn')?.focus();
+        });
+        const roomModal = document.getElementById('memory-palace-rooms-modal');
+        const closeRooms = () => { roomModal.classList.remove('visible'); document.getElementById('memory-palace-rooms-btn')?.focus(); };
+        document.getElementById('memory-palace-rooms-close')?.addEventListener('click', closeRooms);
+        roomModal?.addEventListener('click', event => { if (event.target === roomModal) closeRooms(); });
+        roomModal?.addEventListener('keydown', event => {
+            if (event.key === 'Escape') { event.preventDefault(); closeRooms(); }
+            if (event.key === 'Tab') {
+                const buttons = [...roomModal.querySelectorAll('button:not(:disabled)')];
+                if (event.shiftKey && document.activeElement === buttons[0]) { event.preventDefault(); buttons.at(-1).focus(); }
+                else if (!event.shiftKey && document.activeElement === buttons.at(-1)) { event.preventDefault(); buttons[0].focus(); }
+            }
+        });
+        roomModal?.addEventListener('click', event => void handleRoomLayoutAction(event));
+
         document.getElementById('setting-open-memory-palace-btn')?.addEventListener('click', () => open(currentChatId));
         document.getElementById('memory-palace-add-btn')?.addEventListener('click', () => openEditor(null));
         document.getElementById('memory-palace-room-plates-btn')?.addEventListener('click', () => void openRoomPlates(currentCharacter()));
@@ -1188,11 +1368,12 @@
             if (!card || !action) return;
             const node = await getNode(card.dataset.id); if (!node) return;
             if (action === 'restore') { await saveNode({ ...node, archived:false, archiveReason:'', conflictGroup:'', representativeId:'', validUntil:null, pinned:true }); await render(); openEditor(await getNode(node.id)); return; }
+            if (action === 'rooms') { await organizeNodeRooms(node); return; }
             if (action === 'links') { await openLinks(node); return; }
             if (action === 'event-box') { await openEventBox(node); return; }
             if (action === 'edit') openEditor(node);
             if (action === 'embed') { try { await reembed(node.characterId, [node.id]); showToast('向量已重建'); await render(); } catch (error) { showToast(error.message || '重建失败'); } }
-            if (action === 'delete' && confirm('确定删除这条记忆吗？')) { await deleteNode(node.id); showToast('已删除'); await render(); }
+            if (action === 'delete' && (await showAppConfirmDialog({ title: '确认删除', message: '确定删除这条记忆吗？', confirmText: '删除', dismissText: '' }) === 'confirm')) { await deleteNode(node.id); showToast('已删除'); await render(); }
         });
         document.getElementById('memory-palace-editor-cancel')?.addEventListener('click', () => document.getElementById('memory-palace-editor-modal').classList.remove('visible'));
         document.getElementById('memory-palace-editor-save')?.addEventListener('click', async () => {
@@ -1204,7 +1385,15 @@
                 const result = await saveNode({ id: ui.editingId || undefined, characterId: ui.characterId, content: document.getElementById('memory-palace-content').value, room: document.getElementById('memory-palace-room').value, tags: document.getElementById('memory-palace-tags').value, entities: document.getElementById('memory-palace-entities').value, importance: document.getElementById('memory-palace-importance').value, mood: document.getElementById('memory-palace-mood').value, pinned: document.getElementById('memory-palace-pinned').checked,
                     layer:document.getElementById('palace-editor-layer').value, subject:document.getElementById('palace-editor-subject').value, confidence:document.getElementById('palace-editor-confidence').value, factKey:document.getElementById('palace-editor-fact-key').value, validUntil });
                 document.getElementById('memory-palace-editor-modal').classList.remove('visible');
-                showToast(result.embedded ? '记忆已保存并向量化' : '记忆已保存，将使用关键词检索'); await render();
+                const rooms = getRoomLayout(result.node.characterId);
+                const customRoom = rooms.find(room => room.id === ui.room && isCustomRoom(room.id));
+                let roomError = '';
+                if (customRoom && !customRoom.nodeIds.includes(result.node.id)) {
+                    customRoom.nodeIds.push(result.node.id);
+                    try { await saveRoomLayout(result.node.characterId, rooms); }
+                    catch (error) { roomError = '记忆已保存，加入房间失败；请在全部房间重新整理'; ui.room = 'all'; renderRoomOptions(); }
+                }
+                showToast(roomError || (result.embedded ? '记忆已保存并向量化' : '记忆已保存，将使用关键词检索')); await render();
             } catch (error) { showToast(error.message || '保存失败'); }
             finally { button.disabled = false; }
         });
@@ -1228,7 +1417,7 @@
         document.getElementById('memory-palace-links-list')?.addEventListener('click', async event => {
             const button = event.target.closest('[data-link-action="delete"]');
             if (!button) return;
-            if (!confirm('确定删除这条关联吗？')) return;
+            if (!(await showAppConfirmDialog({ title: '确认删除', message: '确定删除这条关联吗？', confirmText: '删除', dismissText: '' }) === 'confirm')) return;
             await deleteLink(button.closest('[data-link-id]')?.dataset.linkId);
             const source = await getNode(ui.linksId);
             if (source) await openLinks(source);
@@ -1261,7 +1450,7 @@
             finally { button.disabled = false; }
         });
         document.getElementById('memory-palace-event-box-delete')?.addEventListener('click', async () => {
-            if (!ui.eventBoxId || !confirm('确定删除事件盒吗？其中的记忆不会被删除。')) return;
+            if (!ui.eventBoxId || !(await showAppConfirmDialog({ title: '确认删除', message: '确定删除事件盒吗？其中的记忆不会被删除。', confirmText: '删除', dismissText: '' }) === 'confirm')) return;
             try {
                 await deleteEventBox(ui.eventBoxId);
                 document.getElementById('memory-palace-event-box-modal').classList.remove('visible');
@@ -1284,7 +1473,7 @@
     }
 
     global.MemoryPalace = {
-        featureConfig, withTimeout, render,
+        featureConfig, withTimeout, render, getRoomLayout, saveRoomLayout,
         ensureSettings, listNodes, getNode, saveNode, deleteNode, reembed, search, prepareContext,
         getContext, combineContexts, buildQuery, open, setup, importData,
         parseExtractionReply, originalMessageEntry, runAutoArchive, checkAndTriggerAutoArchive,

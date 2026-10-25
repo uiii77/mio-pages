@@ -22,6 +22,9 @@
     function decodeTxt(buffer) {
         const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer || 0);
         if (bytes.byteLength > MAX_TXT_BYTES) throw new Error('TXT 文件不能超过 20 MB');
+        if (bytes[0] === 0x50 && bytes[1] === 0x4b && ((bytes[2] === 3 && bytes[3] === 4) || (bytes[2] === 5 && bytes[3] === 6) || (bytes[2] === 7 && bytes[3] === 8))) {
+            throw new Error('文件内容是 ZIP/DOCX/EPUB 压缩包，不能作为纯文本读取；请恢复正确扩展名后重新导入');
+        }
         let text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
         const replacementCount = (text.match(/\uFFFD/g) || []).length;
         if (replacementCount > Math.max(2, text.length * 0.002)) {

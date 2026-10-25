@@ -151,6 +151,45 @@
         return CHANGE_FIELDS.filter(field => !sameValue(before[field], after[field])).map(field => ({ field, before: before[field], after: after[field] }));
     }
 
+    function createManualSnapshot(value, scopeKey) {
+        const semester = clean(value?.semester, 80), startDate = clean(value?.startDate, 10);
+        if (!semester) throw new Error('请填写手工课表学期名称');
+        resolveDate(null, startDate);
+        const start = new Date(`${startDate}T00:00:00Z`);
+        if (start.getUTCDay() !== 1) throw new Error('学期开始日请选择第一教学周的周一');
+        const weekCount = Number(value.weekCount), sectionCount = Number(value.sectionCount);
+        if (!Number.isInteger(weekCount) || weekCount < 1 || weekCount > MAX_WEEK) throw new Error(`学期周数须为 1 至 ${MAX_WEEK}`);
+        if (!Number.isInteger(sectionCount) || sectionCount < 1 || sectionCount > MAX_SECTION) throw new Error(`每天节数须为 1 至 ${MAX_SECTION}`);
+        const weekDates = {};
+        for (let week = 1; week <= weekCount; week++) {
+            weekDates[week] = Array.from({ length: 7 }, (_, i) => {
+                const date = new Date(start.getTime() + ((week - 1) * 7 + i) * 86400000).toISOString().slice(0, 10);
+                resolveDate(null, date);
+                return { weekday: i + 1, date };
+            });
+        }
+        return { ...normalizeSnapshot({ provider: 'manual', scopeKey, semester, complete: true, courses: [] }),
+            coverage: 'weekly', weekDates, manualConfig: { startDate, weekCount, sectionCount } };
+    }
+
+    function validateManualAdjustment(snapshot, value) {
+        if (snapshot.provider !== 'manual') return;
+        const config = snapshot.manualConfig;
+        if (!config || !Number.isInteger(config.weekCount) || config.weekCount < 1 || config.weekCount > MAX_WEEK || !Number.isInteger(config.sectionCount) || config.sectionCount < 1 || config.sectionCount > MAX_SECTION) throw new Error('手工学期设置不完整，请核对课表来源');
+        if (value.week != null && value.week !== '' && (!Number.isInteger(Number(value.week)) || Number(value.week) < 1 || Number(value.week) > config.weekCount)) throw new Error('调整周次超出手工学期范围');
+        if (value.date && !resolveDate(snapshot, value.date).covered) throw new Error('调整日期超出手工学期范围');
+        const course = value.type === 'add' ? value.course : value.patch;
+        for (const [key, max, label] of [['weeks', config.weekCount, '教学周'], ['sections', config.sectionCount, '节次']]) {
+            if (course?.[key] == null) continue;
+            if (!Array.isArray(course[key])) {
+                const text = clean(course[key], 600).replace(/[，、；;]/g, ',').replace(/[～~至]/g, '-').replace(/[第周週节節()（）单双\s]/g, '');
+                if (!/^\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*$/.test(text) || text.split(',').some(part => { const [start, end] = part.split('-').map(Number); return end != null && start > end; })) throw new Error(`${label}格式无效，请填写数字或递增范围`);
+            }
+            const numbers = Array.isArray(course[key]) ? course[key].map(Number) : [...String(course[key]).matchAll(/\d+/g)].map(item => Number(item[0]));
+            if (!numbers.length || numbers.some(number => !Number.isInteger(number) || number < 1 || number > max)) throw new Error(`${label}须在手工学期的 1 至 ${max} 范围内`);
+        }
+    }
+
     function diffSnapshots(previousValue, nextValue) {
         const previous = normalizeSnapshot(previousValue);
         const next = normalizeSnapshot(nextValue);
@@ -264,10 +303,10 @@
         for (const day of days) {
             if (!day.covered) { lines.push(`${day.date}：日期未同步或映射不明确，不能判断有无课程。`); continue; }
             const stamp = Number(day.snapshot?.weekStatus?.[day.week]?.fetchedAt || day.snapshot?.fetchedAt);
-            lines.push(`${day.date} 第${day.week}周；缓存同步时间：${stamp > 0 && Number.isFinite(stamp) ? new Date(stamp).toISOString() : '未知'}（非实时）。`);
+            lines.push(day.snapshot?.provider === 'manual' ? `${day.date} 第${day.week}周；用户手工安排，未经教务核验。` : `${day.date} 第${day.week}周；缓存同步时间：${stamp > 0 && Number.isFinite(stamp) ? new Date(stamp).toISOString() : '未知'}（非实时）。`);
             if (day.missingCount) lines.push('有来源缺失课程保留待核对，不能视为已确认停课或仍正常上课。');
             if (day.conflicts?.length) lines.push('部分手动调整存在冲突，请在课表页核对。');
-            if (!day.courses.length) lines.push('当前已同步并应用手动调整的课表无课程。');
+            if (!day.courses.length) lines.push(day.snapshot?.provider === 'manual' ? '当前手工课表未安排课程。' : '当前已同步并应用手动调整的课表无课程。');
             for (const course of day.courses.slice(0, remaining)) {
                 const row = { 课程: clean(course.name, 80), 节次: course.sections, ...(grant.location ? { 教室: clean(course.location, 60) || '未提供' } : {}), ...(grant.teacher ? { 教师: clean(course.teacher, 40) || '未提供' } : {}) };
                 lines.push(JSON.stringify(row));
@@ -289,6 +328,7 @@
         VERSION, MAX_WEEK, MAX_SECTION, CHANGE_FIELDS,
         clean, stableHash, parseWeeks, parseSections, normalizeWeekday, normalizeTime,
         normalizeCourse, normalizeSnapshot, diffSnapshots, normalizeAdjustment,
+        createManualSnapshot, validateManualAdjustment,
         applyAdjustments, coursesForWeek, coursesForDay, resolveDate, normalizeShares, summaryForChat,
     });
 })(typeof window !== 'undefined' ? window : globalThis);

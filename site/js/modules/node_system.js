@@ -106,7 +106,9 @@ const NodeSystem = {
                 document.getElementById(`node-${e.target.dataset.tab}-list`).style.display = 'flex';
 
                 const isTemplate = e.target.dataset.tab === 'template';
-                document.getElementById('node-template-add-btn').style.display = isTemplate ? 'block' : 'none';
+                this.exitMultiSelectMode();
+                document.getElementById('node-template-add-btn').style.display = isTemplate ? 'flex' : 'none';
+                document.getElementById('node-archive-multi-select-btn').style.display = isTemplate ? 'none' : 'flex';
             });
         });
 
@@ -699,10 +701,10 @@ const NodeSystem = {
                 const selectedCards = document.querySelectorAll('#node-archive-list .node-card.selected');
                 if (selectedCards.length === 0) return;
 
-                if (!confirm(`确定要彻底删除选中的 ${selectedCards.length} 个节点记录吗？此操作不可恢复。`)) return;
-
                 const char = db.characters.find(c => c.id === currentChatId);
                 if (!char) return;
+
+                if (!(await showAppConfirmDialog({ title: '确认删除', message: `确定要彻底删除选中的 ${selectedCards.length} 个节点记录吗？此操作不可恢复。`, confirmText: '删除', dismissText: '' }) === 'confirm')) return;
 
                 let deletedCount = 0;
                 selectedCards.forEach(card => {
@@ -739,7 +741,7 @@ const NodeSystem = {
         const bar = document.getElementById('node-multi-select-bar');
         if (bar) bar.style.display = 'none';
         const multiSelectBtn = document.getElementById('node-archive-multi-select-btn');
-        if (multiSelectBtn) multiSelectBtn.style.display = 'block';
+        if (multiSelectBtn) multiSelectBtn.style.display = document.querySelector('.node-tab.active')?.dataset.tab === 'template' ? 'none' : 'flex';
         
         document.querySelectorAll('#node-archive-list .node-card').forEach(card => {
             card.classList.remove('selected');
@@ -834,10 +836,10 @@ const NodeSystem = {
     },
 
     async deleteArchivedNode(nodeId) {
-        if (!confirm('确定要彻底删除该节点的记录吗？此操作不可恢复。')) return;
-
         const char = db.characters.find(c => c.id === currentChatId);
         if (!char) return;
+        if (!(await showAppConfirmDialog({ title: '确认删除', message: '确定要彻底删除该节点的记录吗？此操作不可恢复。', confirmText: '删除', dismissText: '' }) === 'confirm')) return;
+
 
         const nodeIndex = char.nodes.findIndex(n => n.id === nodeId);
         if (nodeIndex === -1) return;
@@ -1363,7 +1365,7 @@ const NodeSystem = {
     },
 
     async deleteTemplate(tplId) {
-        if (!confirm('确定删除该模板吗？')) return;
+        if (!(await showAppConfirmDialog({ title: '确认删除', message: '确定删除该模板吗？', confirmText: '删除', dismissText: '' }) === 'confirm')) return;
         
         db.nodeTemplates = db.nodeTemplates.filter(t => t.id !== tplId);
         await saveData();

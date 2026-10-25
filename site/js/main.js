@@ -37,7 +37,9 @@ const init = async () => {
         const backBtn = e.target.closest('.back-btn');
         if (backBtn) {
             e.preventDefault();
-            switchScreen(backBtn.getAttribute('data-target'));
+            // Legacy menu entries reuse back-btn styling for forward navigation.
+            if (backBtn.closest('header, .app-header')) MioNavigation.back(backBtn.getAttribute('data-target'));
+            else switchScreen(backBtn.getAttribute('data-target'));
         }
 
         const openOverlay = document.querySelector('.modal-overlay.visible, .action-sheet-overlay.visible');
@@ -57,7 +59,7 @@ const init = async () => {
                 return;
             }
             if (target === 'music-screen') { void window.MioMusic.open(); return; }
-            if (target === 'diary-screen' || target === 'piggy-bank-screen') {
+            if (target === 'diary-screen') {
                 showToast('该应用正在开发中，敬请期待！');
                 return;
             }

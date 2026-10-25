@@ -531,3 +531,12 @@
     margin-right: 8px;
     cursor: pointer;
 }
+
+#node-system-screen .node-header-actions { gap:8px; }
+#node-system-screen .node-context-actions { display:flex; align-items:center; padding-right:8px; border-right:1px solid #e7e7e7; }
+#node-system-screen .app-header { padding-inline:12px; }
+#node-system-screen .app-header .title-container { max-width:calc(100% - 208px); }
+#node-system-screen .app-header .title { font-size:16px; white-space:nowrap; }
+#node-system-screen .node-header-actions .action-btn { width:36px; height:40px; }
+#node-system-screen .node-multi-select-bar, #node-system-screen .node-multi-select-actions { flex-wrap:wrap; }
+#node-system-screen .node-tab.active { color:var(--text-color, #333); }

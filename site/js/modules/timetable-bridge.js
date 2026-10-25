@@ -3,6 +3,7 @@
     'use strict';
     const pending = new Map();
     let connection = null, unregister = null;
+    let diagnostic = { code: 'unchecked', checkedAt: 0 };
     const AUTO_INTERVAL = 15 * 60 * 1000;
     let autoTimer = null, autoGeneration = 0, autoRunning = false, autoStatus = 'unavailable';
     function publishAutoStatus(value) {
@@ -55,7 +56,7 @@
     function request(action, args = {}, timeout = 35000) {
         return new Promise((resolve, reject) => {
             const id = global.crypto.randomUUID();
-            const timer = setTimeout(() => { pending.delete(id); reject(error('unavailable')); }, timeout);
+            const timer = setTimeout(() => { pending.delete(id); reject(error('timeout')); }, timeout);
             pending.set(id, { resolve, reject, timer });
             global.postMessage({ channel: 'mio-timetable', direction: 'request', id, action, ...args }, global.location.origin);
         });
@@ -69,11 +70,12 @@
         if (data.response?.ok) task.resolve(data.response.result);
         else task.reject(error(['authorization-required', 'invalid-response'].includes(data.response?.code) ? data.response.code : 'unavailable'));
     });
-    function drop() { cancelAuto(); connection = null; unregister?.(); unregister = null; publishAutoStatus('unavailable'); }
+    function drop() { cancelAuto(); connection = null; unregister?.(); unregister = null; diagnostic = { code: 'unavailable', checkedAt: Date.now() }; publishAutoStatus('unavailable'); }
     async function probe() {
         try {
             const state = await request('status', {}, 1800);
-            if (!state || typeof state.scopeKey !== 'string' || !state.scopeKey || state.scopeKey.length > 120) throw error('unavailable');
+            if (!state || typeof state.scopeKey !== 'string' || !state.scopeKey || state.scopeKey.length > 120 || typeof state.ready !== 'boolean'
+                || state.ready && (typeof state.semester !== 'string' || !state.semester || state.semester.length > 120 || !Number.isInteger(state.week) || state.week < 1 || state.week > 60)) throw error('invalid-response');
             if (connection?.scopeKey !== state.scopeKey) {
                 drop();
                 unregister = global.Timetable.registerProvider('sdmu-weekly', {
@@ -88,10 +90,11 @@
                     },
                 });
             }
-            connection = state;
+            connection = { scopeKey: state.scopeKey, ready: state.ready, semester: state.semester, week: state.week };
+            diagnostic = { code: state.ready ? 'ready' : 'query-required', checkedAt: Date.now() };
             void scheduleAuto();
-            return { ...state };
-        } catch { drop(); return null; }
+            return { ...connection };
+        } catch (failure) { drop(); diagnostic = { code: failure.code || 'unavailable', checkedAt: Date.now() }; return null; }
     }
     async function refresh() {
         const state = await probe();
@@ -104,6 +107,7 @@
     global.addEventListener('online', () => { void scheduleAuto(); });
     global.addEventListener('pagehide', cancelAuto);
     global.TimetableBridge = Object.freeze({ probe, refresh, scheduleAuto,
+        getStatus() { return { ...diagnostic, ...(connection || {}) }; },
         autoStatus(scopeKey) { return connection?.scopeKey === scopeKey ? autoStatus : 'unavailable'; },
     });
 })(window);

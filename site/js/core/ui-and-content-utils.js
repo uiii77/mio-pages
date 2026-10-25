@@ -392,7 +392,79 @@ const showToast = (notification) => {
     processToastQueue();
 };
 
+const appDialogDismissers = new WeakMap();
+
+function watchAppDialog(overlay, dismiss) {
+    const observer = new MutationObserver(() => {
+        if (!overlay.isConnected || !overlay.classList.contains('visible')) dismiss();
+    });
+    observer.observe(overlay, { attributes: true, attributeFilter: ['class'] });
+    observer.observe(document.body, { childList: true });
+    appDialogDismissers.set(overlay, dismiss);
+    return () => { observer.disconnect(); appDialogDismissers.delete(overlay); };
+}
+
+function showAppFormDialog(options = {}) {
+    const existing = document.getElementById('app-form-dialog');
+    if (existing?.classList.contains('visible')) return Promise.resolve(null);
+    if (existing) appDialogDismissers.get(existing)?.();
+    const previousFocus = document.activeElement;
+    return new Promise(resolve => {
+        const overlay = document.createElement('div');
+        overlay.id = 'app-form-dialog'; overlay.className = 'modal-overlay app-confirm-dialog visible';
+        const form = document.createElement('form'); form.className = 'modal-window app-confirm-dialog-window app-form-dialog';
+        form.setAttribute('role','dialog'); form.setAttribute('aria-modal','true'); form.setAttribute('aria-labelledby','app-form-title'); form.noValidate=true;
+        const title = document.createElement('h3'); title.id='app-form-title'; title.textContent=options.title || '编辑'; form.append(title);
+        if(options.message){const hint=document.createElement('p');hint.className='app-confirm-dialog-message';hint.textContent=options.message;form.append(hint);}
+        const inputs = new Map();
+        for (const field of options.fields || []) {
+            const label=document.createElement('label');label.className='app-form-field';label.append(document.createTextNode(field.label || field.name));
+            const input=document.createElement(field.type==='textarea'?'textarea':field.type==='select'?'select':'input');
+            if(input.tagName==='INPUT')input.type=field.type || 'text';
+            input.name=field.name; input.required=!!field.required;
+            for(const key of ['placeholder','min','max','step','maxLength','autocomplete'])if(field[key]!=null)input[key]=field[key];
+            if(field.type==='select')for(const item of field.options || [])input.append(new Option(item.label ?? item.name ?? String(item),item.value ?? item.code ?? String(item)));
+            input.value=field.value ?? '';if(field.type==='checkbox')input.checked=!!field.value;
+            label.append(input);form.append(label);inputs.set(field.name,input);
+        }
+        const error=document.createElement('p');error.className='app-form-error';error.setAttribute('role','alert');form.append(error);
+        const actions=document.createElement('div');actions.className='app-confirm-dialog-actions';
+        const cancel=document.createElement('button');cancel.type='button';cancel.className='app-confirm-dialog-btn ghost';cancel.textContent='取消';
+        const submit=document.createElement('button');submit.type='submit';submit.className='app-confirm-dialog-btn primary';submit.textContent=options.confirmText || '保存';
+        actions.append(cancel,submit);form.append(actions);overlay.append(form);document.body.append(overlay);
+        let settled = false;
+        const finish = (value, restoreFocus = true) => {
+            if (settled) return;
+            settled = true;
+            stopWatching();
+            document.removeEventListener('keydown', keydown, true);
+            overlay.remove();
+            if (restoreFocus && previousFocus?.isConnected) previousFocus.focus({preventScroll:true});
+            resolve(value);
+        };
+        const keydown=event=>{
+            if(event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();finish(null);}
+            if(event.key==='Tab'){
+                const nodes=[...form.querySelectorAll('input,textarea,select,button')].filter(n=>!n.disabled);
+                const first=nodes[0],last=nodes.at(-1);
+                if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}
+                else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}
+            }
+        };
+        const stopWatching = watchAppDialog(overlay, () => finish(null, false));
+        cancel.onclick=()=>finish(null);overlay.onclick=event=>{if(event.target===overlay)finish(null);};
+        form.onsubmit=event=>{
+            event.preventDefault(); const invalid=[...inputs.values()].find(input=>!input.checkValidity());
+            if(invalid){error.textContent='请检查必填内容或输入范围';invalid.focus();return;}
+            finish(Object.fromEntries([...inputs].map(([key,input])=>[key,input.type==='checkbox'?input.checked:input.value])));
+        };
+        document.addEventListener('keydown',keydown,true);
+        requestAnimationFrame(()=>{if(!settled && form.isConnected)(inputs.values().next().value || submit).focus({preventScroll:true});});
+    });
+}
+
 function showAppConfirmDialog(options = {}) {
+    const previousFocus = document.activeElement;
     const {
         title = '请确认',
         message = '',
@@ -404,6 +476,8 @@ function showAppConfirmDialog(options = {}) {
 
     return new Promise((resolve) => {
         let overlay = document.getElementById('app-confirm-dialog');
+        // Reusing the overlay must never let a later click confirm an older request.
+        if (overlay) appDialogDismissers.get(overlay)?.();
         if (!overlay) {
             overlay = document.createElement('div');
             overlay.id = 'app-confirm-dialog';
@@ -440,6 +514,7 @@ function showAppConfirmDialog(options = {}) {
         let settled = false;
 
         const cleanup = () => {
+            stopWatching();
             overlay.classList.remove('visible');
             overlay.removeEventListener('click', handleOverlayClick);
             confirmBtn.removeEventListener('click', onConfirm);
@@ -448,29 +523,38 @@ function showAppConfirmDialog(options = {}) {
             document.removeEventListener('keydown', handleKeydown, true);
         };
 
-        const finish = (result) => {
+        const finish = (result, restoreFocus = true) => {
             if (settled) return;
             settled = true;
             cleanup();
+            if (restoreFocus && previousFocus?.isConnected) previousFocus.focus({preventScroll:true});
             resolve(result);
         };
 
         const handleOverlayClick = (event) => {
-            if (event.target === overlay && allowBackdropClose) {
-                finish('dismiss');
+            if (event.target === overlay) {
+                event.stopPropagation();
+                if (allowBackdropClose) finish('dismiss');
             }
         };
 
         const handleKeydown = (event) => {
             if (event.key === 'Escape') {
                 event.preventDefault();
+                event.stopImmediatePropagation();
                 finish(allowBackdropClose ? 'dismiss' : 'cancel');
+            }
+            if (event.key === 'Tab') {
+                const buttons = [dismissBtn, cancelBtn, confirmBtn].filter(button => button.style.display !== 'none' && !button.disabled);
+                if(event.shiftKey && document.activeElement===buttons[0]){event.preventDefault();buttons.at(-1).focus();}
+                else if(!event.shiftKey && document.activeElement===buttons.at(-1)){event.preventDefault();buttons[0].focus();}
             }
         };
 
         const onConfirm = () => finish('confirm');
         const onCancel = () => finish('cancel');
         const onDismiss = () => finish('dismiss');
+        const stopWatching = watchAppDialog(overlay, () => finish('dismiss', false));
 
         overlay.addEventListener('click', handleOverlayClick);
         confirmBtn.addEventListener('click', onConfirm);
@@ -480,7 +564,7 @@ function showAppConfirmDialog(options = {}) {
 
         overlay.classList.add('visible');
         requestAnimationFrame(() => {
-            (confirmBtn || dialogWindow).focus();
+            if (!settled) (confirmBtn || dialogWindow).focus();
         });
     });
 }

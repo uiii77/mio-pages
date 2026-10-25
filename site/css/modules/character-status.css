@@ -1,0 +1,29 @@
+#schedule-screen { min-height: 0; }
+.character-status-tabs { display: flex; gap: 6px; padding: 10px 15px; border-bottom: 1px solid var(--border-color, #eee); }
+.character-status-tabs button { flex: 1; padding: 10px; border: 0; border-radius: 10px; background: transparent; color: var(--text-color); font: inherit; }
+.character-status-tabs [aria-selected="true"] { background: var(--primary-color, #d9eaf4); font-weight: 600; }
+.character-status-tabs button:focus-visible { outline: 2px solid var(--text-color); outline-offset: 2px; }
+.character-status-panel { flex: 1; min-height: 0; overflow-y: auto; }
+.character-status-panel[hidden] { display: none; }
+.character-status-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+#character-status-settings-btn { font-size: 13px; width: auto; padding-inline: 10px; }
+#schedule-screen .schedule-row-content { min-width: 0; overflow-wrap: anywhere; }
+#schedule-screen .emotion-buff-fields { min-width: 0; }
+#schedule-screen :is(.emotion-content, .schedule-content) { padding-bottom: max(24px, env(safe-area-inset-bottom)); }
+#emotion-open-btn[hidden] { display: none !important; }
+#emotion-screen [hidden] { display: none !important; }
+.emotion-status-heading { margin: 4px 0 18px; }
+#emotion-screen .emotion-summary { margin: 0 0 6px; color: var(--text-color, #333); font-size: 19px; font-weight: 600; }
+.emotion-updated-at { margin: 0; color: var(--mio-copy-muted, #888); font-size: 12px; }
+.emotion-state-list { display: grid; gap: 10px; }
+.emotion-state-item { padding: 16px; border: 1px solid var(--border-color, #eee); border-radius: 14px; background: var(--mio-surface, #fff); }
+.emotion-state-item > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.emotion-state-item strong { min-width: 0; overflow-wrap: anywhere; font-size: 17px; }
+.emotion-state-item small { flex-shrink: 0; padding: 4px 9px; border-radius: 12px; background: var(--primary-color, #d9eaf4); font-size: 12px; }
+.emotion-state-item p, .emotion-note p { margin: 10px 0 0; color: var(--mio-copy-muted, #777); font-size: 13px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+.emotion-note { margin-top: 22px; padding-inline: 4px; }
+.emotion-note h3 { margin: 0; font-size: 13px; font-weight: 600; }
+#emotion-screen .emotion-buff-fields { width: 100%; grid-template-columns: minmax(0, 1fr) 108px; }
+#emotion-screen .emotion-buff-fields label { display: flex; flex-direction: column; gap: 6px; min-width: 0; font-size: 12px; color: var(--mio-copy-muted, #777); }
+#emotion-screen .emotion-buff-fields label:last-child { grid-column: 1 / -1; }
+.emotion-edit-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 18px 0 12px; }

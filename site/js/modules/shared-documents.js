@@ -402,7 +402,7 @@
         const heading = document.createElement('div');
         heading.className = 'shared-document-block-heading';
         const label = document.createElement('span');
-        label.textContent = `段落 ${position + 1} · ${block.id.slice(-8)}`;
+        label.textContent = `段落 ${position + 1}`;
         const controls = document.createElement('div');
         controls.className = 'shared-document-block-controls';
         [['↑', 'up'], ['↓', 'down'], ['删除', 'remove']].forEach(([caption, action]) => {
@@ -588,18 +588,31 @@
         await render();
     }
 
+    async function saveForm(options, save) {
+        let fields = options.fields;
+        while (true) {
+            const values = await global.showAppFormDialog({ ...options, fields });
+            if (!values) return null;
+            fields = fields.map(field => ({ ...field, value: values[field.name] }));
+            try { return await save(values); }
+            catch (error) { notify(error?.message || '保存失败，请重试。'); }
+        }
+    }
+
     async function newDocument() {
         if (state.busy || !state.sessionId) return;
         const session = await global.Collaboration?.getSession?.(state.sessionId);
         if (!session) return notify('请先选择协同会话。');
         const suggested = '未命名共享文档';
-        const title = typeof global.prompt === 'function' ? global.prompt('共享文档名称', suggested) : suggested;
-        if (title === null) return;
         state.busy = true;
         try {
-            const created = await createDocument(session, { title: title.trim() || suggested });
-            state.documentId = created.id;
-            await render();
+            const created = await saveForm({ title: '新建共享文档', fields: [{ name: 'title', label: '文档名称', value: suggested }], confirmText: '创建' },
+                values => createDocument(session, { title: values.title.trim() || suggested }));
+            if (!created) return;
+            if (state.sessionId === session.id) {
+                state.documentId = created.id;
+                await render();
+            }
             notify('共享文档已创建。');
         } catch (error) {
             console.error('[SharedDocuments] create failed:', error);
@@ -609,12 +622,15 @@
 
     async function saveCurrent() {
         if (state.busy || !state.documentId) return;
+        const draft = collectDraft();
         state.busy = true;
         setStatus('正在保存…', 'busy');
         try {
-            const result = await saveDocument({ ...collectDraft(), reason: 'save' });
-            state.expectedRevision = result.document.revision;
-            await render();
+            const result = await saveDocument({ ...draft, reason: 'save' });
+            if (state.documentId === draft.documentId) {
+                state.expectedRevision = result.document.revision;
+                await render();
+            }
             notify(`已保存为 v${result.document.revision}。`);
         } catch (error) {
             console.error('[SharedDocuments] save failed:', error);
@@ -625,15 +641,19 @@
 
     async function restoreCurrent() {
         if (state.busy || !state.documentId) return;
+        const documentId = state.documentId;
+        const expectedRevision = state.expectedRevision;
         const revisionNumber = Number(byId('shared-document-revision-select')?.value);
         if (!revisionNumber) return;
-        if (typeof global.confirm === 'function' && !global.confirm(`恢复 v${revisionNumber}？当前内容不会被删除，恢复结果会保存为一个新版本。`)) return;
+        if (await global.showAppConfirmDialog({ title: `恢复 v${revisionNumber}`, message: '当前内容不会被删除，恢复结果会保存为一个新版本。', confirmText: '恢复', dismissText: '' }) !== 'confirm') return;
         state.busy = true;
         setStatus(`正在恢复 v${revisionNumber}…`, 'busy');
         try {
-            const result = await restoreRevision(state.documentId, revisionNumber, state.expectedRevision);
-            state.expectedRevision = result.document.revision;
-            await render();
+            const result = await restoreRevision(documentId, revisionNumber, expectedRevision);
+            if (state.documentId === documentId) {
+                state.expectedRevision = result.document.revision;
+                await render();
+            }
             notify(`已从 v${revisionNumber} 恢复为 v${result.document.revision}。`);
         } catch (error) {
             console.error('[SharedDocuments] restore failed:', error);
@@ -651,13 +671,14 @@
     }
 
     async function addCommentForBlock(blockId) {
-        const block = await blockFor(state.documentId, blockId);
+        const documentId = state.documentId;
+        const block = await blockFor(documentId, blockId);
         if (!block) return notify('目标段落已不存在，请重新载入文档。');
-        const content = typeof global.prompt === 'function' ? global.prompt('给这一段添加批注', '') : '';
-        if (content === null || !content.trim()) return;
         try {
-            await createComment({ documentId: state.documentId, blockId, content, authorName: '我' });
-            await render();
+            const saved = await saveForm({ title: '添加批注', fields: [{ name: 'content', label: '批注内容', type: 'textarea', required: true }], confirmText: '保存' },
+                values => createComment({ documentId, blockId, content: values.content, authorName: '我' }));
+            if (!saved) return;
+            if (state.documentId === documentId) await render();
             notify('批注已保存。');
         } catch (error) {
             console.error('[SharedDocuments] comment failed:', error);
@@ -666,15 +687,18 @@
     }
 
     async function addSuggestionForBlock(blockId) {
-        const block = await blockFor(state.documentId, blockId);
+        const documentId = state.documentId;
+        const block = await blockFor(documentId, blockId);
         if (!block) return notify('目标段落已不存在，请重新载入文档。');
-        const replacement = typeof global.prompt === 'function' ? global.prompt('建议替换为（可留空表示清空这一段）', block.text) : block.text;
-        if (replacement === null) return;
-        const note = typeof global.prompt === 'function' ? global.prompt('修改说明（可留空）', '') : '';
-        if (note === null) return;
+        const options = { title: '修改建议', fields: [
+            { name: 'replacement', label: '建议替换为（留空表示清空这一段）', type: 'textarea', value: block.text },
+            { name: 'note', label: '修改说明', type: 'textarea' },
+        ], confirmText: '保存建议' };
         try {
-            await createSuggestion({ documentId: state.documentId, blockId, originalText: block.text, replacementText: replacement, note, authorName: '我' });
-            await render();
+            const saved = await saveForm(options,
+                values => createSuggestion({ documentId, blockId, originalText: block.text, replacementText: values.replacement, note: values.note, authorName: '我' }));
+            if (!saved) return;
+            if (state.documentId === documentId) await render();
             notify('修改建议已保存，等待接受或拒绝。');
         } catch (error) {
             console.error('[SharedDocuments] suggestion failed:', error);

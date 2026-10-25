@@ -187,10 +187,17 @@
 
     async function deleteSpace() {
         if (!state.characterId || !spaces() || !itemsTable()) return false;
-        if (!global.confirm?.('确定删除该角色的情侣空间及其中的纪念日、便签、愿望和里程碑吗？聊天、日记、钱包、记忆和生理期数据不会删除。')) return false;
-        const records = await itemsTable().where('characterId').equals(state.characterId).toArray();
+        const characterId = state.characterId;
+        if (await global.showAppConfirmDialog({
+            title: '删除情侣空间',
+            message: '确定删除该角色的情侣空间及其中的纪念日、便签、愿望和里程碑吗？聊天、日记、钱包、记忆和生理期数据不会删除。',
+            confirmText: '删除空间', cancelText: '取消', dismissText: '',
+        }) !== 'confirm') return false;
+        if (state.characterId !== characterId) { notify('角色已切换，请重新确认'); return false; }
+        const records = await itemsTable().where('characterId').equals(characterId).toArray();
         if (records.length) await itemsTable().bulkDelete(records.map(item => item.id));
-        await spaces().delete(core().spaceId(state.characterId));
+        await spaces().delete(core().spaceId(characterId));
+        if (state.characterId !== characterId) return true;
         state.space = core().normalizeSpace(null, state.characterId);
         state.items = [];
         state.editingId = '';
@@ -241,7 +248,11 @@
     }
 
     async function deleteItem(id) {
-        if (!itemsTable() || !global.confirm?.('确定删除这条情侣空间内容吗？')) return false;
+        if (!itemsTable()) return false;
+        if (await global.showAppConfirmDialog({
+            title: '删除共同内容', message: '确定删除这条情侣空间内容吗？',
+            confirmText: '删除内容', cancelText: '取消', dismissText: '',
+        }) !== 'confirm') return false;
         await itemsTable().delete(id);
         state.items = state.items.filter(item => item.id !== id);
         if (state.editingId === id) state.editingId = '';

@@ -563,20 +563,27 @@ function addWalletDraftTransaction(opts) {
     db.piggyBank.balance = Math.max(0, db.piggyBank.balance);
 }
 
+function renderPiggyBalances(accounts,preferred='CNY') {
+    const currency=CurrencyCore.currency(preferred),account=accounts.find(row=>row.currency===currency);
+    const balance=document.getElementById('piggy-bank-balance-display'),label=document.querySelector('.piggy-bank-balance-label'),other=document.getElementById('piggy-bank-other-balances');
+    balance.textContent=Number.isSafeInteger(account?.balanceMinor)?CurrencyCore.formatMinor(account.balanceMinor,currency):'—';
+    if(label)label.textContent=CurrencyCore.meta(currency).name+'余额 · '+currency;
+    if(other){other.replaceChildren();for(const row of accounts.filter(row=>row.currency!==currency)){const item=document.createElement('span');item.textContent=CurrencyCore.meta(row.currency).name+' · '+(Number.isSafeInteger(row.balanceMinor)?CurrencyCore.formatMinor(row.balanceMinor,row.currency):'待核对');other.append(item);}}
+}
 let piggyLedgerGeneration=0;
 async function renderLedgerPiggyBank(){
     const generation=++piggyLedgerGeneration,balance=document.getElementById('piggy-bank-balance-display'),list=document.getElementById('piggy-bank-transaction-list'),empty=document.getElementById('piggy-bank-empty-hint');
-    balance.textContent='…';list.replaceChildren();empty.style.display='none';
+    balance.textContent='…';document.getElementById('piggy-bank-other-balances')?.replaceChildren();list.replaceChildren();empty.textContent='暂无收支记录';empty.style.display='none';
     for(const id of ['piggy-bank-delete-btn','piggy-bank-delete-toolbar']){const el=document.getElementById(id);if(el)el.style.display='none';}
     try{
         const read=await WalletSystem.read('user');if(!read.ok)throw Error('READ_FAILED');
         const rows=await WalletSystem.history('user',0,piggyVisibleCount>100?100:piggyVisibleCount);
         if(generation!==piggyLedgerGeneration)return;
-        const account=read.data.accounts.find(row=>row.currency==='CNY');balance.textContent=Number.isSafeInteger(account?.balanceMinor)?CurrencyCore.formatMinor(account.balanceMinor,'CNY'):'—';
-        const filter=document.querySelector('.piggy-tab.active')?.dataset.piggyTab||'all';let offset=rows.length;
-        function append(entries){for(const row of entries){if(filter==='income'&&row.deltaMinor<0||filter==='expense'&&row.deltaMinor>=0)continue;const li=document.createElement('li');li.className='piggy-bank-list-item';const info=document.createElement('div');info.className='piggy-item-left';const label=document.createElement('div');label.className='piggy-item-remark';label.textContent=row.deltaMinor<0?'支出':'收入';const date=document.createElement('div');date.className='piggy-item-meta';date.textContent=new Date(row.occurredAt).toLocaleString();info.append(label,date);const amount=document.createElement('span');amount.className='piggy-item-amount '+(row.deltaMinor<0?'expense':'income');amount.textContent=(row.deltaMinor<0?'-':'+')+CurrencyCore.formatMinor(Math.abs(row.deltaMinor),row.currency);li.append(info,amount);list.append(li);}}
-        append(rows);empty.style.display=rows.length?'none':'block';
-        if(rows.length>=50){const more=document.createElement('button');more.className='btn btn-secondary';more.textContent='更早的收支';list.append(more);more.onclick=async()=>{more.disabled=true;try{const next=await WalletSystem.history('user',offset,50);if(generation!==piggyLedgerGeneration)return;offset+=next.length;more.remove();append(next);if(next.length===50)list.append(more);}catch{showToast('读取失败，请重试');}finally{more.disabled=false;}};}
+        renderPiggyBalances(read.data.accounts,read.data.defaultCurrency);
+        const filter=document.querySelector('[data-piggy-tab].active')?.dataset.piggyTab||'all';let offset=rows.length;
+        function append(entries){for(const row of entries){if(filter==='income'&&row.deltaMinor<0||filter==='expense'&&row.deltaMinor>=0)continue;const li=document.createElement('li');li.className='piggy-bank-list-item';const info=document.createElement('div');info.className='piggy-item-left';const label=document.createElement('div');label.className='piggy-item-remark';label.textContent=row.deltaMinor<0?'支出':'收入';const date=document.createElement('div');date.className='piggy-item-meta';date.textContent=new Date(row.occurredAt).toLocaleString()+' · '+row.currency;info.append(label,date);const amount=document.createElement('span');amount.className='piggy-item-amount '+(row.deltaMinor<0?'expense':'income');amount.textContent=(row.deltaMinor<0?'-':'+')+CurrencyCore.formatMinor(Math.abs(row.deltaMinor),row.currency);li.append(info,amount);list.append(li);}}
+        append(rows);empty.style.display=list.children.length?'none':'block';
+        if(rows.length>=50){const more=document.createElement('button');more.className='btn btn-secondary';more.textContent='更早的收支';list.append(more);more.onclick=async()=>{more.disabled=true;try{const next=await WalletSystem.history('user',offset,50);if(generation!==piggyLedgerGeneration)return;offset+=next.length;more.remove();append(next);empty.style.display=list.children.length?'none':'block';if(next.length===50)list.append(more);}catch{showToast('读取失败，请重试');}finally{more.disabled=false;}};}
     }catch{if(generation===piggyLedgerGeneration){balance.textContent='—';empty.textContent='钱包暂时无法读取，请重新打开';empty.style.display='block';}}
 }
 let piggyVisibleCount=50;
@@ -590,10 +597,12 @@ function renderPiggyBankScreen() {
     if (!balanceEl || !listEl) return;
 
     const balance = getPiggyBalance();
-    balanceEl.textContent = (balance % 1 === 0 ? balance : balance.toFixed(2)).toString();
+    const bank=db.piggyBank||{};
+    renderPiggyBalances([{currency:'CNY',balanceMinor:CurrencyCore.amountToMinor(String(balance),'CNY')},...Object.values(bank.currencyWallet?.accounts||{}).filter(row=>row.currency!=='CNY'&&CurrencyCore.isSupported(row.currency))],bank.currency||bank.currencyWallet?.defaultCurrency);
+    emptyEl.textContent='暂无收支记录';
 
     const isDeleteMode = screen && screen.classList.contains('piggy-bank-delete-mode');
-    const filter = (document.querySelector('.piggy-tab.active') || {}).dataset?.piggyTab || 'all';
+    const filter = (document.querySelector('[data-piggy-tab].active') || {}).dataset?.piggyTab || 'all';
     let transactions = (db.piggyBank && db.piggyBank.transactions) ? db.piggyBank.transactions.filter(row=>!row.hidden) : [];
     if (filter === 'income') transactions = transactions.filter(t => t.type === 'income');
     else if (filter === 'expense') transactions = transactions.filter(t => t.type === 'expense');
@@ -753,14 +762,15 @@ function openFamilyCardDetail(cardId, isReceived) {
     }
     const notifyCb = content.querySelector('#fc-detail-notify');
     if (notifyCb && !isReceived) notifyCb.checked = !!card.notifyOnCharge;
-    content.querySelector('#fc-detail-adjust-btn') && content.querySelector('#fc-detail-adjust-btn').addEventListener('click', () => {
-        const val = prompt('输入新额度（元）', String(card.limit));
-        if (val === null) return;
-        const n = parseInt(val, 10);
-        if (isNaN(n) || n < 0) { showToast('请输入有效金额'); return; }
+    content.querySelector('#fc-detail-adjust-btn') && content.querySelector('#fc-detail-adjust-btn').addEventListener('click', async () => {
+        const values=await showAppFormDialog({title:'调整亲属卡额度',fields:[{name:'limit',label:'新额度（人民币元）',type:'number',value:String(card.limit),min:0,step:1,required:true}],confirmText:'保存额度'});
+        if(values===null)return;
+        const minor=CurrencyCore.amountToMinor(values.limit,'CNY'),n=minor/100;
+        if(minor===null||!Number.isSafeInteger(n)){showToast('请输入有效的整数额度');return;}
+        if(getFamilyCardById(cardId,isReceived)!==card){showToast('亲属卡已变化，请重新打开');return;}
         card.limit = n;
         card.statusChangedBy = 'user';
-        void persistWalletState();
+        if(!await persistWalletState())return;
         showToast('额度已调整');
         openFamilyCardDetail(cardId, isReceived);
     });
@@ -771,11 +781,12 @@ function openFamilyCardDetail(cardId, isReceived) {
         showToast('已冻结');
         openFamilyCardDetail(cardId, isReceived);
     });
-    content.querySelector('#fc-detail-revoke-btn') && content.querySelector('#fc-detail-revoke-btn').addEventListener('click', () => {
-        if (!confirm('确定收回这张亲属卡？')) return;
+    content.querySelector('#fc-detail-revoke-btn') && content.querySelector('#fc-detail-revoke-btn').addEventListener('click', async () => {
+        if(await showAppConfirmDialog({title:'收回亲属卡',message:'确定收回这张亲属卡？',confirmText:'收回',dismissText:''})!=='confirm')return;
+        if(getFamilyCardById(cardId,isReceived)!==card){showToast('亲属卡已变化，请重新打开');return;}
         card.status = 'revoked';
         card.statusChangedBy = 'user';
-        void persistWalletState();
+        if(!await persistWalletState())return;
         showToast('已收回');
         switchScreen('piggy-bank-screen');
         if (typeof renderPiggyBankScreen === 'function') renderPiggyBankScreen();
@@ -865,9 +876,16 @@ function setupPiggyBankApp() {
         renderPiggyBankScreen();
     });
 
-    document.querySelectorAll('.piggy-tab').forEach(tab => {
+    WalletSystem.openView=view=>{switchScreen('piggy-bank-screen');document.querySelector('[data-piggy-view="'+(view==='settings'?'settings':'records')+'"]').click();};
+    document.querySelectorAll('[data-piggy-view]').forEach(tab=>tab.addEventListener('click',()=>{
+        const view=tab.dataset.piggyView;
+        for(const button of document.querySelectorAll('[data-piggy-view]')){const selected=button===tab;button.classList.toggle('active',selected);button.setAttribute('aria-pressed',String(selected));}
+        document.getElementById('piggy-records-section').hidden=view!=='records';
+        document.getElementById('piggy-settings-section').hidden=view!=='settings';
+    }));
+    document.querySelectorAll('[data-piggy-tab]').forEach(tab => {
         tab.addEventListener('click', () => {
-            document.querySelectorAll('.piggy-tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('[data-piggy-tab]').forEach(t => t.classList.remove('active'));
             tab.classList.add('active');
             piggyVisibleCount=50;
             renderPiggyBankScreen();
@@ -916,7 +934,7 @@ function setupPiggyBankApp() {
             if (typeof showToast === 'function') showToast('请先勾选要删除的记录');
             return;
         }
-        if (!confirm(`确定删除选中的 ${ids.length} 条账单记录吗？`)) return;
+        if(await showAppConfirmDialog({title:'删除账单记录',message:`确定删除选中的 ${ids.length} 条账单记录吗？余额不会改变。`,confirmText:'删除记录',dismissText:''})!=='confirm')return;
         const count = await deletePiggyTransactions(ids);
         if (typeof showToast === 'function') showToast(count ? `已删除 ${count} 条记录` : '删除失败');
         await persistWalletState();
@@ -1108,7 +1126,7 @@ function setupPiggyBankApp() {
                 if (typeof showToast === 'function') showToast('请先勾选要删除的亲属卡');
                 return;
             }
-            if (!confirm('确定删除选中的 ' + ids.length + ' 张亲属卡？删除后角色将不再记得这张卡。')) return;
+            if(await showAppConfirmDialog({title:'删除亲属卡',message:'确定删除选中的 '+ids.length+' 张亲属卡？删除后角色将不再记得这张卡。',confirmText:'删除',dismissText:''})!=='confirm')return;
             const count = deleteFamilyCards(ids);
             if (typeof showToast === 'function') showToast(count ? '已删除 ' + count + ' 张亲属卡' : '删除失败');
             if (typeof saveData === 'function') await saveData();

@@ -243,8 +243,8 @@
         const existing = await getSchedule(char);
         return existing ? { skipped: true, reason: 'exists', schedule: existing } : generate(char);
     }
-    async function setSlotStatus(char, slotIdValue, nextStatus) {
-        const schedule = await getSchedule(char);
+    async function setSlotStatus(char, slotIdValue, nextStatus, options = {}) {
+        const schedule = options.date ? await getScheduleForDate(char, options.date) : await getSchedule(char);
         if (!schedule) return false;
         const slot = schedule.slots.find(item => item.id === slotIdValue);
         if (!slot) return false;
@@ -278,29 +278,49 @@
             return `<div class="schedule-row${locked ? ' schedule-row-locked' : ''}" data-id="${escape(slot.id)}"><div class="schedule-row-main"><div class="schedule-row-time">${escape(slot.startTime)}</div><div class="schedule-row-content"><strong>${escape(slot.emoji)} ${escape(slot.activity)}</strong><span>${escape(slot.location || '')}${slot.description ? `${slot.location ? ' · ' : ''}${escape(slot.description)}` : ''}</span><em class="schedule-status schedule-status-${escape(slot.status)}">${escape(Core.STATUS_LABELS[slot.status] || slot.status)}</em>${unlockLabel}</div></div><div class="schedule-row-actions"><button class="btn btn-small btn-secondary" data-action="edit">编辑</button><button class="btn btn-small btn-secondary" data-action="complete">完成</button><button class="btn btn-small btn-secondary" data-action="skip">跳过</button></div></div>`;
         }).join('');
     }
+    async function editSlotFields(slot, save) {
+        let draft = slot;
+        while (true) {
+            const fields = await global.showAppFormDialog({ title: slot.id ? '编辑时段' : '新增时段', confirmText: '保存', fields: [
+                { name: 'startTime', label: '开始时间', type: 'time', value: draft.startTime || '09:00', required: true },
+                { name: 'activity', label: '活动名称', value: draft.activity || '', required: true },
+                { name: 'description', label: '活动说明', type: 'textarea', value: draft.description || '' },
+            ] });
+            if (!fields) return false;
+            draft = fields;
+            try {
+                if (!fields.activity.trim()) throw new Error('请填写活动名称');
+                await save(fields);
+                return true;
+            } catch (error) { global.showToast?.(error?.message || '保存时段失败，请重试'); }
+        }
+    }
     async function addSlot() {
         const char = currentCharacter(); if (!char) return;
-        const time = global.prompt?.('开始时间（HH:MM）', '09:00');
-        const activity = global.prompt?.('活动名称');
-        if (!time || !activity) return;
-        let schedule = await getSchedule(char);
-        if (!schedule) {
-            schedule = Core.normalizeSchedule({ id: `${char.id}:${dateKey(char)}`, characterId: char.id, date: dateKey(char), style: char.scheduleStyle, slots: [] });
-        }
-        schedule.slots.push(Core.normalizeSlot({ startTime: time, activity, status: 'planned', source: 'manual' }, { date: schedule.date, characterId: char.id, index: schedule.slots.length }));
-        await saveSchedule(schedule); await render();
+        const date = ui.dateOverride || dateKey(char);
+        const saved = await editSlotFields({}, async fields => {
+            let schedule = await getScheduleForDate(char, date);
+            if (!schedule) {
+                schedule = Core.normalizeSchedule({ id: `${char.id}:${date}`, characterId: char.id, date, style: char.scheduleStyle, slots: [] });
+            }
+            schedule.slots.push(Core.normalizeSlot({ ...fields, status: 'planned', source: 'manual' }, { date: schedule.date, characterId: char.id, index: schedule.slots.length }));
+            await saveSchedule(schedule);
+        });
+        if (saved) await render();
     }
     async function modify(event) {
         const button = event.target.closest('button[data-action]'); const row = button?.closest('[data-id]'); const char = currentCharacter();
         if (!button || !row || !char) return;
-        const schedule = await getSchedule(char); const slot = schedule?.slots.find(item => item.id === row.dataset.id); if (!schedule || !slot) return;
+        const schedule = ui.dateOverride ? await getScheduleForDate(char, ui.dateOverride) : await getSchedule(char); const slot = schedule?.slots.find(item => item.id === row.dataset.id); if (!schedule || !slot) return;
         const action = button.dataset.action;
-        if (action === 'complete' || action === 'skip') { await setSlotStatus(char, slot.id, action === 'complete' ? 'completed' : 'skipped'); await render(); return; }
-        const time = global.prompt?.('开始时间（HH:MM）', slot.startTime); if (time == null) return;
-        const activity = global.prompt?.('活动名称', slot.activity); if (activity == null || !activity.trim()) return;
-        const description = global.prompt?.('活动说明（可选）', slot.description); if (description == null) return;
-        Object.assign(slot, Core.normalizeSlot({ ...slot, startTime: time, activity, description, revision: slot.revision + 1, updatedAt: Date.now() }, { date: schedule.date }));
-        await saveSchedule(schedule); await render();
+        if (action === 'complete' || action === 'skip') { await setSlotStatus(char, slot.id, action === 'complete' ? 'completed' : 'skipped', { date: schedule.date }); await render(); return; }
+        const saved = await editSlotFields(slot, async fields => {
+            schedule.slots = schedule.slots.map(item => item.id === slot.id
+                ? Core.normalizeSlot({ ...slot, ...fields, source: 'manual', revision: slot.revision + 1, updatedAt: Date.now() }, { date: schedule.date })
+                : item);
+            await saveSchedule(schedule);
+        });
+        if (saved) await render();
     }
     function focusSlot(slotId) {
         if (!slotId) return;
@@ -311,17 +331,18 @@
         global.setTimeout?.(() => row.classList.remove('schedule-row-trace-focus'), 2200);
     }
     function open(characterId, options = {}) {
-        ui.characterId = characterId || global.currentChatId || '';
-        ui.dateOverride = /^\d{4}-\d{2}-\d{2}$/.test(String(options.date || '')) ? String(options.date) : '';
-        document.getElementById('schedule-screen')?.classList.add('active');
-        if (typeof switchScreen === 'function') switchScreen('schedule-screen');
-        void Promise.resolve(render()).then(() => focusSlot(options.slotId));
+        const nextId = characterId || global.currentChatId || '';
+        if (!options.preserveView || nextId !== ui.characterId) ui.dateOverride = /^\d{4}-\d{2}-\d{2}$/.test(String(options.date || '')) ? String(options.date) : '';
+        ui.characterId = nextId;
+        global.CharacterStatusUI.show(ui.characterId, 'schedule');
+        return Promise.resolve(render()).then(() => focusSlot(options.slotId));
     }
     function setup() {
+        global.CharacterStatusUI?.setup();
         document.getElementById('setting-open-schedule-btn')?.addEventListener('click', () => open(global.currentChatId));
         document.getElementById('schedule-open-btn')?.addEventListener('click', () => open(global.currentChatId));
         document.getElementById('schedule-add-btn')?.addEventListener('click', () => void addSlot());
-        document.getElementById('schedule-generate-btn')?.addEventListener('click', async () => { const char = currentCharacter(); if (!char) return; const result = await generate(char, { force: true }); if (result.error) global.showToast?.(`日程生成失败：${result.error}`); else if (!result.skipped) global.showToast?.('角色日程已刷新'); await render(); });
+        document.getElementById('schedule-generate-btn')?.addEventListener('click', async () => { const char = currentCharacter(); if (!char) return; const result = await generate(char, { force: true }); if (result.error) global.showToast?.(`日程生成失败：${result.error}`); else if (!result.skipped) { ui.dateOverride = ''; global.showToast?.('角色日程已刷新'); } await render(); });
         document.getElementById('schedule-list')?.addEventListener('click', event => void modify(event));
     }
     global.Schedule = { VERSION: Core.VERSION, ensureSettings, getSchedule, getScheduleForDate, saveSchedule, generate, prepareContext, getContext, ensureCurrentSchedule, setSlotStatus, getActivityLedger, recordActivity, isActivitySettled, evaluateWeatherImpact: Core.evaluateWeatherImpact, applyWeatherImpact: Core.applyWeatherImpact, applyWeatherSnapshot: Core.applyWeatherSnapshot, applyWeatherRules, isSlotUnlocked: Core.isSlotUnlocked, open, setup };

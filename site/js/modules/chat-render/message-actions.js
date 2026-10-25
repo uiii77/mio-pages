@@ -412,6 +412,7 @@ function addMessageBubble(message, targetChatId, targetChatType) {
             // 标记新消息，允许 NovelAI 自动生图
             if (message.id) _naiAutoGenNewMsgIds.add(message.id);
             const bubbleElement = createMessageBubbleElement(message, isContinuous);
+            bindQuotedMessageNavigation(bubbleElement, message, targetChatId, targetChatType);
             if (bubbleElement) {
                 // Check for timestamp display
                 const history = character.history;
@@ -590,6 +591,7 @@ function addMessageBubble(message, targetChatId, targetChatType) {
         // 标记新消息，允许 NovelAI 自动生图
         if (message.id) _naiAutoGenNewMsgIds.add(message.id);
         const bubbleElement = createMessageBubbleElement(message, isContinuous);
+        bindQuotedMessageNavigation(bubbleElement, message, targetChatId, targetChatType);
         if (bubbleElement) {
             // Check for timestamp display
             const history = group.history;

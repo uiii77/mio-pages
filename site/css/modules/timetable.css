@@ -12,6 +12,12 @@
 #timetable-screen .tt-toggle { display: flex; align-items: center; gap: 8px; }
 #timetable-screen .tt-toggle input { display: inline-block; width: auto; margin: 0; accent-color: var(--accent-color, #8caaaa); }
 #timetable-screen .tt-note { color: #888; font-size: calc(12px * var(--app-font-scale, 1)); line-height: 1.6; overflow-wrap: anywhere; }
+#timetable-screen .tt-connection-steps { margin: 16px 0; padding-left: 22px; font-size: calc(13px * var(--app-font-scale, 1)); line-height: 1.7; }
+#timetable-screen .tt-connection-steps li + li { margin-top: 8px; }
+#timetable-screen [data-tt="bridge-status"] { font-weight: 600; line-height: 1.6; }
+#timetable-screen [data-tt="bridge-check-time"]:empty { display: none; }
+#timetable-screen button { min-height: 44px; }
+#timetable-screen button:focus-visible { outline: 2px solid currentColor; outline-offset: -2px; }
 #timetable-screen article { padding: 12px 0; border-bottom: 1px solid #eee; overflow-wrap: anywhere; }
 #timetable-screen fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
 #timetable-screen [hidden] { display: none; }

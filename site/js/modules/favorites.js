@@ -537,7 +537,7 @@ function favoriteTypeLabel(type) {
 function renderFavoriteDetailItems(favorite) {
     const items = getFavoriteItems(favorite);
     return items.map((item, index) => {
-        const canJump = !!(item.messageId && window.MessageReference && window.MessageReference.resolve(favorite.chatType, favorite.chatId, item.messageId));
+        const canJump = !!(item.messageId != null && window.MessageReference && window.MessageReference.resolve(favorite.chatType, favorite.chatId, item.messageId));
         const audioAssetId = item.media && item.media.audioAssetId;
         const translation = item.translation
             ? `<div class="favorite-detail-translation"><span>翻译</span>${escapeHtml(item.translation)}</div>`
@@ -567,7 +567,7 @@ function renderFavoriteDetailItems(favorite) {
 
 function jumpToFavoriteItem(favorite, itemIndex) {
     const item = getFavoriteItems(favorite)[itemIndex];
-    if (!item || !item.messageId || !window.MessageReference || !window.MessageReference.locate(favorite.chatType, favorite.chatId, item.messageId)) {
+    if (!item || item.messageId == null || !window.MessageReference || !window.MessageReference.locate(favorite.chatType, favorite.chatId, item.messageId)) {
         showToast('原消息已不存在，仍可查看收藏快照');
     }
 }
@@ -613,7 +613,7 @@ function openFavoriteDetail(favoriteId) {
     const jumpBtn = document.getElementById('favorite-detail-jump-btn');
     if (jumpBtn) {
         const firstItem = getFavoriteItems(fav)[0];
-        const canJump = !!(firstItem && firstItem.messageId && window.MessageReference && window.MessageReference.resolve(fav.chatType, fav.chatId, firstItem.messageId));
+        const canJump = !!(firstItem && firstItem.messageId != null && window.MessageReference && window.MessageReference.resolve(fav.chatType, fav.chatId, firstItem.messageId));
         jumpBtn.disabled = !canJump;
         jumpBtn.textContent = canJump ? '跳转' : '原消息已删除';
         jumpBtn.onclick = () => jumpToFavoriteItem(fav, 0);
@@ -653,13 +653,10 @@ function initFavoritesScreen() {
     const backBtn = document.querySelector('#favorites-screen .back-btn');
     if (backBtn) backBtn.addEventListener('click', () => {
         exitFavoritesMultiSelectMode();
-        const returnTarget = window.__mioFavoritesReturnTarget || 'more-screen';
+        // The global back delegate owns navigation and scroll restoration.
+        backBtn.dataset.target = window.__mioFavoritesReturnTarget || 'more-screen';
         delete window.__mioFavoritesReturnTarget;
-        switchScreen(returnTarget);
     });
-
-    const detailBackBtn = document.querySelector('#favorites-detail-screen .back-btn');
-    if (detailBackBtn) detailBackBtn.addEventListener('click', () => switchScreen('favorites-screen'));
 
     const saveNoteBtn = document.getElementById('favorite-detail-save-note-btn');
     if (saveNoteBtn) saveNoteBtn.addEventListener('click', saveFavoriteNote);

@@ -136,15 +136,15 @@ body.night-mode-active :is(#reading-screen, #collaboration-screen, #trpg-broadca
 :is(#reading-screen, #collaboration-screen, #watch-together-screen, #exchange-diary-screen, #couple-space-screen, #music-screen) details:not([open]) > :not(summary) { display: none; }
 #period-screen .period-card-kicker { color: var(--mio-muted); font-size: calc(12px * var(--app-font-scale)); letter-spacing: normal; }
 #period-screen .period-card h2 { font: 600 calc(22px * var(--app-font-scale))/1.4 var(--font-family); }
-#period-screen .period-record-row, #couple-space-screen, #music-screen .couple-space-status-box { background: var(--mio-field); border-color: var(--mio-line); }
+#period-screen .period-record-row, :is(#couple-space-screen, #music-screen) .couple-space-status-box { background: var(--mio-field); border-color: var(--mio-line); }
 #exchange-diary-screen .exchange-diary-pages { background: transparent; }
 #exchange-diary-screen .exchange-diary-page { background: var(--mio-surface); border-color: var(--mio-line); }
 #exchange-diary-screen .exchange-diary-page textarea { background: transparent; border: 0; padding: 0; line-height: 1.9; }
 #exchange-diary-screen .exchange-diary-role-toggle { color: var(--mio-copy); border-color: var(--mio-line); }
 #exchange-diary-screen .exchange-diary-api > label { flex-direction: row; align-items: center; }
 #exchange-diary-screen .exchange-diary-api input[type="checkbox"] { width: 18px; height: 18px; }
-#couple-space-screen, #music-screen .couple-space-api > * + * { margin-top: 10px; }
-#couple-space-screen, #music-screen .couple-space-item-kind { color: var(--mio-muted); }
+:is(#couple-space-screen, #music-screen) .couple-space-api > * + * { margin-top: 10px; }
+:is(#couple-space-screen, #music-screen) .couple-space-item-kind { color: var(--mio-muted); }
 #reading-screen .reading-text { font-size: calc(16px * var(--app-font-scale)); line-height: 1.9; }
 #reading-screen .reading-book-icon { background: var(--accent-color); color: var(--text-color); }
 #reading-screen .reading-favorite-btn,
@@ -183,8 +183,8 @@ body.night-mode-active :is(#reading-screen, #collaboration-screen, #trpg-broadca
 body.night-mode-active #setting-char-virtual-clock-options input { color-scheme: dark; background: #262628; color: #e5e5e7; border-color: #38383a; }
 @media (max-width: 480px) {
     #period-screen .period-actions { flex-direction: row; }
-    #couple-space-screen, #music-screen .couple-space-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    #couple-space-screen, #music-screen .couple-space-actions [hidden] { display: none; }
-    #couple-space-screen, #music-screen .couple-space-shared-tools { gap: 10px; }
+    :is(#couple-space-screen, #music-screen) .couple-space-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    :is(#couple-space-screen, #music-screen) .couple-space-actions [hidden] { display: none; }
+    :is(#couple-space-screen, #music-screen) .couple-space-shared-tools { gap: 10px; }
     #watch-together-screen .watch-file-actions > *, #watch-together-screen .watch-actions > * { min-width: 0; }
 }

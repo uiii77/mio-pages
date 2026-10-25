@@ -6,7 +6,11 @@
     async function context(owner){
         const saved=await Catalog.forDatabase(dexieDB).market(owner);if(saved)return saved;
         const role=character(owner),clock=owner==='user'?VirtualClock.resolveUser(null,db.userTimeline):VirtualClock.resolveCharacter(role);
-        return {country:'',city:'',district:'',world:'',year:VirtualClock.getParts(clock).year,currency:role?.defaultCurrency||'CNY',location:null};
+        const wallet=await WalletSystem.read(owner);
+        if(!wallet.ok&&global.WalletLedger?.cachedMode()!=='legacy')throw Error('WALLET_UNAVAILABLE');
+        const preferences=owner==='user'?db.piggyBank:role?.walletLedger;
+        const currency=CurrencyCore.currency(wallet.data?.defaultCurrency||preferences?.currency||preferences?.currencyWallet?.defaultCurrency||'CNY');
+        return {country:'',city:'',district:'',world:'',year:VirtualClock.getParts(clock).year,currency,location:null};
     }
     async function generate(owner,category,options={}){
         if(!['food','general'].includes(category)||typeof owner!=='string')throw Error('INVALID_GENERATION');

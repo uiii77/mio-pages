@@ -44,7 +44,12 @@
 #reading-screen .reading-header { --func-icon-color: var(--reading-ink); background: color-mix(in srgb, var(--reading-paper) 93%, transparent); color: var(--reading-ink); border-bottom-color: var(--reading-line); }
 #reading-screen .reading-header :is(.title, .action-btn, .back-btn) { color: inherit; }
 #reading-screen .reading-header button { color: var(--reading-ink); }
-.reading-header .title-container { min-width: 0; }
+#reading-screen .reading-header { gap: 6px; padding-inline: 10px; }
+#reading-screen .reading-header .title-container { position: static; transform: none; flex: 1; min-width: 0; align-items: flex-start; text-align: left; padding-inline: 4px; }
+#reading-screen .reading-header .title { width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(16px * var(--app-font-scale, 1)); }
+#reading-screen .reading-header .action-btn-group { gap: 0; flex-shrink: 0; }
+#reading-screen .reading-header :is(.back-btn, .action-btn) { flex: 0 0 44px; width: 44px; height: 44px; }
+#reading-screen:not(.reading-open) #reading-library-btn { display: none; }
 .reading-header-progress { display: none; margin-top: 1px; color: var(--reading-muted); font-size: 10px; font-weight: 400; }
 #reading-screen.reading-open .reading-header-progress { display: block; }
 .reading-main { height: calc(100% - var(--header-height, 54px)); overflow: auto; box-sizing: border-box; padding: 18px 16px 96px; overscroll-behavior: contain; }
@@ -63,12 +68,12 @@
 .reading-book-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 620; }
 .reading-book-copy small { color: var(--reading-muted); font-size: 11px; }
 .reading-book-arrow { color: #c6bec0; font-size: 22px; }
-.reading-book-meta { display: flex; gap: 8px; margin: 0 0 8px 57px; }
+.reading-book-meta { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 8px; }
 .reading-book-meta select, .reading-favorite-btn, .reading-recommendation-input { appearance: none; border: 1px solid var(--reading-line); border-radius: 11px; background: var(--reading-soft); color: var(--reading-muted); font: inherit; font-size: 12px; }
-.reading-book-meta select { padding: 7px 28px 7px 10px; background-image: linear-gradient(45deg,transparent 50%,currentColor 50%),linear-gradient(135deg,currentColor 50%,transparent 50%); background-position: calc(100% - 13px) 50%,calc(100% - 9px) 50%; background-size:4px 4px,4px 4px; background-repeat:no-repeat; }
-.reading-favorite-btn { min-height: 32px; padding: 6px 10px; }
+.reading-book-meta select { min-height: 44px; padding: 7px 28px 7px 10px; background-image: linear-gradient(45deg,transparent 50%,currentColor 50%),linear-gradient(135deg,currentColor 50%,transparent 50%); background-position: calc(100% - 13px) 50%,calc(100% - 9px) 50%; background-size:4px 4px,4px 4px; background-repeat:no-repeat; }
+.reading-favorite-btn { min-height: 44px; padding: 6px 10px; }
 .reading-favorite-btn.is-active { background: #fff4dd; color: #9b6f24; }
-.reading-recommendation-input { width: calc(100% - 57px); min-height: 36px; margin-left: 57px; padding: 8px 10px; box-sizing: border-box; }
+.reading-recommendation-input { width: 100%; min-height: 44px; margin-left: 0; padding: 8px 10px; box-sizing: border-box; }
 
 .reading-reader-view { width: min(100%, 760px); margin: 0 auto; }
 .reading-progress-track { position: sticky; top: -18px; z-index: 4; height: 2px; margin: -18px -16px 18px; background: transparent; }
@@ -166,8 +171,8 @@
     .reading-progress-track { top: -14px; margin: -14px -13px 10px; }
     .reading-text { min-height: calc(100dvh - 165px); padding: 12px 5px 42px; font-size: 15px; line-height: 1.95; }
     .reading-reader-dock { width: calc(100% - 16px); bottom: max(7px,env(safe-area-inset-bottom)); border-radius: 18px; }
-    .reading-reader-dock button { min-height: 43px; }
-    .reading-reader-dock span { display: none; }
+    .reading-reader-dock button { min-height: 46px; }
+    .reading-reader-dock span { display: block; font-size: 9px; }
     .reading-study-controls, .reading-appearance-grid { grid-template-columns: 1fr 1fr; }
     .reading-study-controls > button, .reading-appearance-grid label:last-child { grid-column: 1 / -1; }
     .reading-ai-settings, .reading-annotation-form { grid-template-columns: 1fr; }
@@ -176,3 +181,14 @@
 @media (prefers-reduced-motion: reduce) {
     .reading-sheet-overlay, .reading-sheet, .reading-progress-track span { animation: none; transition: none; }
 }
+
+#reading-screen .reading-delete-btn { margin-left: auto; min-height: 44px; padding: 6px 10px; border: 0; border-radius: 11px; background: transparent; color: var(--reading-muted); font: inherit; font-size: 12px; cursor: pointer; }
+#reading-screen .reading-book-card { min-width: 0; }
+#reading-screen .reading-book-card :is(button, input, select):focus-visible { outline: 2px solid var(--reading-accent); outline-offset: 2px; }
+
+body:not(.night-mode-active) #reading-screen:not(.reading-open) { --mio-field: #fff8f0; --mio-line: #f0e2df; --mio-muted: #8e7374; --mio-copy: #493c40; --reading-bg: #fff8f0; --reading-soft: #fff2ec; --reading-muted: #8e7374; }
+#reading-screen .reading-library-view { background: transparent; }
+#reading-screen .reading-book-card .reading-book-icon { background: #ffe0db; color: #80505d; }
+#reading-screen .reading-book-card .reading-favorite-btn { min-height: 44px; }
+
+#reading-screen .reading-book-card :is(select, input, button) { min-height: 44px; }

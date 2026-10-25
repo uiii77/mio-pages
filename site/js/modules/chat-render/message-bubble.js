@@ -1,4 +1,4 @@
-function createMessageBubbleElement(message, isContinuous = false) {
+function createMessageBubbleElement(message, isContinuous = false, options = {}) {
     const chat = (currentChatType === 'private') ? db.characters.find(c => c.id === currentChatId) : db.groups.find(g => g.id === currentChatId);
     const showDebugContent = currentChatType === 'private' && !!chat.showDebugContent;
     const debugVisible = isDebugMode || showDebugContent;
@@ -1063,7 +1063,7 @@ function createMessageBubbleElement(message, isContinuous = false) {
                             <button class="btn btn-small btn-primary" style="flex: 1; font-size: 11px; padding: 4px; border: none;" onclick="window.retryImageGen('${message.id}', '${currentChatId}', '${currentChatType}')">重新生成</button>
                         </div>
                     </div>`;
-            } else if (_imgEnabled && !isSent && _naiAutoGenNewMsgIds.has(message.id)) {
+            } else if (_imgEnabled && !isSent && !options.historyInspection && _naiAutoGenNewMsgIds.has(message.id)) {
                 // 首次触发静默生图
                 message.isNovelAiGenerating = true;
                 bubbleElement = document.createElement('div');

@@ -6,7 +6,7 @@
 .moments-icon-btn { position:relative; width:38px; height:40px; flex:0 0 38px; border:0; background:transparent; color:#222; display:flex; align-items:center; justify-content:center; cursor:pointer; }
 .moments-icon-btn:active, .moments-plain-btn:active { opacity:.6; }
 .moments-header-heart { width:19px; height:19px; color:#222; }
-.moments-header-spacer { width:38px; flex:0 0 38px; }
+.moments-header-spacer { width:38px; flex:0 0 38px; margin-right:auto; }
 #moments-unread-badge { position:absolute; right:7px; top:8px; width:7px; height:7px; border-radius:50%; background:#e03e3e; }
 .moments-scroll { min-height:0; flex:1; overflow-y:auto; overscroll-behavior:contain; padding-bottom:70px; background:#ffffff; }
 .moments-story-strip { display:flex; gap:14px; padding:14px 14px 12px; overflow-x:auto; scrollbar-width:none; border-bottom:1px solid #f0f0f2; background:#fff; }
@@ -465,3 +465,6 @@ body.night-mode-active .moments-tempo-item, body.night-mode-active .moments-view
 body.night-mode-active .moments-tempo-value { color:#bbb; }
 body.night-mode-active .moments-tempo-value input { color:#eee; background:#252525; border-color:#444; }
 body.night-mode-active .moments-tempo-slider { accent-color:#ddd; }
+/* The main feed shares the fixed bottom navigation. */
+#moments-screen .moments-fab { bottom:calc(80px + env(safe-area-inset-bottom)); }
+#moments-screen .moments-scroll { padding-bottom:calc(140px + env(safe-area-inset-bottom)); }

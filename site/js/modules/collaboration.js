@@ -2,6 +2,7 @@
     'use strict';
 
     const state = { characterId: '', sessionId: '', returnScreen: 'chat-room-screen', busy: false };
+    let drawerTrigger = null;
     const core = () => global.CollaborationCore;
     const table = name => global.dexieDB?.[name];
     const notify = (message, duration) => { if (typeof global.showToast === 'function') global.showToast(message, duration); };
@@ -410,6 +411,7 @@
             await saveSession({
                 ...session,
                 attachmentRefs: refs.filter(reference => reference.assetId !== assetId),
+                attachmentIds: session.attachmentIds.filter(id => id !== assetId),
                 updatedAt: Date.now(),
             });
             await render();
@@ -513,10 +515,10 @@
         const character = characterFor(state.characterId);
         if (!session || !character) return notify('请先选择协同角色和会话');
         state.busy = true;
-        if (input) input.value = '';
         setTurnStatus('正在发送…', 'busy');
         try {
             await saveMessage({ sessionId: session.id, role: 'user', content, createdAt: Date.now() });
+            if (state.sessionId === session.id && input?.value.trim() === content) input.value = '';
             renderMessages(await listMessages(session.id));
             const response = await requestTurn(character, session, await listMessages(session.id));
             await saveMessage({ sessionId: session.id, role: 'assistant', content: response.content, createdAt: Date.now() });
@@ -556,6 +558,7 @@
         if (type && type !== 'private') return notify('协同工作目前只支持角色私聊');
         if (!characterId || !characterFor(characterId)) return notify('请先打开一个角色聊天');
         if (!table('collaborationSessions') || !table('collaborationMessages')) return notify('协同会话数据表尚未就绪，请刷新 Mio');
+        document.querySelectorAll('#collaboration-screen .collaboration-drawer.visible').forEach(closeDrawer);
         state.characterId = String(characterId);
         state.returnScreen = returnScreen || 'chat-room-screen';
         state.sessionId = '';
@@ -580,15 +583,23 @@
 
     async function newSession() {
         if (state.busy) return;
+        const characterId = state.characterId;
         state.busy = true;
         try {
             const character = characterFor(state.characterId);
             const suggested = `与 ${character?.name || character?.charName || '角色'} 协同`;
-            const title = typeof global.prompt === 'function' ? global.prompt('协同会话名称', suggested) : suggested;
-            if (title === null) return;
-            const session = await createSession(state.characterId, { title: title.trim() || suggested });
-            state.sessionId = session.id;
-            await render();
+            let title = suggested, session;
+            while (!session) {
+                const values = await global.showAppFormDialog({ title: '新建协同会话', fields: [{ name: 'title', label: '会话名称', value: title }], confirmText: '创建' });
+                if (!values) return;
+                title = values.title;
+                try { session = await createSession(characterId, { title: title.trim() || suggested }); }
+                catch (error) { notify(error?.message || '创建协同会话失败，请重试'); }
+            }
+            if (state.characterId === characterId) {
+                state.sessionId = session.id;
+                await render();
+            }
         } catch (error) {
             console.error('创建协同会话失败:', error);
             notify(error?.message || '创建协同会话失败');
@@ -607,13 +618,46 @@
         }
     }
 
+    function closeDrawer(panel) {
+        if (!panel) return;
+        panel.classList.remove('visible');
+        panel.hidden = true;
+        drawerTrigger?.focus({ preventScroll: true });
+        drawerTrigger = null;
+    }
+
     function setup() {
+        byId('collaboration-screen')?.addEventListener('click', event => {
+            const close = event.target.closest('[data-collaboration-close]');
+            if (close) closeDrawer(close.closest('.collaboration-drawer'));
+            const trigger = event.target.closest('[data-collaboration-panel]');
+            const panel = trigger && byId(trigger.dataset.collaborationPanel);
+            if (panel) {
+                drawerTrigger = trigger;
+                panel.hidden = false; panel.classList.add('visible');
+                panel.querySelector('button')?.focus({ preventScroll: true });
+            }
+        }, true);
+        document.querySelectorAll('#collaboration-screen .collaboration-drawer').forEach(panel => {
+            panel.addEventListener('click', event => { if (event.target === panel) closeDrawer(panel); });
+        });
+        document.addEventListener('keydown', event => {
+            const panel = document.querySelector('#collaboration-screen .collaboration-drawer.visible');
+            if (!panel || document.body.classList.contains('centered-select-open') || byId('app-form-dialog')) return;
+            if (event.key === 'Escape') { event.preventDefault(); closeDrawer(panel); }
+            if (event.key === 'Tab') {
+                const controls = [...panel.querySelectorAll('button,input,select,textarea,a[href]')].filter(element => !element.disabled && element.getClientRects().length);
+                const first = controls[0], last = controls.at(-1);
+                if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+                else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+            }
+        });
         byId('collaboration-new-btn')?.addEventListener('click', () => void newSession());
         byId('collaboration-send-btn')?.addEventListener('click', () => void sendTurn());
         byId('collaboration-api-save-btn')?.addEventListener('click', () => void saveApiSettings());
-        byId('collaboration-session-list')?.addEventListener('click', event => {
+        byId('collaboration-session-list')?.addEventListener('click', async event => {
             const button = event.target.closest('[data-collaboration-session]');
-            if (button) void selectSession(button.dataset.collaborationSession);
+            if (button) { const panel = button.closest('.collaboration-drawer'); await selectSession(button.dataset.collaborationSession); closeDrawer(panel); }
         });
         byId('collaboration-attachment-list')?.addEventListener('change', event => {
             const toggle = event.target.closest('[data-collaboration-attachment-toggle]');

@@ -1,14 +1,58 @@
-.exchange-diary-main{height:100%;overflow:auto;padding:14px 14px 28px;background:var(--bg-color,#f8f8fb)}
-.exchange-diary-card{margin:0 auto 12px;max-width:760px;background:var(--card-bg,#fff);border:1px solid rgba(0,0,0,.06);border-radius:18px;box-shadow:0 6px 20px rgba(0,0,0,.04);padding:14px}
-.exchange-diary-toolbar{display:grid;grid-template-columns:1fr 160px;gap:10px;align-items:end}
-.exchange-diary-toolbar label,.exchange-diary-api label{display:flex;flex-direction:column;gap:6px;font-size:13px;color:#555}
-.exchange-diary-toolbar select,.exchange-diary-toolbar input,.exchange-diary-api input{width:100%;box-sizing:border-box;border:1px solid #e6e6ea;border-radius:10px;background:#fff;padding:9px 10px;color:inherit}
-.exchange-diary-role-toggle{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;border-top:1px solid #f0f0f2;padding-top:10px;font-size:13px;color:#555}
-.exchange-diary-pages{display:grid;grid-template-columns:1fr 1fr;gap:12px;background:transparent;border:0;box-shadow:none;padding:0}
-.exchange-diary-page{min-height:280px;background:#fffdf4;border:1px solid #f0e7c8;border-radius:16px;padding:13px;display:flex;flex-direction:column;gap:10px}
-.exchange-diary-character-page{background:#f4f7ff;border-color:#dce6fb}
-.exchange-diary-page-heading{display:flex;flex-direction:column;gap:3px}.exchange-diary-page-heading strong{font-size:15px}.exchange-diary-page-heading span{font-size:11px;color:#8c8c96}
-.exchange-diary-page textarea{flex:1;min-height:220px;resize:vertical;border:0;outline:0;background:transparent;color:inherit;line-height:1.7;font:inherit}
-.exchange-diary-status-row{display:flex;justify-content:space-between;gap:10px;color:#666;font-size:13px}.exchange-diary-button-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
-.exchange-diary-api{display:flex;flex-direction:column;gap:9px}.exchange-diary-api summary{cursor:pointer;font-weight:600}.exchange-diary-api small{color:#888}
-@media (max-width:620px){.exchange-diary-toolbar{grid-template-columns:1fr}.exchange-diary-pages{grid-template-columns:1fr}.exchange-diary-page{min-height:220px}.exchange-diary-page textarea{min-height:160px}.exchange-diary-button-row .btn{flex:1 1 45%}}
+#exchange-diary-screen { background: var(--mio-field, #f8f7f4); color: var(--mio-copy, #393536); }
+#exchange-diary-screen [hidden] { display: none !important; }
+#exchange-diary-screen .exchange-diary-main { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 20px 16px calc(24px + env(safe-area-inset-bottom)); }
+#exchange-diary-screen [data-diary-panel] { max-width: 760px; margin: 0 auto; }
+#exchange-diary-screen h2 { font-size: calc(23px * var(--app-font-scale, 1)); margin: 4px 0 18px; letter-spacing: .02em; }
+#exchange-diary-screen h3 { font-size: 16px; margin: 0 0 12px; }
+#exchange-diary-screen .exchange-diary-eyebrow { margin: 0 0 6px; color: var(--mio-muted, #8c8580); font-size: 12px; }
+#exchange-diary-screen button { min-height: 44px; padding: 10px 12px; border: 0; border-radius: 12px; background: var(--mio-surface, #fff); color: inherit; font: inherit; font-size: 13px; cursor: pointer; }
+#exchange-diary-screen button:disabled { opacity: .45; cursor: default; }
+#exchange-diary-screen :is(button, input, select, textarea):focus-visible { outline: 2px solid var(--mio-copy, #79665d); outline-offset: 2px; }
+#exchange-diary-screen .exchange-diary-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+#exchange-diary-screen .exchange-diary-toolbar label, #exchange-diary-screen .exchange-diary-api > label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--mio-muted, #78716d); min-width: 0; }
+#exchange-diary-screen .exchange-diary-toolbar :is(select, input), #exchange-diary-screen .exchange-diary-api input:not([type="checkbox"]) { width: 100%; min-width: 0; min-height: 44px; box-sizing: border-box; border: 1px solid var(--mio-line, #e8e1da); border-radius: 10px; background: var(--mio-surface, #fff); padding: 9px 8px; color: var(--mio-copy, #393536); font: inherit; font-size: 13px; }
+#exchange-diary-screen .exchange-diary-status-row { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding: 14px 2px; color: var(--mio-muted, #78716d); font-size: 12px; }
+#exchange-diary-screen .exchange-diary-pages { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+#exchange-diary-screen .exchange-diary-page { min-width: 0; min-height: 280px; background: var(--mio-surface, #fffdf9); border: 1px solid var(--mio-line, #e8e1da); border-top: 3px solid #c8b5a4; border-radius: 4px 16px 16px 4px; padding: 16px; box-shadow: 0 4px 14px #49342606; display: flex; flex-direction: column; }
+#exchange-diary-screen .exchange-diary-character-page { border-top-color: #aebfb6; }
+#exchange-diary-screen .exchange-diary-page-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 44px; border-bottom: 1px solid var(--mio-line, #e8e1da); margin-bottom: 10px; }
+#exchange-diary-screen .exchange-diary-page-heading label { font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+#exchange-diary-screen .exchange-diary-page-heading span { font-size: 11px; color: var(--mio-muted, #8c8580); }
+#exchange-diary-screen .exchange-diary-page-heading button { color: var(--mio-muted, #78716d); flex-shrink: 0; background: transparent; }
+#exchange-diary-screen .exchange-diary-page textarea { flex: 1; width: 100%; min-width: 0; box-sizing: border-box; min-height: 150px; resize: vertical; border: 0; padding: 4px 0; background: transparent; color: inherit; font-family: inherit; font-size: calc(15px * var(--app-font-scale, 1)); line-height: 2; }
+#exchange-diary-screen .exchange-diary-reply { white-space: pre-wrap; overflow-wrap: anywhere; font-size: calc(15px * var(--app-font-scale, 1)); line-height: 2; padding: 4px 0 20px; }
+#exchange-diary-screen .exchange-diary-reply.is-empty { color: var(--mio-muted, #8c8580); font-size: 13px; }
+#exchange-diary-screen .exchange-diary-hint { color: var(--mio-muted, #78716d); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+#exchange-diary-screen .exchange-diary-button-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+#exchange-diary-screen .exchange-diary-primary { background: var(--mio-copy, #555f57); color: var(--mio-surface, #fff); }
+#exchange-diary-screen .exchange-diary-secondary-actions { display: flex; justify-content: space-between; gap: 10px; margin-top: 10px; }
+#exchange-diary-screen .exchange-diary-secondary-actions button { background: transparent; color: var(--mio-muted, #78716d); }
+#exchange-diary-screen .exchange-diary-card { margin-bottom: 14px; padding: 18px; border: 1px solid var(--mio-line, #e8e1da); border-radius: 16px; background: var(--mio-surface, #fff); }
+#exchange-diary-screen .exchange-diary-card button { background: var(--mio-field, #f8f7f4); }
+#exchange-diary-screen .exchange-diary-settings-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 14px; }
+#exchange-diary-screen .exchange-diary-settings-heading h2 { font-size: 20px; margin: 0; }
+#exchange-diary-screen .exchange-diary-role-toggle { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; margin-bottom: 12px; font-size: 13px; }
+#exchange-diary-screen .exchange-diary-api { display: flex; flex-direction: column; gap: 12px; }
+#exchange-diary-screen .exchange-diary-api > .exchange-diary-check { flex-direction: row; align-items: center; min-height: 44px; }
+#exchange-diary-screen .exchange-diary-check input { width: 20px; height: 20px; }
+#exchange-diary-screen .exchange-diary-api small { color: var(--mio-muted, #78716d); }
+@media (max-width: 620px) { #exchange-diary-screen .exchange-diary-pages { grid-template-columns: 1fr; } #exchange-diary-screen .exchange-diary-page { min-height: 210px; } }
+@media (max-width: 350px) { #exchange-diary-screen .exchange-diary-main { padding-inline: 12px; } #exchange-diary-screen .exchange-diary-toolbar { grid-template-columns: 1fr; } }
+
+/* Keep the notebook hierarchy when shared feature styles load after this file. */
+#exchange-diary-screen .exchange-diary-intro { background: transparent; }
+#exchange-diary-screen .exchange-diary-intro h2 { font-size: calc(23px * var(--app-font-scale, 1)); }
+#exchange-diary-screen .exchange-diary-settings .exchange-diary-api > label:not(.exchange-diary-check) { flex-direction: column; align-items: stretch; }
+#exchange-diary-screen .exchange-diary-pages .exchange-diary-page { border-top-color: #c8b5a4; }
+#exchange-diary-screen .exchange-diary-pages .exchange-diary-character-page { border-top-color: #aebfb6; }
+
+body:not(.night-mode-active) #exchange-diary-screen { --mio-field: #fff8f0; --mio-line: #f0e2df; --mio-muted: #8e7374; --mio-copy: #493c40; }
+body:not(.night-mode-active) #exchange-diary-screen .exchange-diary-page { background: #fffdfa; }
+body:not(.night-mode-active) #exchange-diary-screen .exchange-diary-character-page { background: #fff6f5; }
+body:not(.night-mode-active) #exchange-diary-screen .exchange-diary-primary { background: #ffb4b4; color: #59383f; }
+#exchange-diary-screen .exchange-diary-actions, #exchange-diary-screen .exchange-diary-settings { background: transparent; }
+
+#exchange-diary-screen .exchange-diary-main :is(.exchange-diary-intro, .exchange-diary-actions, .exchange-diary-settings) { background: transparent; }
+#exchange-diary-screen #exchange-diary-user-text, #exchange-diary-screen #exchange-diary-character-text { border: 0; border-radius: 0; background: transparent; padding: 4px 0; min-height: 150px; font-size: calc(15px * var(--app-font-scale, 1)); line-height: 2; }
+
+#exchange-diary-screen .app-header :is(.back-btn, .action-btn) { width: 44px; height: 44px; padding: 0; background: transparent; font-size: 24px; }

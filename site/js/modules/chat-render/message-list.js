@@ -57,7 +57,7 @@ function getDisplayMessageHistory(chat, chatType = currentChatType) {
     if (!chat || !Array.isArray(chat.history)) return [];
     // 节点系统：过滤掉已收纳节点的消息
     let displayHistory = chat.history;
-    if (chatType === 'private' && chat.nodes) {
+    if (chatType === 'private' && chat.nodes && !ChatHistoryViewport.rangeFor(chat.id, chatType)?.includeArchived) {
         const archivedNodeIds = new Set(chat.nodes.filter(n => n.status === 'archived').map(n => n.id));
         if (archivedNodeIds.size > 0) {
             let currentArchivedNodeId = null;
@@ -90,6 +90,9 @@ function getDisplayMessageHistory(chat, chatType = currentChatType) {
 function renderMessages(isLoadMore = false, forceScrollToBottom = false) {
     const chat = (currentChatType === 'private') ? db.characters.find(c => c.id === currentChatId) : db.groups.find(g => g.id === currentChatId);
     if (!chat || !chat.history) return;
+    if (forceScrollToBottom && ChatHistoryViewport.rangeFor(chat.id, currentChatType)) {
+        ChatHistoryViewport.reset(); currentPage = 1;
+    }
     const oldScrollHeight = messageArea.scrollHeight;
     const displayHistory = getDisplayMessageHistory(chat, currentChatType);
 
@@ -98,8 +101,13 @@ function renderMessages(isLoadMore = false, forceScrollToBottom = false) {
     // 确保 MESSAGES_PER_PAGE 存在
     const pageSize = (typeof MESSAGES_PER_PAGE !== 'undefined') ? MESSAGES_PER_PAGE : 20;
 
-    const end = totalMessages - (currentPage - 1) * pageSize;
-    const start = Math.max(0, end - pageSize);
+    const view = ChatHistoryViewport.rangeFor(chat.id, currentChatType);
+    if (view && view.page !== currentPage) {
+        view.end = Math.max(0, totalMessages-(currentPage-1)*pageSize);
+        view.start = Math.max(0, view.end-pageSize); view.page = currentPage;
+    }
+    const end = view ? Math.min(totalMessages, view.end) : totalMessages - (currentPage - 1) * pageSize;
+    const start = view ? view.start : Math.max(0, end - pageSize);
     const messagesToRender = displayHistory.slice(start, end);
     if (!isLoadMore) messageArea.innerHTML = '';
     const fragment = document.createDocumentFragment();
@@ -164,8 +172,12 @@ function renderMessages(isLoadMore = false, forceScrollToBottom = false) {
             }
         }
 
-        const bubble = createMessageBubbleElement(msg, isContinuous);
+        // Historical inspection must not let legacy renderer defaults rewrite the source message.
+        const historyInspection = !!view || !!window._pendingMessageLocation;
+        const bubble = createMessageBubbleElement(historyInspection ? {...msg} : msg, isContinuous, {historyInspection});
         if (bubble) {
+            bubble.dataset.historyIndex = String(start + index);
+            bindQuotedMessageNavigation(bubble, msg, currentChatId, currentChatType);
             appendChatBubble(fragment, bubble);
             
             // 节点系统：渲染独立摘要
@@ -225,7 +237,7 @@ function renderMessages(isLoadMore = false, forceScrollToBottom = false) {
     if (existingLoadNewerBtn) existingLoadNewerBtn.remove();
     messageArea.prepend(fragment);
     
-    if (totalMessages > currentPage * pageSize) {
+    if (start > 0) {
         const loadMoreButton = document.createElement('button');
         loadMoreButton.id = 'load-more-btn';
         loadMoreButton.className = 'load-more-btn';
@@ -233,7 +245,7 @@ function renderMessages(isLoadMore = false, forceScrollToBottom = false) {
         messageArea.prepend(loadMoreButton);
     }
     // 当不在最新页时，显示"加载更新的消息"按钮
-    if (currentPage > 1) {
+    if (view ? end < totalMessages : currentPage > 1) {
         const loadNewerButton = document.createElement('button');
         loadNewerButton.id = 'load-newer-btn';
         loadNewerButton.className = 'load-more-btn';
@@ -242,7 +254,7 @@ function renderMessages(isLoadMore = false, forceScrollToBottom = false) {
     }
     if (forceScrollToBottom) {
         setTimeout(() => {
-            messageArea.scrollTop = messageArea.scrollHeight;
+            if (currentChatId === chat.id && !ChatHistoryViewport.rangeFor(chat.id, currentChatType)) messageArea.scrollTop = messageArea.scrollHeight;
         }, 0);
     } else if (isLoadMore) {
         // 临时禁用平滑滚动以防止位置跳动
@@ -256,11 +268,13 @@ function renderMessages(isLoadMore = false, forceScrollToBottom = false) {
 }
 
 function loadMoreMessages() {
+    if (ChatHistoryViewport.move(-1)) return;
     currentPage++;
     renderMessages(true, false);
 }
 
 function loadNewerMessages() {
+    if (ChatHistoryViewport.move(1)) return;
     if (currentPage > 1) {
         currentPage--;
         renderMessages(false, false);
@@ -268,4 +282,89 @@ function loadNewerMessages() {
         const area = document.getElementById('message-area');
         if (area) area.scrollTop = 0;
     }
+}
+
+// Temporary display ranges belong to the renderer; historical messages are never rewritten.
+const ChatHistoryViewport = window.ChatHistoryViewport = {
+    range: null,
+    generation: 0,
+    reset() { this.range = null; this.generation++; },
+    rangeFor(id, type) { return this.range?.chatId === id && this.range.chatType === type ? this.range : null; },
+    capture() {
+        if (!document.getElementById('chat-room-screen')?.classList.contains('active')) return null;
+        const chat = MessageReference.getChat(db, currentChatType, currentChatId);
+        if (!chat) return null;
+        messageArea.scrollTo({top: messageArea.scrollTop, behavior:'instant'});
+        const top = messageArea.getBoundingClientRect().top;
+        const nodes = [...messageArea.querySelectorAll('.message-wrapper[data-history-index]')];
+        const node = nodes.find(el => el.getBoundingClientRect().bottom > top);
+        const history = getDisplayMessageHistory(chat, currentChatType);
+        const message = node && history[Number(node.dataset.historyIndex)];
+        return {chatId: chat.id, chatType: currentChatType, messageId: message?.id ?? null, offset: node ? node.getBoundingClientRect().top-top : 0, includeArchived: !!this.range?.includeArchived, firstId: history[Number(nodes[0]?.dataset.historyIndex)]?.id, lastId: history[Number(nodes.at(-1)?.dataset.historyIndex)]?.id};
+    },
+    locate(type, id, messageId, offset, bounds) {
+        const resolved = MessageReference.resolve(type, id, messageId, db);
+        if (!resolved || currentChatId !== resolved.chat.id || currentChatType !== type) return false;
+        this.range = {chatId: resolved.chat.id, chatType: type, start: 0, end: 0, includeArchived: !!bounds?.includeArchived};
+        let history = getDisplayMessageHistory(resolved.chat, type), index = history.indexOf(resolved.message);
+        if (index < 0) { this.range.includeArchived = true; history = getDisplayMessageHistory(resolved.chat, type); index = history.indexOf(resolved.message); }
+        if (index < 0) { this.reset(); return false; }
+        this.range.start = Math.max(0, index-25); this.range.end = Math.min(history.length, index+26);
+        if (bounds) {
+            const first = history.findIndex(message => message.id === bounds.firstId), last = history.findIndex(message => message.id === bounds.lastId);
+            if (first >= 0 && first <= index && last >= index) { this.range.start = first; this.range.end = last+1; }
+        }
+        currentPage = Math.max(1, Math.ceil((history.length-index)/MESSAGES_PER_PAGE));
+        this.range.page = currentPage;
+        renderMessages(false, false);
+        const element = [...messageArea.querySelectorAll('.message-wrapper[data-history-index]')].find(node => Number(node.dataset.historyIndex) === index);
+        if (!element) { this.reset(); renderMessages(false, false); return false; }
+        const generation = ++this.generation;
+        const align = () => {
+            if (this.generation !== generation || !element.isConnected) return;
+            if (offset == null) element.scrollIntoView({block:'center', behavior:'instant'});
+            else messageArea.scrollTo({top:messageArea.scrollTop+element.getBoundingClientRect().top-messageArea.getBoundingClientRect().top-offset,behavior:'instant'});
+        };
+        align(); requestAnimationFrame(align);
+        element.querySelectorAll('img').forEach(img => img.addEventListener('load', align, {once:true}));
+        element.classList.add('message-locate-highlight');
+        setTimeout(() => element.classList.remove('message-locate-highlight'),2200);
+        return true;
+    },
+    restore(anchor) {
+        if (!anchor) return;
+        if (currentChatId !== anchor.chatId || currentChatType !== anchor.chatType) openChatRoom(anchor.chatId,anchor.chatType);
+        if (anchor.messageId != null) this.locate(anchor.chatType,anchor.chatId,anchor.messageId,anchor.offset,anchor);
+    },
+    move(direction) {
+        const view = this.rangeFor(currentChatId,currentChatType);
+        if (!view) return false;
+        const history = getDisplayMessageHistory(MessageReference.getChat(db,currentChatType,currentChatId),currentChatType);
+        const anchor = this.capture();
+        if (direction < 0) { view.start = Math.max(0,view.start-MESSAGES_PER_PAGE); view.end = Math.min(view.end,view.start+200); }
+        else { view.end = Math.min(history.length,view.end+MESSAGES_PER_PAGE); view.start = Math.max(view.start,view.end-200); }
+        currentPage = view.page = Math.max(1,Math.ceil((history.length-view.end+1)/MESSAGES_PER_PAGE));
+        renderMessages(false,false);
+        const target = history.findIndex(message => message.id === anchor?.messageId);
+        const node = [...messageArea.querySelectorAll('[data-history-index]')].find(el => Number(el.dataset.historyIndex)===target);
+        if (node) messageArea.scrollTo({top:messageArea.scrollTop+node.getBoundingClientRect().top-messageArea.getBoundingClientRect().top-anchor.offset,behavior:'instant'});
+        else messageArea.scrollTop = direction < 0 ? 0 : messageArea.scrollHeight;
+        return true;
+    }
+};
+
+function bindQuotedMessageNavigation(bubble, msg, chatId, chatType) {
+    if (!bubble) return;
+    bubble.querySelectorAll('.quoted-message').forEach(quote => {
+        quote.tabIndex = 0;
+        quote.setAttribute('role', 'button');
+        quote.setAttribute('aria-label', '查看引用的原消息');
+        const jump = event => {
+            if (isInMultiSelectMode) return;
+            event.preventDefault(); event.stopPropagation();
+            if (!MessageReference.locate(chatType, chatId, msg.quote?.messageId ?? msg.quote?.id)) showToast('引用的原消息已不存在');
+        };
+        quote.addEventListener('click', jump);
+        quote.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') jump(event); });
+    });
 }

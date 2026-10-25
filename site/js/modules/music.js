@@ -16,6 +16,34 @@
     const root = () => document.getElementById('music-screen');
     const field = name => root().querySelector(`[data-music="${name}"]`);
     const status = text => { field('status').textContent = text; };
+    function showView(name) {
+        if (!root().querySelector(`[data-music-panel="${name}"]`)) return;
+        root().querySelectorAll('[data-music-panel]').forEach(panel => { panel.hidden = panel.dataset.musicPanel !== name; });
+        root().querySelectorAll('[data-music-view]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.musicView === name)));
+        root().querySelector('.music-main').scrollTop = 0;
+        root().dataset.musicView = name;
+    }
+    function renderPlayback() {
+        const audio = field('audio'), current = tracks.find(track => track.id === queue?.currentId);
+        const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
+        const playing = !audio.paused && !audio.ended;
+        field('play').disabled = !current;
+        field('play').textContent = playing ? 'Ⅱ' : '▶';
+        field('play').setAttribute('aria-label', playing ? '暂停' : '播放');
+        field('playback-state').textContent = current ? (audio.error ? '音源暂不可用' : playing ? '正在播放' : '等你按下播放') : '选择一首喜欢的歌';
+        field('artist').textContent = current ? (current.artist || (current.online ? '在线歌曲' : '本地音乐')) : '从曲库选择，或搜索新的旋律';
+        field('seek').max = String(duration);
+        field('seek').value = String(audio.currentTime || 0);
+        field('seek').disabled = !duration || !loadedTrackId;
+        field('seek').setAttribute('aria-valuetext', `${global.MusicCore.time(audio.currentTime || 0)} / ${global.MusicCore.time(duration)}`);
+        field('elapsed').textContent = global.MusicCore.time(audio.currentTime || 0);
+        field('duration').textContent = global.MusicCore.time(duration);
+        field('volume').value = String(audio.volume);
+        field('queue-count').textContent = String(activeOrder().length);
+    }
+    async function confirmChange(title, message, confirmText = '确定') {
+        return await global.showAppConfirmDialog({ title, message, confirmText, cancelText: '取消', dismissText: '' }) === 'confirm';
+    }
     function serialize(action) {
         const next = writes.then(action);
         writes = next.catch(() => {});
@@ -69,12 +97,13 @@
         field('title').textContent = current?.title || '还没有歌曲';
         field('previous').disabled = !queue?.order.length;
         field('next').disabled = !queue?.order.length;
+        renderPlayback();
         renderLyrics(current);
         renderSharingRoles();
         renderCandidates();
         renderSuggestion();
         renderPlaylists();
-        if (!tracks.length) { list.textContent = '还没有歌曲，可以在线搜索、添加链接或导入本地音频。'; return; }
+        if (!activeOrder().length) { list.textContent = tracks.length ? '这个歌单还没有歌曲，点击编辑来添加。' : '曲库还是空的。导入本地歌曲，或去搜索喜欢的音乐。'; return; }
         for (const id of activeOrder()) {
             const track = tracks.find(item => item.id === id);
             const row = document.createElement('div'); row.className = 'music-track';
@@ -83,7 +112,7 @@
             name.onclick = () => void run(() => play(id));
             const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = '移除';
             remove.setAttribute('aria-label', `移除 ${track.title}`);
-            remove.onclick = () => { if (global.confirm(`移除“${track.title}”及其本地音频？此操作不能撤销。`)) void run(() => removeTrack(id)); };
+            remove.onclick = () => void run(async () => { if (await confirmChange('移除歌曲', `移除“${track.title}”及其本地音频？此操作不能撤销。`, '移除')) await removeTrack(id); });
             row.append(name, remove);
             if(playlistId){const detach=document.createElement('button');detach.type='button';detach.textContent='移出歌单';detach.onclick=()=>void run(()=>{
                 const saved=playlists.find(item=>item.id===playlistId);return savePlaylist(saved.title,saved.trackIds.filter(key=>key!==id),saved.id);
@@ -396,7 +425,7 @@
             const all=document.createElement('button');all.type='button';all.textContent='全部加入队列';
             all.onclick=()=>void run(()=>addOnline(songs));list.append(all);
             const grouped=document.createElement('button');grouped.type='button';grouped.textContent='导入为歌单';grouped.onclick=()=>{
-                const name=global.prompt('歌单名称',field('online-query').value || '在线歌单');if(name?.trim())void run(async()=>{const result=await addOnline(songs);await savePlaylist(name,result.ids);});
+                void run(async()=>{const values=await global.showAppFormDialog({title:'导入为歌单',fields:[{name:'title',label:'歌单名称',value:field('online-query').value || '在线歌单',type:'text',required:true}],confirmText:'导入'});if(!values)return;const result=await addOnline(songs);await savePlaylist(values.title,result.ids);});
             };list.append(grouped);
         }
         for(const song of songs) {
@@ -409,6 +438,7 @@
         const select=field('playlist');select.replaceChildren(new Option('全部歌曲',''));
         for(const list of playlists)select.append(new Option(list.title,list.id));select.value=playlistId;
         field('playlist-delete').disabled=!playlistId;
+        field('playlist-edit').disabled=!playlistId;
     }
     function savePlaylist(title,trackIds,id='playlist:'+global.crypto.randomUUID()) {
         if(!String(title).trim())throw new Error('请输入歌单名称');
@@ -485,6 +515,20 @@
     function setup() {
         if (initialized) return;
         initialized = true;
+        root().querySelectorAll('[data-music-view]').forEach(button => { button.onclick = () => showView(button.dataset.musicView); });
+        root().querySelectorAll('[data-music-toggle]').forEach(button => { button.onclick = () => {
+            const panel = field(button.dataset.musicToggle); panel.hidden = !panel.hidden;
+            button.setAttribute('aria-expanded', String(!panel.hidden));
+        }; });
+        field('play').onclick = () => void run(async () => {
+            const audio = field('audio');
+            if (!audio.paused) pause();
+            else if (loadedTrackId === queue?.currentId && url && !audio.error) await audio.play();
+            else await play();
+        });
+        field('seek').oninput = () => { if (Number.isFinite(field('audio').duration)) field('audio').currentTime = Number(field('seek').value); };
+        field('volume').oninput = () => { field('audio').volume = Number(field('volume').value); };
+        ['timeupdate', 'play', 'pause', 'ended', 'loadedmetadata', 'durationchange', 'emptied', 'error', 'volumechange'].forEach(name => field('audio').addEventListener(name, renderPlayback));
         field('import').onclick = () => field('files').click();
         field('files').onchange = event => { const files = Array.from(event.target.files); event.target.value = ''; void run(() => importFiles(files)); };
         field('previous').onclick = () => void run(() => step(-1));
@@ -497,7 +541,7 @@
             const ids=[...field('playlist-members').querySelectorAll('input:checked')].map(input=>input.value);
             await savePlaylist(field('playlist-name').value,ids,field('playlist-editor').dataset.id || undefined);field('playlist-editor').hidden=true;
         });
-        field('playlist-delete').onclick=()=>{const id=playlistId;if(id && global.confirm('删除这个歌单？歌曲及音频会保留。'))void run(()=>serialize(async()=>{await table().delete(id);await refresh();}));};
+        field('playlist-delete').onclick=()=>{const id=playlistId;if(id)void run(async()=>{if(await confirmChange('删除歌单','删除这个歌单？歌曲及音频会保留。','删除'))await serialize(async()=>{await table().delete(id);await refresh();});});};
         field('online-search').onclick=()=>void searchOnline();
         field('online-query').onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();void searchOnline();}};
         field('online-playlist').onclick=()=>void searchOnline('playlist');
@@ -515,29 +559,29 @@
         field('cancel-lyrics').onclick=()=>{field('lyric-editor').hidden=true;};
         field('online-lyrics').onclick=()=>void run(async()=>{
             const track=tracks.find(item=>item.id===queue?.currentId);if(!track?.online)throw new Error('当前是本地歌曲，可粘贴或导入歌词');
-            if(track.lyrics && !global.confirm('替换当前歌曲已有歌词？'))return;
+            if(track.lyrics && !await confirmChange('替换歌词','替换当前歌曲已有歌词？'))return;
             await loadOnlineLyrics(track.id,track.online,true);
         });
         field('sharing-role').onchange = () => { stopSharing(); };
         field('sharing-lyrics').onchange = stopSharing;
-        for(const name of ['sharing-lyric-mode','sharing-auto','sharing-all'])field(name).onchange=stopSharing;
+        for(const name of ['sharing-lyric-mode','sharing-auto','sharing-all'])field(name).onchange=()=>{stopSharing();field('candidate-options').hidden=field('sharing-all').checked;};
         field('sharing-start').onclick = () => void run(() => startSharing(field('sharing-role').value, field('sharing-lyrics').checked,[...candidateSelection],{
             lyricMode:field('sharing-lyric-mode').value,autoSwitch:field('sharing-auto').checked,allCandidates:field('sharing-all').checked,
             roleIds:[...field('sharing-others').querySelectorAll('input:checked')].map(input=>input.value)
         }));
         field('sharing-stop').onclick = stopSharing;
-        field('import-lyrics').onclick = () => {
+        field('import-lyrics').onclick = () => void run(async () => {
             const track = tracks.find(item => item.id === queue?.currentId);
-            if (!track || (track.lyrics && !global.confirm('替换当前歌曲已有歌词？'))) return;
+            if (!track || (track.lyrics && !await confirmChange('替换歌词','替换当前歌曲已有歌词？'))) return;
             pickerTrackId = track.id; field('lyric-file').click();
-        };
+        });
         field('lyric-file').onchange = event => {
             const id = pickerTrackId, file = event.target.files[0]; event.target.value = '';
             if (file && id) void run(() => importLyrics(id, file));
         };
         field('clear-lyrics').onclick = () => {
             const id = queue?.currentId;
-            if (id && global.confirm('清除当前歌曲歌词？音频会保留。')) void run(() => saveLyrics(id, null));
+            if (id) void run(async () => { if (await confirmChange('清除歌词','清除当前歌曲歌词？音频会保留。','清除')) await saveLyrics(id, null); });
         };
         ['timeupdate','seeking','seeked','loadedmetadata','emptied'].forEach(name => field('audio').addEventListener(name, syncLyrics));
         ['timeupdate','play','pause','seeked','loadedmetadata','emptied'].forEach(name => field('audio').addEventListener(name, renderSharingStatus));
@@ -563,7 +607,7 @@
             const epoch=accountEpoch;const lists=await global.MioMusicOnline.account.getUserPlaylists();if(epoch!==accountEpoch)return;
             const panel=field('account-playlists');panel.replaceChildren();
             for(const item of lists){const button=document.createElement('button');button.type='button';button.textContent=item.name || '歌单';
-                button.onclick=()=>void run(async()=>{const songs=await global.MioMusicOnline.account.getUserPlaylistTracks(item.id);if(epoch===accountEpoch)renderOnlineResults(songs);});panel.append(button);}
+                button.onclick=()=>void run(async()=>{const songs=await global.MioMusicOnline.account.getUserPlaylistTracks(item.id);if(epoch===accountEpoch){renderOnlineResults(songs);showView('search');}});panel.append(button);}
         });
         if(global.navigator?.mediaSession)for(const [action,handler] of Object.entries({play:()=>void run(()=>field('audio').play()),pause,previoustrack:()=>void run(()=>step(-1)),nexttrack:()=>void run(()=>step(1)),seekto:event=>{if(Number.isFinite(event.seekTime))field('audio').currentTime=event.seekTime;}})){
             try{global.navigator.mediaSession.setActionHandler(action,handler);}catch(_){/* Browser does not implement this action. */}
@@ -581,6 +625,8 @@
         await refresh();
         if (options.roleId && roles().some(role => String(role.id) === String(options.roleId))) {
             field('sharing-role').value = String(options.roleId);
+            showView('together');
+            renderSharingStatus();
         }
         // Returning from chat must keep the current media snapshot and pending suggestion.
         if (queue.currentId && (loadedTrackId !== queue.currentId || !url)) await select(queue.currentId);

@@ -151,9 +151,13 @@ function setupPhotoVideoSystem() {
     const pvTextInput = document.getElementById('pv-text-input');
 
     photoVideoBtn.addEventListener('click', () => {
+        document.getElementById('image-recognition-btn').click();
+    });
+    document.getElementById('photo-description-open-btn')?.addEventListener('click', () => {
         sendPvForm.reset();
-        sendPvForm.hidden = true;
+        sendPvForm.hidden = false;
         sendPvModal.classList.add('visible');
+        pvTextInput.focus();
     });
     document.getElementById('photo-description-btn').addEventListener('click', () => {
         sendPvForm.hidden = false;
@@ -168,8 +172,10 @@ function setupPhotoVideoSystem() {
 function sendMyPhotoVideo(text) {
     if (!text) return;
     document.getElementById('send-pv-modal').classList.remove('visible');
+    const targetChatId=currentChatId, targetChatType=currentChatType;
     setTimeout(() => {
-        const chat = (currentChatType === 'private') ? db.characters.find(c => c.id === currentChatId) : db.groups.find(g => g.id === currentChatId);
+        const chat = (targetChatType === 'private') ? db.characters.find(c => c.id === targetChatId) : db.groups.find(g => g.id === targetChatId);
+        if (!chat) return;
         if (!chat.history) chat.history = [];
 
         // --- 添加时间感知逻辑 ---
@@ -190,19 +196,19 @@ function sendMyPhotoVideo(text) {
                         timestamp: now.getTime() - 2
                     };
 
-                    if (currentChatType === 'group') {
+                    if (targetChatType === 'group') {
                         visualMessage.senderId = 'user_me';
                     }
 
                     chat.history.push(visualMessage);
-                    addMessageBubble(visualMessage, currentChatId, currentChatType);
+                    addMessageBubble(visualMessage, targetChatId, targetChatType);
                 }
             }
             chat.lastUserMessageTimestamp = now.getTime();
         }
         // ----------------------
 
-        const myName = (currentChatType === 'private') ? chat.myName : chat.me.nickname;
+        const myName = (targetChatType === 'private') ? chat.myName : chat.me.nickname;
         const content = `[${myName}发来的照片\/视频：${text}]`;
         const message = {
             id: `msg_${Date.now()}`,
@@ -211,12 +217,12 @@ function sendMyPhotoVideo(text) {
             parts: [{type: 'text', text: content}],
             timestamp: Date.now()
         };
-        if (currentChatType === 'group') {
+        if (targetChatType === 'group') {
             message.senderId = 'user_me';
         }
         chat.history.push(message);
-        addMessageBubble(message, currentChatId, currentChatType);
-        saveCurrentChat();
+        addMessageBubble(message, targetChatId, targetChatType);
+        (targetChatType === 'private' ? saveCharacter(targetChatId) : saveGroup(targetChatId)).catch(() => showToast('消息保存失败，请检查存储空间'));
         renderChatList();
     }, 100);
 }
@@ -225,30 +231,35 @@ function setupImageRecognition() {
     const imageRecognitionBtn = document.getElementById('image-recognition-btn');
     const imageUploadInput = document.getElementById('image-upload-input');
 
+    let destination, selection = 0;
     imageRecognitionBtn.addEventListener('click', () => {
+        destination = {id:currentChatId,type:currentChatType};
         document.getElementById('send-pv-modal').classList.remove('visible');
         imageUploadInput.click();
     });
     imageUploadInput.addEventListener('change', async (e) => {
-        const files = e.target.files;
-        if (!files || files.length === 0) return;
+        const files = Array.from(e.target.files || []);
+        if (!files.length) return;
+        const target = destination && { ...destination }, request = ++selection;
+        let sent = 0;
         const opts = { quality: 0.8, maxWidth: 1024, maxHeight: 1024 };
         try {
             for (let i = 0; i < files.length; i++) {
                 const file = files[i];
                 try {
                     const compressedUrl = await compressImage(file, opts);
-                    sendImageForRecognition(compressedUrl);
+                    if(target?.id!==currentChatId || target?.type!==currentChatType){showToast('聊天已切换，未发送剩余图片');break;}
+                    if (await sendImageForRecognition(compressedUrl)) sent++;
                 } catch (err) {
                     console.error('Image compression failed:', err);
                     showToast(`第 ${i + 1} 张图片处理失败，请重试`);
                 }
             }
             if (files.length > 1) {
-                showToast(`已发送 ${files.length} 张图片`);
+                showToast(sent ? `已发送 ${sent} / ${files.length} 张图片` : '这些图片尚未发送，请稍后重新选择');
             }
         } finally {
-            e.target.value = null;
+            if (request === selection) e.target.value = null;
         }
     });
 }
@@ -258,10 +269,13 @@ function setupCameraCapture() {
     const cameraUploadInput = document.getElementById('camera-upload-input');
     if (!cameraCaptureBtn || !cameraUploadInput) return;
 
+    let destination;
     cameraCaptureBtn.addEventListener('click', () => {
-        cameraUploadInput.click();
+        destination={id:currentChatId,type:currentChatType};
+        void openChatCamera(cameraUploadInput, destination);
     });
     cameraUploadInput.addEventListener('change', async (e) => {
+        const target = destination && { ...destination };
         const file = e.target.files[0];
         if (file) {
             try {
@@ -270,7 +284,8 @@ function setupCameraCapture() {
                     maxWidth: 1024,
                     maxHeight: 1024
                 });
-                sendImageForRecognition(compressedUrl);
+                if(target?.id!==currentChatId || target?.type!==currentChatType){showToast('聊天已切换，请重新拍照');return;}
+                await sendImageForRecognition(compressedUrl);
             } catch (error) {
                 console.error('Image compression failed:', error);
                 showToast('图片处理失败，请重试');
@@ -281,9 +296,31 @@ function setupCameraCapture() {
     });
 }
 
+async function openChatCamera(fallbackInput, destination) {
+    if (!navigator.mediaDevices?.getUserMedia || !window.isSecureContext) {
+        showToast('浏览器无法直接预览摄像头，使用系统拍照或相册');fallbackInput.click();return;
+    }
+    const overlay=document.createElement('div');overlay.className='modal-overlay visible';overlay.id='chat-camera-preview';
+    overlay.innerHTML='<div class="modal-window chat-camera-window" role="dialog" aria-modal="true" aria-label="拍照"><h3>拍照</h3><video autoplay playsinline muted></video><p role="status">正在打开摄像头…</p><div class="app-confirm-dialog-actions"><button type="button" class="btn btn-neutral" data-action="cancel">取消</button><button type="button" class="btn btn-secondary" data-action="album">选择照片</button><button type="button" class="btn btn-primary" data-action="capture" disabled>拍摄并发送</button></div></div>';
+    document.body.append(overlay);const video=overlay.querySelector('video'),status=overlay.querySelector('p'),capture=overlay.querySelector('[data-action=capture]');let stream,closed=false;
+    const close=()=>{closed=true;stream?.getTracks().forEach(track=>track.stop());video.srcObject=null;observer.disconnect();overlay.remove();document.removeEventListener('keydown',keydown,true);document.removeEventListener('visibilitychange',visibility);window.removeEventListener('pagehide',close);};
+    const visibility=()=>{if(document.hidden)close();};
+    const observer=new MutationObserver(()=>{if(!overlay.classList.contains('visible'))close();});observer.observe(overlay,{attributes:true,attributeFilter:['class']});
+    const keydown=event=>{if(event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();close();}};
+    overlay.onclick=event=>{const action=event.target.closest('[data-action]')?.dataset.action;if(event.target===overlay||action==='cancel')close();if(action==='album'){close();document.getElementById('image-recognition-btn').click();}};
+    document.addEventListener('keydown',keydown,true);document.addEventListener('visibilitychange',visibility);window.addEventListener('pagehide',close,{once:true});
+    capture.onclick=async()=>{
+        if(!video.videoWidth)return;capture.disabled=true;
+        try{const canvas=document.createElement('canvas'),scale=Math.min(1,1024/Math.max(video.videoWidth,video.videoHeight));canvas.width=Math.round(video.videoWidth*scale);canvas.height=Math.round(video.videoHeight*scale);canvas.getContext('2d').drawImage(video,0,0,canvas.width,canvas.height);const data=canvas.toDataURL('image/jpeg',.8);close();if(destination.id!==currentChatId||destination.type!==currentChatType){showToast('聊天已切换，请重新拍照');return;}await sendImageForRecognition(data);}catch{showToast('拍照失败，可选择相册照片');capture.disabled=false;}
+    };
+    try{stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}},audio:false});if(closed){stream.getTracks().forEach(track=>track.stop());return;}video.srcObject=stream;await video.play();status.textContent='仅在点击发送后分享照片';capture.disabled=false;}catch(error){if(closed)return;status.textContent=error.name==='NotAllowedError'?'未获得摄像头权限，可在浏览器设置中授权，或选择相册照片。':'摄像头暂不可用，请选择相册照片。';}
+}
+
 async function sendImageForRecognition(base64Data) {
-    if (!base64Data || isGenerating) return;
+    if (!base64Data) return false;
+    if (isGenerating) { showToast('请等待当前回复完成后再发送图片'); return false; }
     const chat = (currentChatType === 'private') ? db.characters.find(c => c.id === currentChatId) : db.groups.find(g => g.id === currentChatId);
+    if (!chat) return false;
     if (!chat.history) chat.history = [];
 
     // --- 添加时间感知逻辑 ---
@@ -319,7 +356,7 @@ async function sendImageForRecognition(base64Data) {
     const myName = (currentChatType === 'private') ? chat.myName : chat.me.nickname;
     const textPrompt = `[${myName}发来了一张图片：]`;
     const message = {
-        id: `msg_${Date.now()}`,
+        id: `msg_${Date.now()}_${crypto.randomUUID()}`,
         role: 'user',
         content: textPrompt,
         parts: [{type: 'text', text: textPrompt}, {type: 'image', data: base64Data}],
@@ -332,6 +369,7 @@ async function sendImageForRecognition(base64Data) {
     addMessageBubble(message, currentChatId, currentChatType);
     await saveCurrentChat();
     renderChatList();
+    return true;
 }
 
 function setupWalletSystem() {
@@ -343,26 +381,46 @@ function setupWalletSystem() {
     const acceptTransferBtn = document.getElementById('accept-transfer-btn');
     const returnTransferBtn = document.getElementById('return-transfer-btn');
 
+    let paymentGeneration=0,paymentsReady=false;
+    const sending=new Set(),sessionKey=(type,id)=>JSON.stringify([type,id]);
+    const transferSubmit=sendTransferForm.querySelector('[type="submit"]');
+    const currencyRoute=document.getElementById('transfer-open-currency'),useCny=document.getElementById('transfer-use-cny');
+    currencyRoute.addEventListener('click',async()=>{
+        const roleId=currentChatType==='private'?String(currentChatId):null;
+        currencyRoute.disabled=true;
+        try{await CurrencyTransfer.open({roleId});sendTransferModal.classList.remove('visible');}
+        catch{showToast('多币种转账暂时无法打开，请重试。');}
+        finally{currencyRoute.disabled=false;}
+    });
+    useCny.addEventListener('click',()=>{sendTransferForm.hidden=false;useCny.hidden=true;transferAmountInput.focus();});
+    async function refreshTransferPaymentMethods(){
+        const generation=++paymentGeneration,chatId=currentChatId,chatType=currentChatType;
+        const methodList=document.getElementById('transfer-payment-methods'),note=document.getElementById('transfer-currency-note');
+        paymentsReady=false;transferSubmit.disabled=true;currencyRoute.disabled=true;useCny.hidden=true;sendTransferForm.hidden=true;methodList.replaceChildren();note.textContent='正在读取钱包…';
+        try{
+            const read=await WalletSystem.read('user');if(!read.ok)throw Error('READ_FAILED');
+            const role=chatType==='private'?db.characters.find(row=>String(row.id)===String(chatId)):null;
+            const recipient=role?await WalletSystem.read(String(role.id)):null;
+            if(generation!==paymentGeneration||currentChatId!==chatId||currentChatType!==chatType||!sendTransferModal.classList.contains('visible'))return;
+            const userCurrency=CurrencyCore.currency(read.data.defaultCurrency||db.piggyBank?.currency||db.piggyBank?.currencyWallet?.defaultCurrency);
+            const roleCurrency=CurrencyCore.currency(recipient?.data?.defaultCurrency||role?.walletLedger?.currency||role?.walletLedger?.currencyWallet?.defaultCurrency);
+            const preferCurrency=userCurrency!=='CNY'||role&&roleCurrency!=='CNY';
+            note.textContent='我的默认币种：'+CurrencyCore.meta(userCurrency).name+' '+userCurrency+(role?'；对方：'+(recipient?.ok?CurrencyCore.meta(roleCurrency).name+' '+roleCurrency:'暂时无法读取'):'')+'。多币种转账确认后直接到账；聊天待领取转账目前仅支持人民币 CNY。';
+            currencyRoute.textContent=role?'多币种转账给 '+(role.remarkName||role.realName||'当前角色'):'多币种转账（选择收款角色）';
+            currencyRoute.className='btn '+(preferCurrency?'btn-primary':'btn-neutral');currencyRoute.disabled=false;
+            sendTransferForm.hidden=!!preferCurrency;useCny.hidden=!preferCurrency;
+            function choice(value,name,amount,checked=false,disabled=false){const label=document.createElement('label');label.className='payment-method-item';const radio=document.createElement('input');radio.type='radio';radio.name='transfer-pay-method';radio.value=value;radio.checked=checked;radio.disabled=disabled;const title=document.createElement('span');title.className='pm-name';title.textContent=name;const balance=document.createElement('span');balance.className='pm-balance';balance.textContent=amount;label.append(radio,title,balance);methodList.append(label);}
+            const account=read.data.accounts.find(row=>row.currency==='CNY'),available=Number.isSafeInteger(account?.balanceMinor)?account.balanceMinor-(account.reservedMinor||0):null;
+            choice('balance','人民币余额',available==null?'待核对':CurrencyCore.formatMinor(available,'CNY'),true,available==null);
+            if(read.data.mode==='legacy')for(const card of db.piggyBank?.receivedFamilyCards||[])if(card.status==='active')choice(card.id,(card.fromCharName||'角色')+'的亲属卡','剩余 '+CurrencyCore.formatMinor(Math.max(0,Math.round((card.limit-(card.usedAmount||0))*100)),'CNY'));
+            const enabled=methodList.querySelector('input:not(:disabled)');if(enabled)enabled.checked=true;
+            paymentsReady=!!enabled;transferSubmit.disabled=!paymentsReady||sending.has(sessionKey(chatType,chatId));
+        }catch{if(generation===paymentGeneration){note.textContent='钱包暂时无法读取，请关闭后重试。';transferSubmit.disabled=true;}}
+    }
+    new MutationObserver(()=>{if(sendTransferModal.classList.contains('visible'))void refreshTransferPaymentMethods();else{paymentGeneration++;paymentsReady=false;}}).observe(sendTransferModal,{attributes:true,attributeFilter:['class']});
     walletBtn.addEventListener('click', () => {
         if (currentChatType === 'private') {
             sendTransferForm.reset();
-            const methodList = document.getElementById('transfer-payment-methods');
-            if (methodList) {
-                const balance = typeof getPiggyBalance === 'function' ? getPiggyBalance() : 520;
-                let html = '<label class="payment-method-item"><input type="radio" name="transfer-pay-method" value="balance" checked><span class="pm-name">余额</span><span class="pm-balance">' + balance + '</span></label>';
-                const received = (db.piggyBank && db.piggyBank.receivedFamilyCards) ? db.piggyBank.receivedFamilyCards.filter(c => c.status === 'active') : [];
-                if (received.length > 0) {
-                    html += '<div class="fc-payment-section">';
-                    html += '<div class="fc-payment-header" onclick="this.parentElement.classList.toggle(\'expanded\')"><span>亲属卡 (' + received.length + '张)</span><span class="fc-toggle-arrow">▶</span></div>';
-                    html += '<div class="fc-payment-cards">';
-                    received.forEach(c => {
-                        const remaining = Math.max(0, c.limit - (c.usedAmount || 0));
-                        html += '<label class="payment-method-item"><input type="radio" name="transfer-pay-method" value="' + c.id + '"><span class="pm-name">' + (c.fromCharName || '') + '的亲属卡</span><span class="pm-balance">剩余 ' + remaining + '</span></label>';
-                    });
-                    html += '</div></div>';
-                }
-                methodList.innerHTML = html;
-            }
             sendTransferModal.classList.add('visible');
         } else if (currentChatType === 'group') {
             // currentGroupAction 应该在 group_chat.js 或全局定义
@@ -375,56 +433,66 @@ function setupWalletSystem() {
     });
     sendTransferForm.addEventListener('submit', async (e) => {
         e.preventDefault();
+        const chatId=currentChatId,chatType=currentChatType,key=sessionKey(chatType,chatId);
+        if(sending.has(key)||!paymentsReady||sendTransferForm.hidden)return;
+        const chat=chatType==='private'?db.characters.find(row=>row.id===chatId):db.groups.find(row=>row.id===chatId);
+        const recipients=chatType==='private'?[chatId]:[...(typeof currentGroupAction!=='undefined'?currentGroupAction?.recipients||[]:[])];
+        if(!chat||!recipients.length){showToast('请选择有效的收款会话和角色');return;}
+        const isCurrentChat=()=>currentChatId===chatId&&currentChatType===chatType;
+        const transferToast=message=>{if(isCurrentChat())showToast(message);};
+        sending.add(key);transferSubmit.disabled=true;
+        try{
         const amountStr = (transferAmountInput.value || '').trim().replace(',', '.');
-        const amount = parseFloat(amountStr);
+        const amountMinor=CurrencyCore.amountToMinor(amountStr,'CNY');
+        const amount=amountMinor/100;
         const remark = transferRemarkInput.value.trim();
-        if (isNaN(amount) || amount <= 0) {
-            showToast('请输入有效的金额');
+        if (amountMinor==null || amountMinor <= 0) {
+            transferToast('请输入有效的金额');
             return;
         }
         let totalDeduct = amount;
-        if (currentChatType === 'group' && typeof currentGroupAction !== 'undefined' && currentGroupAction.recipients && currentGroupAction.recipients.length > 1) {
-            totalDeduct = amount * currentGroupAction.recipients.length;
+        if (chatType === 'group' && recipients.length > 1) {
+            totalDeduct = amount * recipients.length;
         }
         const payMethodRadio = document.querySelector('input[name="transfer-pay-method"]:checked');
         const payMethod = payMethodRadio ? payMethodRadio.value : 'balance';
         if(window.WalletLedger && await WalletSystem.mode()!=='legacy'){
-            if(payMethod!=='balance'){showToast('新亲属卡只授权订单支付，不能转账。');return;}
-            const chat=currentChatType==='private'?db.characters.find(row=>row.id===currentChatId):db.groups.find(row=>row.id===currentChatId);
-            const recipients=currentChatType==='private'?[String(currentChatId)]:(currentGroupAction?.recipients||[]).map(String);
-            const result=await WalletSystem.chat('user').send({chatId:String(currentChatId),chatType:currentChatType,recipientOwnerIds:recipients,amountMinor:CurrencyCore.amountToMinor(amountStr,'CNY'),remark,idempotencyKey:crypto.randomUUID()});
-            if(!result.ok){showToast(result.reason||result.error.code);return;}
-            WalletChat.sync(chat,result);document.getElementById('send-transfer-modal').classList.remove('visible');
-            for(const message of result.data.messages)addMessageBubble(message,currentChatId,currentChatType);
-            await WalletSystem.refresh();renderChatList();return;
+            if(payMethod!=='balance'){transferToast('新亲属卡只授权订单支付，不能转账。');return;}
+            const result=await WalletSystem.chat('user').send({chatId:String(chatId),chatType,recipientOwnerIds:recipients.map(String),amountMinor,remark,idempotencyKey:crypto.randomUUID()});
+            if(!result.ok){transferToast(result.reason||result.error.code);return;}
+            WalletChat.sync(chat,result);
+            if(isCurrentChat()){
+                sendTransferModal.classList.remove('visible');
+                for(const message of result.data.messages)addMessageBubble(message,chatId,chatType);
+            }
+            await WalletSystem.refresh();if(isCurrentChat())renderChatList();return;
         }
         if (payMethod !== 'balance' && db.piggyBank && db.piggyBank.receivedFamilyCards) {
             const card = db.piggyBank.receivedFamilyCards.find(c => c.id === payMethod);
             if (card && card.status === 'active') {
                 const remaining = card.limit - (card.usedAmount || 0);
                 if (remaining < totalDeduct) {
-                    showToast('亲属卡额度不足');
+                    transferToast('亲属卡额度不足');
                     return;
                 }
             } else {
-                showToast('请选择有效的支付方式');
+                transferToast('请选择有效的支付方式');
                 return;
             }
         }
         if (payMethod === 'balance') {
             if (typeof getPiggyBalance === 'function' && getPiggyBalance() < totalDeduct) {
-                showToast('存钱罐余额不足，无法转账');
+                transferToast('存钱罐余额不足，无法转账');
                 return;
             }
             if (typeof addPiggyTransaction === 'function') {
-                const chat = (currentChatType === 'private') ? db.characters.find(c => c.id === currentChatId) : db.groups.find(g => g.id === currentChatId);
                 let toName = '';
-                if (currentChatType === 'private') {
+                if (chatType === 'private') {
                     toName = chat && chat.realName;
                 } else {
                     // 群聊中，获取所有接收转账的角色名称
-                    if (typeof currentGroupAction !== 'undefined' && currentGroupAction.recipients && currentGroupAction.recipients.length > 0) {
-                        const recipientNames = currentGroupAction.recipients.map(recipientId => {
+                    if (recipients.length > 0) {
+                        const recipientNames = recipients.map(recipientId => {
                             const recipient = chat.members.find(m => m.id === recipientId);
                             return recipient ? (recipient.realName || recipient.groupNickname || '') : '';
                         }).filter(name => name).join('、');
@@ -434,13 +502,12 @@ function setupWalletSystem() {
                     }
                 }
                 const charged=await addPiggyTransaction({ type: 'expense', amount: totalDeduct, remark: remark || '转账', source: '转账', charName: toName || '' });
-                if(charged?.ok===false){showToast(charged.reason);return;}
+                if(charged?.ok===false){transferToast(charged.reason);return;}
             }
         } else if (db.piggyBank && db.piggyBank.receivedFamilyCards) {
             const card = db.piggyBank.receivedFamilyCards.find(c => c.id === payMethod);
             if (card) {
-                const chat = currentChatType === 'private' ? db.characters.find(c => c.id === currentChatId) : db.groups.find(g => g.id === currentChatId);
-                const toName = currentChatType === 'private' ? (chat && chat.realName) : (currentGroupAction && currentGroupAction.recipients && currentGroupAction.recipients.length ? (chat.members || []).map(m => m.realName).filter(Boolean).join('、') : '');
+                const toName = chatType === 'private' ? chat.realName : (chat.members || []).filter(m=>recipients.includes(m.id)).map(m=>m.realName).filter(Boolean).join('、');
                 if (window.WalletSystem && typeof window.WalletSystem.chargeReceivedFamilyCard === 'function') {
                     const chargeResult = await window.WalletSystem.chargeReceivedFamilyCard(card.id, {
                         amount: totalDeduct,
@@ -449,23 +516,25 @@ function setupWalletSystem() {
                         targetName: toName || ''
                     });
                     if (!chargeResult.ok) {
-                        showToast(chargeResult.reason || '亲属卡支付失败');
+                        transferToast(chargeResult.reason || '亲属卡支付失败');
                         return;
                     }
                 }
             }
         }
-        if (window.WalletSystem && typeof window.WalletSystem.persist === 'function') await window.WalletSystem.persist();
-        sendMyTransfer(amountStr, remark);
+        if (window.WalletSystem && typeof window.WalletSystem.persist === 'function' && await window.WalletSystem.persist()===false) {
+            transferToast('钱包保存失败，请核对后重试。');return;
+        }
+        await sendMyTransfer(amountStr, remark, {chatId,chatType,chat,recipients});
+        }catch{transferToast('转账未完成，请核对钱包和聊天记录后重试。');}
+        finally{sending.delete(key);if(isCurrentChat())transferSubmit.disabled=!paymentsReady;}
     });
     acceptTransferBtn.addEventListener('click', () => respondToTransfer('received'));
     returnTransferBtn.addEventListener('click', () => respondToTransfer('returned'));
 }
 
-function sendMyTransfer(amount, remark) {
-    document.getElementById('send-transfer-modal').classList.remove('visible');
-    setTimeout(() => {
-        const chat = (currentChatType === 'private') ? db.characters.find(c => c.id === currentChatId) : db.groups.find(g => g.id === currentChatId);
+async function sendMyTransfer(amount, remark, {chatId,chatType,chat,recipients}) {
+        const messages=[];
         if (!chat.history) chat.history = [];
 
         // --- 添加时间感知逻辑 ---
@@ -486,19 +555,19 @@ function sendMyTransfer(amount, remark) {
                         timestamp: now.getTime() - 2
                     };
 
-                    if (currentChatType === 'group') {
+                    if (chatType === 'group') {
                         visualMessage.senderId = 'user_me';
                     }
 
                     chat.history.push(visualMessage);
-                    addMessageBubble(visualMessage, currentChatId, currentChatType);
+                    messages.push(visualMessage);
                 }
             }
             chat.lastUserMessageTimestamp = now.getTime();
         }
         // ----------------------
 
-        if (currentChatType === 'private') {
+        if (chatType === 'private') {
             const content = `[${chat.myName}给你转账：${amount}元；备注：${remark}]`;
             const message = {
                 id: `msg_${Date.now()}`,
@@ -509,10 +578,9 @@ function sendMyTransfer(amount, remark) {
                 transferStatus: 'pending'
             };
             chat.history.push(message);
-            addMessageBubble(message, currentChatId, currentChatType);
+            messages.push(message);
         } else { 
-            if (typeof currentGroupAction !== 'undefined' && currentGroupAction.recipients) {
-                currentGroupAction.recipients.forEach(recipientId => {
+                recipients.forEach(recipientId => {
                     const recipient = chat.members.find(m => m.id === recipientId);
                     if (recipient) {
                         const content = `[${chat.me.nickname} 向 ${recipient.realName} 转账：${amount}元；备注：${remark}]`;
@@ -526,14 +594,17 @@ function sendMyTransfer(amount, remark) {
                             transferStatus: 'pending'
                         };
                         chat.history.push(message);
-                        addMessageBubble(message, currentChatId, currentChatType);
+                        messages.push(message);
                     }
                 });
-            }
         }
-        saveCurrentChat();
-        renderChatList();
-    }, 100);
+        const saved=chatType==='private'?await saveCharacter(chatId):await saveGroup(chatId);
+        if(saved===false)throw Error('CHAT_SAVE_FAILED');
+        if(currentChatId===chatId&&currentChatType===chatType){
+            document.getElementById('send-transfer-modal').classList.remove('visible');
+            for(const message of messages)addMessageBubble(message,chatId,chatType);
+            renderChatList();
+        }
 }
 
 function handleReceivedTransferClick(messageId) {
@@ -832,6 +903,18 @@ function setupLocationSystem() {
         sendLocationForm.reset();
         sendLocationModal.classList.add('visible');
     });
+    document.getElementById('location-device-btn')?.addEventListener('click', async event => {
+        const button=event.currentTarget, status=document.getElementById('location-device-status');button.disabled=true;
+        status.textContent='正在获取所在城市…';
+        try {
+            const fix=await RealtimeContextHub.captureUserLocation();
+            const region=await RealtimeContextHub.reverseGeocodeLocation(fix);
+            if(!sendLocationModal.classList.contains('visible'))return;
+            if(region?.label){locationPlaceInput.value=region.label;status.textContent='已填入城市名称，确认发送后才会分享。';}
+            else status.textContent='已获得定位，但城市查询不可用，请手动填写地点。';
+        } catch(error){status.textContent=error.message || '定位暂不可用，请手动填写地点。';}
+        finally{button.disabled=false;}
+    });
     sendLocationModal.addEventListener('click', (e) => {
         if (e.target === sendLocationModal) sendLocationModal.classList.remove('visible');
     });
@@ -855,8 +938,9 @@ function setupLocationSystem() {
 
 function sendMyLocation(content) {
     document.getElementById('send-location-modal').classList.remove('visible');
+    const targetChatId=currentChatId, targetChatType=currentChatType;
     setTimeout(() => {
-        const chat = (currentChatType === 'private') ? db.characters.find(c => c.id === currentChatId) : db.groups.find(g => g.id === currentChatId);
+        const chat = (targetChatType === 'private') ? db.characters.find(c => c.id === targetChatId) : db.groups.find(g => g.id === targetChatId);
         if (!chat) return;
         if (!chat.history) chat.history = [];
 
@@ -878,12 +962,12 @@ function sendMyLocation(content) {
                         timestamp: now.getTime() - 2
                     };
 
-                    if (currentChatType === 'group') {
+                    if (targetChatType === 'group') {
                         visualMessage.senderId = 'user_me';
                     }
 
                     chat.history.push(visualMessage);
-                    addMessageBubble(visualMessage, currentChatId, currentChatType);
+                    addMessageBubble(visualMessage, targetChatId, targetChatType);
                 }
             }
             chat.lastUserMessageTimestamp = now.getTime();
@@ -897,12 +981,12 @@ function sendMyLocation(content) {
             parts: [{ type: 'text', text: content }],
             timestamp: Date.now()
         };
-        if (currentChatType === 'group') {
+        if (targetChatType === 'group') {
             message.senderId = 'user_me';
         }
         chat.history.push(message);
-        addMessageBubble(message, currentChatId, currentChatType);
-        saveCurrentChat();
+        addMessageBubble(message, targetChatId, targetChatType);
+        (targetChatType === 'private' ? saveCharacter(targetChatId) : saveGroup(targetChatId)).catch(() => showToast('消息保存失败，请检查存储空间'));
         renderChatList();
     }, 100);
 }

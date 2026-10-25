@@ -8,7 +8,8 @@ var archiveReturnScreen = 'chat-settings-screen';
 
 function openArchiveLibrary(characterId = null, origin = 'more-screen') {
     archiveReturnScreen = origin === 'more-screen' ? origin : 'chat-settings-screen';
-    currentArchiveCharacterId = characterId;
+    const preferred = [characterId, currentArchiveCharacterId, typeof currentChatId === 'undefined' ? null : currentChatId];
+    currentArchiveCharacterId = preferred.map(id => db.characters.find(c => id != null && c.id === id)).find(Boolean)?.id ?? db.characters[0]?.id ?? null;
     selectedArchiveIds.clear(); archiveMultiSelectMode = false;
     const screen = document.getElementById('archive-screen');
     screen.querySelector('.back-btn').dataset.target = archiveReturnScreen;
@@ -26,13 +27,13 @@ function openArchiveLibrary(characterId = null, origin = 'more-screen') {
     }
     row.hidden = archiveReturnScreen !== 'more-screen';
     const select = row.querySelector('select');
-    select.replaceChildren(new Option('选择角色', ''), ...db.characters.map(c => new Option(c.remarkName || c.realName || '角色', String(c.id))));
-    select.value = characterId == null ? '' : String(characterId);
+    select.replaceChildren(new Option('选择角色', ''), ...db.characters.map(c => new Option(c.remarkName || c.realName || c.name || '角色', String(c.id))));
+    select.value = currentArchiveCharacterId == null ? '' : String(currentArchiveCharacterId);
     renderArchiveList(); updateArchiveMultiSelectUI(); switchScreen('archive-screen');
 }
 
 function archiveCharacterId() {
-    return currentArchiveCharacterId || (archiveReturnScreen === 'more-screen' ? null : currentChatId);
+    return currentArchiveCharacterId ?? (archiveReturnScreen === 'more-screen' ? null : currentChatId);
 }
 
 function getArchivesForCharacter(characterId) {
@@ -59,6 +60,7 @@ async function createArchive(characterId, archiveName) {
     await saveData();
     showToast('存档保存成功！');
     renderArchiveList();
+    updateArchiveMultiSelectUI();
 }
 
 async function loadArchive(archiveId) {
@@ -73,11 +75,22 @@ async function loadArchive(archiveId) {
         return;
     }
     const snapshot = JSON.parse(JSON.stringify(archive.snapshot));
+    const previous = db.characters[characterIndex];
+    // Old archives predate room layouts and must not erase current custom-room references.
+    if (!Object.hasOwn(snapshot, 'memoryPalaceRoomLayout') && previous.memoryPalaceRoomLayout !== undefined) {
+        snapshot.memoryPalaceRoomLayout = JSON.parse(JSON.stringify(previous.memoryPalaceRoomLayout));
+    }
     const persisted = await dexieDB.characters.get(archive.characterId);
-    const restoredChar = window.WalletStorage ? window.WalletStorage.protectChat(snapshot,persisted || db.characters[characterIndex],true) : snapshot;
+    const restoredChar = window.WalletStorage ? window.WalletStorage.protectChat(snapshot,persisted || previous,true) : snapshot;
     restoredChar.id = archive.characterId;
     db.characters[characterIndex] = restoredChar;
-    await saveData();
+    try {
+        if (await window.saveCharacter(archive.characterId) === false) throw Error('存档读取未保存，请重试');
+    } catch (error) {
+        if (db.characters[characterIndex] === restoredChar) db.characters[characterIndex] = previous;
+        showToast(error.message || '存档读取失败');
+        return false;
+    }
     if (currentChatId === archive.characterId && typeof renderMessages === 'function') {
         renderMessages();
     }
@@ -85,6 +98,7 @@ async function loadArchive(archiveId) {
     showToast('存档已读取，当前状态已覆盖');
     if (archiveReturnScreen === 'more-screen') renderArchiveList();
     else switchScreen('chat-settings-screen');
+    return true;
 }
 
 async function deleteArchives(archiveIds) {
@@ -120,7 +134,7 @@ function renderArchiveList() {
     if (list.length === 0) {
         container.innerHTML = '';
         if (placeholder) placeholder.style.display = 'block';
-        if (placeholder) placeholder.textContent = cid ? '还没有保存任何存档' : '请选择要查看存档的角色';
+        if (placeholder) placeholder.textContent = cid != null ? '还没有保存任何存档' : '请选择要查看存档的角色';
         if (multiBar) multiBar.classList.remove('visible');
         return;
     }
@@ -175,24 +189,24 @@ function bindArchiveListEvents() {
             });
         } else {
             container.querySelectorAll(`[data-action="load"][data-archive-id="${archiveId}"]`).forEach(btn => {
-                btn.addEventListener('click', (e) => {
+                btn.addEventListener('click', async (e) => {
                     e.stopPropagation();
-                    if (!confirm('读取此存档将完全覆盖当前的聊天记录与设置，是否继续？')) return;
+                    if (await showAppConfirmDialog({ title: '读取存档', message: '读取此存档将覆盖当前聊天记录与设置，是否继续？', confirmText: '读取', dismissText: '' }) !== 'confirm') return;
                     loadArchive(archiveId);
                 });
             });
             container.querySelectorAll(`[data-action="rename"][data-archive-id="${archiveId}"]`).forEach(btn => {
-                btn.addEventListener('click', (e) => {
+                btn.addEventListener('click', async (e) => {
                     e.stopPropagation();
                     const arch = db.archives.find(a => a.id === archiveId);
-                    const newName = prompt('输入新名称：', arch ? arch.name : '');
-                    if (newName !== null) renameArchive(archiveId, newName);
+                    const result = await showAppFormDialog({ title: '重命名存档', fields: [{ name: 'name', label: '存档名称', value: arch?.name || '', required: true }], confirmText: '保存' });
+                    if (result) renameArchive(archiveId, result.name);
                 });
             });
             container.querySelectorAll(`[data-action="delete"][data-archive-id="${archiveId}"]`).forEach(btn => {
-                btn.addEventListener('click', (e) => {
+                btn.addEventListener('click', async (e) => {
                     e.stopPropagation();
-                    if (!confirm('确定删除该存档？')) return;
+                    if (await showAppConfirmDialog({ title: '删除存档', message: '确定删除该存档？当前聊天记录不受影响。', confirmText: '删除', dismissText: '' }) !== 'confirm') return;
                     deleteArchives([archiveId]);
                 });
             });
@@ -226,8 +240,13 @@ function updateArchiveSelectionUI() {
 function updateArchiveMultiSelectUI() {
     const btn = document.getElementById('archive-multi-select-btn');
     const bar = document.getElementById('archive-multi-select-bar');
-    if (btn) btn.textContent = archiveMultiSelectMode ? '取消' : '多选';
-    if (bar) bar.classList.toggle('visible', archiveMultiSelectMode && getArchivesForCharacter(currentArchiveCharacterId || currentChatId).length > 0);
+    if (btn) {
+        btn.textContent = archiveMultiSelectMode ? '取消' : '多选';
+        btn.setAttribute('aria-pressed', String(archiveMultiSelectMode));
+        btn.disabled = getArchivesForCharacter(archiveCharacterId()).length === 0;
+    }
+    updateArchiveSelectionUI();
+    if (bar) bar.classList.toggle('visible', archiveMultiSelectMode && getArchivesForCharacter(archiveCharacterId()).length > 0);
 }
 
 function setupArchiveApp() {
@@ -252,7 +271,7 @@ function setupArchiveApp() {
     if (createBtn && createModal) {
         createBtn.addEventListener('click', () => {
             const cid = archiveCharacterId();
-            if (!cid) {
+            if (cid == null) {
                 showToast('请先进入一个角色的聊天');
                 return;
             }
@@ -290,10 +309,11 @@ function setupArchiveApp() {
 
     const multiDeleteBtn = document.getElementById('archive-multi-delete-btn');
     if (multiDeleteBtn) {
-        multiDeleteBtn.addEventListener('click', () => {
+        multiDeleteBtn.addEventListener('click', async () => {
             if (selectedArchiveIds.size === 0) return;
-            if (!confirm(`确定删除选中的 ${selectedArchiveIds.size} 个存档？`)) return;
-            deleteArchives(Array.from(selectedArchiveIds));
+            const ids = Array.from(selectedArchiveIds);
+            if (await showAppConfirmDialog({ title: '删除存档', message: `确定删除选中的 ${ids.length} 个存档？当前聊天记录不受影响。`, confirmText: '删除', dismissText: '' }) !== 'confirm') return;
+            await deleteArchives(ids);
         });
     }
 

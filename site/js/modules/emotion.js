@@ -5,7 +5,7 @@
     const Core = global.EmotionCore;
     const runtime = new Map();
     const locks = new Set();
-    const ui = { characterId: '' };
+    const ui = { characterId: '', editing: false };
 
     function ensureSettings(character) {
         if (!character) return character;
@@ -177,6 +177,20 @@
 
     function currentCharacter() { return findCharacter(ui.characterId || global.currentChatId); }
 
+    function setEditing(editing) {
+        ui.editing = editing;
+        document.getElementById('emotion-overview').hidden = editing;
+        document.getElementById('emotion-editor').hidden = !editing;
+        const edit = document.getElementById('emotion-edit-btn');
+        edit.hidden = editing;
+        edit.setAttribute('aria-expanded', String(editing));
+        document.getElementById('emotion-evaluate-btn').hidden = editing;
+    }
+
+    function editorRow(buff, index) {
+        return `<div class="emotion-buff-row" data-emotion-index="${index}"><div class="emotion-buff-fields"><label>情绪名称<input data-emotion-field="label" value="${escape(buff.label)}" placeholder="例如：安心"></label><label>强度（1–3）<input data-emotion-field="intensity" type="number" min="1" max="3" value="${buff.intensity || 2}"></label><label>简短说明<input data-emotion-field="description" value="${escape(buff.description || '')}" placeholder="说说此刻的感受"></label></div><button type="button" class="btn btn-small btn-secondary" data-emotion-action="remove">移除</button></div>`;
+    }
+
     async function render() {
         const character = currentCharacter();
         const summary = document.getElementById('emotion-summary');
@@ -184,26 +198,39 @@
         if (!character || !list) return;
         ensureSettings(character);
         const state = stateFor(character);
-        if (summary) summary.textContent = `${character.remarkName || character.name || '角色'} · ${state.activeBuffs.length} 个 Buff · ${state.updatedAt ? new Date(state.updatedAt).toLocaleString() : '尚未评估'}`;
-        list.innerHTML = state.activeBuffs.length ? state.activeBuffs.map((buff, index) => `<div class="emotion-buff-row" data-emotion-index="${index}"><div class="emotion-buff-fields"><input data-emotion-field="label" value="${escape(buff.label)}" placeholder="情绪名称"><input data-emotion-field="intensity" type="number" min="1" max="3" value="${buff.intensity}" title="强度 1-3"><input data-emotion-field="description" value="${escape(buff.description || '')}" placeholder="简短说明"></div><button type="button" class="btn btn-small btn-secondary" data-emotion-action="remove">移除</button></div>`).join('') : '<div class="emotion-empty">暂无情绪 Buff，可手动新增或运行一次评估。</div>';
+        if (summary) summary.textContent = `${character.remarkName || character.name || '角色'} · 当前心情`;
+        document.getElementById('emotion-updated-at').textContent = state.updatedAt ? `最近更新 · ${new Date(state.updatedAt).toLocaleString()}` : '还没有记录';
+        document.getElementById('emotion-state-list').innerHTML = state.activeBuffs.length
+            ? state.activeBuffs.map(buff => `<article class="emotion-state-item"><div><strong>${escape(buff.emoji || '')} ${escape(buff.label)}</strong><small>强度 · ${escape(Core.INTENSITIES[buff.intensity])}</small></div>${buff.description ? `<p>${escape(buff.description)}</p>` : ''}</article>`).join('')
+            : '<div class="emotion-empty">还没有记录当前心情。可以新增情绪，或根据对话评估。</div>';
+        for (const [id, text] of [['emotion-expression-preview', state.buffInjection], ['emotion-inner-preview', state.innerState]]) {
+            const note = document.getElementById(id);
+            note.hidden = !text;
+            note.querySelector('p').textContent = text;
+        }
+        list.innerHTML = state.activeBuffs.length ? state.activeBuffs.map(editorRow).join('') : '<div class="emotion-empty">还没有添加情绪。</div>';
         const injection = document.getElementById('emotion-injection');
         const inner = document.getElementById('emotion-inner-state');
         if (injection) injection.value = character.buffInjection || '';
         if (inner) inner.value = character.emotionInnerState || '';
+        setEditing(ui.editing);
     }
 
     function addBuff() {
         const list = document.getElementById('emotion-buff-list');
         if (!list) return;
+        setEditing(true);
         const empty = list.querySelector('.emotion-empty');
         if (empty) empty.remove();
         const index = list.querySelectorAll('[data-emotion-index]').length;
-        list.insertAdjacentHTML('beforeend', `<div class="emotion-buff-row" data-emotion-index="${index}"><div class="emotion-buff-fields"><input data-emotion-field="label" value="" placeholder="情绪名称"><input data-emotion-field="intensity" type="number" min="1" max="3" value="2"><input data-emotion-field="description" value="" placeholder="简短说明"></div><button type="button" class="btn btn-small btn-secondary" data-emotion-action="remove">移除</button></div>`);
+        list.insertAdjacentHTML('beforeend', editorRow({}, index));
+        list.lastElementChild.querySelector('input')?.focus({ preventScroll: true });
     }
 
     async function saveFromUi() {
         const character = currentCharacter();
         if (!character) return;
+        const previous = Object.fromEntries(['activeBuffs', 'buffInjection', 'emotionInnerState', 'emotionUpdatedAt', 'emotionRevision'].map(key => [key, character[key]]));
         const buffs = Array.from(document.querySelectorAll('#emotion-buff-list [data-emotion-index]')).map((row, index) => ({
             id: `manual_${index}`,
             name: row.querySelector('[data-emotion-field="label"]')?.value || '',
@@ -211,21 +238,31 @@
             intensity: row.querySelector('[data-emotion-field="intensity"]')?.value,
             description: row.querySelector('[data-emotion-field="description"]')?.value || '',
         }));
-        await saveManualState(character, { activeBuffs: buffs, buffInjection: document.getElementById('emotion-injection')?.value || '', innerState: document.getElementById('emotion-inner-state')?.value || '' });
-        global.showToast?.('角色情绪已保存');
-        await render();
+        try {
+            await saveManualState(character, { activeBuffs: buffs, buffInjection: document.getElementById('emotion-injection')?.value || '', innerState: document.getElementById('emotion-inner-state')?.value || '' });
+            global.showToast?.('角色情绪已保存');
+            if (currentCharacter()?.id === character.id) { setEditing(false); await render(); document.getElementById('emotion-edit-btn')?.focus({ preventScroll: true }); }
+        } catch (error) {
+            if (character.emotionRevision === Math.max(0, Number(previous.emotionRevision) || 0) + 1) Object.assign(character, previous);
+            global.showToast?.(error?.message || '保存情绪失败，请重试');
+        }
     }
 
-    function open(characterId) {
-        ui.characterId = characterId || global.currentChatId || '';
-        if (typeof switchScreen === 'function') switchScreen('emotion-screen');
-        void render();
+    function open(characterId, options = {}) {
+        const nextId = characterId || global.currentChatId || '';
+        const preserveView = ui.characterId === nextId && (options.preserveView || ui.editing);
+        ui.characterId = nextId;
+        if (!preserveView) ui.editing = false;
+        global.CharacterStatusUI.show(ui.characterId, 'emotion');
+        if (!preserveView) return render();
     }
 
     function setup() {
         document.getElementById('setting-open-emotion-btn')?.addEventListener('click', () => open(global.currentChatId));
         document.getElementById('emotion-open-btn')?.addEventListener('click', () => open(global.currentChatId));
         document.getElementById('emotion-add-btn')?.addEventListener('click', addBuff);
+        document.getElementById('emotion-edit-btn')?.addEventListener('click', () => { setEditing(true); document.querySelector('#emotion-buff-list input')?.focus({ preventScroll: true }); });
+        document.getElementById('emotion-cancel-btn')?.addEventListener('click', async () => { setEditing(false); await render(); document.getElementById('emotion-edit-btn')?.focus({ preventScroll: true }); });
         document.getElementById('emotion-save-btn')?.addEventListener('click', () => void saveFromUi());
         document.getElementById('emotion-clear-btn')?.addEventListener('click', async () => { const character = currentCharacter(); if (character) { await clear(character); await render(); } });
         document.getElementById('emotion-evaluate-btn')?.addEventListener('click', async () => { const character = currentCharacter(); if (character) { const result = await evaluate(character, { force: true }); if (result.error) global.showToast?.(`情绪评估失败：${result.error}`); await render(); } });

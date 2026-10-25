@@ -147,7 +147,7 @@ body {
 
 .app-confirm-dialog-btn.primary {
     background: var(--primary-color);
-    color: #fff;
+    color: var(--text-color, #2a3032);
 }
 
 body.night-mode-active .app-confirm-dialog-btn.secondary {
@@ -866,3 +866,22 @@ label.btn-primary {
     top: 2px;
     color: var(--accent-color);
 }
+
+/* Shared compact editors inherit the original modal and semantic button palette. */
+.app-form-dialog { max-height: min(85dvh, 640px); overflow-y: auto; overscroll-behavior: contain; }
+.app-form-dialog h3 { color: var(--text-color); font-size: 17px; margin: 0 0 16px; }
+.app-form-field { display: grid; gap: 6px; margin: 12px 0; font-size: 13px; color: var(--text-color); }
+.app-form-field input, .app-form-field textarea, .app-form-field select { width: 100%; min-width: 0; padding: 11px 12px; border: 1px solid #e6e5e3; border-radius: 12px; background: #faf9f7; color: inherit; font: inherit; font-size: 16px; }
+.app-form-field textarea { min-height: 96px; resize: vertical; }
+.app-form-field input[type=checkbox] { width: 22px; height: 22px; accent-color: #d9aeb8; }
+.app-form-error { color: #ad4d5d; font-size: 13px; }
+.app-form-error:empty { display: none; }
+.app-form-dialog .app-confirm-dialog-actions { position: sticky; bottom: 0; background: inherit; padding-top: 8px; }
+body.night-mode-active .app-form-field input,body.night-mode-active .app-form-field textarea,body.night-mode-active .app-form-field select { background: #29292c; border-color: #444; }
+
+.chat-camera-window { max-width: 480px; max-height: 90dvh; overflow: auto; }
+.chat-camera-window h3 { color: var(--text-color); }
+.chat-camera-window video { display: block; width: 100%; max-height: 55dvh; background: #242426; border-radius: 14px; }
+.chat-camera-window p,.location-device-hint { font-size: 12px; line-height: 1.5; color: #777; }
+.chat-camera-window .app-confirm-dialog-actions { gap: 6px; }
+.chat-camera-window .btn { width: auto; flex: 1; min-width: 0; margin: 0; }

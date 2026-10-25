@@ -63,12 +63,22 @@ body.night-mode-active #health-screen {
 #health-screen .mio-calendar-main button:focus-visible { outline: 2px solid var(--cal-blue-ink); outline-offset: -2px; }
 #health-screen .mio-calendar-main button:disabled { opacity: .42; cursor: default; }
 #health-screen .calendar-month-nav { margin-bottom: 18px; }
+#health-screen .calendar-month-nav { flex-wrap: wrap; }
+#health-screen .calendar-month-nav > strong { overflow-wrap: anywhere; }
 #health-screen .calendar-month-nav strong { font-size: calc(23px * var(--app-font-scale)); font-weight: 650; color: var(--cal-ink); letter-spacing: -.5px; }
 #health-screen .calendar-month-nav > div { display: flex; align-items: center; gap: 2px; }
 #health-screen .calendar-month-nav button { padding: 4px 10px; color: var(--cal-blue-ink); }
+#health-screen .calendar-month-nav button:not([data-cal="today"]) { min-width: 44px; font-size: 22px; line-height: 1; }
 #health-screen .calendar-month-nav button[data-cal="today"] { background: var(--cal-blue); font-size: calc(12px * var(--app-font-scale)); }
 #health-screen .calendar-nav [role="group"] { display: flex; background: var(--cal-surface); padding: 3px; border-radius: 14px; }
 #health-screen .calendar-nav [role="group"] button { min-width: 44px; min-height: 36px; padding: 5px 12px; }
+#health-screen .calendar-tools { gap: 12px; }
+#health-screen .calendar-tools [role="group"] { flex: 1; }
+#health-screen .calendar-tools [role="group"] button { flex: 1; min-height: 44px; padding: 5px 8px; }
+#health-screen .calendar-tools [data-cal="add"] { flex: none; background: var(--cal-blue); color: var(--cal-blue-ink); padding-inline: 14px; font-weight: 600; }
+#health-screen .calendar-source-bar { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+#health-screen .calendar-source-bar .calendar-source { flex: 1; min-width: 0; margin-block: 4px; }
+#health-screen .calendar-source-bar > button { flex: none; color: var(--cal-blue-ink); padding-inline: 6px; font-size: calc(12px * var(--app-font-scale)); }
 #health-screen .mio-calendar-main button[aria-pressed="true"] { background: var(--cal-blue); color: var(--cal-blue-ink); }
 #health-screen .calendar-source { font-size: calc(12px * var(--app-font-scale)); color: var(--cal-muted); }
 #health-screen .calendar-source[hidden] { display: none; }
@@ -99,12 +109,18 @@ body.night-mode-active #health-screen {
 #health-screen .calendar-period-legend span { display: inline-flex; gap: 6px; align-items: center; }
 #health-screen .calendar-period-legend i { width: 10px; height: 10px; border-radius: 4px; background: var(--cal-pink); }
 #health-screen .calendar-period-legend span:last-child i { background: transparent; border: 1px dashed var(--cal-pink-ink); }
-#health-screen [data-cal="agenda"] { padding: 0 4px; }
+#health-screen .mio-calendar-main [data-cal="agenda"] { padding: 0 4px; background: transparent; }
 #health-screen [data-cal="agenda"] > section { background: transparent; color: var(--cal-copy); }
 #health-screen [data-cal="agenda"] h2 { color: var(--cal-ink); font-size: calc(14px * var(--app-font-scale)); font-weight: 600; }
 #health-screen .calendar-muted { color: var(--cal-muted); line-height: 1.6; }
-#health-screen .calendar-course { background: var(--cal-surface); border: 0 !important; border-radius: 14px !important; margin-bottom: 8px; padding: 12px 14px; gap: 5px; }
+#health-screen .mio-calendar-main .calendar-course { display: grid; grid-template-columns: 72px minmax(0, 1fr); align-items: start; background: var(--cal-surface); border: 0 !important; border-radius: 14px !important; margin-bottom: 8px; padding: 14px 12px; gap: 12px; }
 #health-screen .calendar-course strong { color: var(--cal-ink); }
+#health-screen .calendar-agenda-heading { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; margin: 20px 0 10px; }
+#health-screen [data-cal="agenda"] .calendar-agenda-heading h2 { margin: 0; }
+#health-screen .calendar-agenda-time { color: var(--cal-blue-ink); font-size: calc(12px * var(--app-font-scale)); line-height: 1.7; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+#health-screen .calendar-agenda-copy { display: flex; flex-direction: column; min-width: 0; gap: 5px; line-height: 1.5; }
+#health-screen .calendar-agenda-copy strong { font-weight: 600; }
+#health-screen [data-cal="status"]:empty { display: none; }
 
 /* Bottom sheets use OvO's free-home sheet proportions and local color tokens. */
 #health-screen .calendar-period-sheet {

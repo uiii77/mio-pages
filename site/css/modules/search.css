@@ -465,3 +465,40 @@
 .sticker-search-tag.expanded .sticker-search-input {
     opacity: 1;
 }
+/* Reuse the existing history screen as an in-conversation sheet. */
+#chat-room-screen{position:relative}
+#search-history-screen.search-inline-panel{display:flex;position:absolute;inset:var(--search-header-height,60px) 0 0;z-index:45;width:100%;height:auto;overflow:hidden;border-top:1px solid var(--border-color,#e8ebed)}
+#search-history-screen .search-input-wrapper{min-width:0}
+#search-history-screen .search-input-wrapper input{min-width:0}
+#search-history-screen .search-filter-bar{gap:10px;flex-wrap:wrap;flex-shrink:0}
+#search-scope-select{max-width:100%;min-width:0}
+#search-scope-select span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.search-history-tools{padding:10px 15px;background:var(--card-bg,#fff);display:grid;gap:10px;flex-shrink:0}
+.search-media-tabs{display:flex;gap:6px;overflow-x:auto}
+.search-media-tabs button,.search-date-jump button,#chat-history-navigation button,.search-detail-header button{border:0;border-radius:12px;background:#edf2f4;color:#475e6c;padding:8px 11px;font:inherit;font-size:12px;white-space:nowrap;cursor:pointer}
+.search-media-tabs button[aria-pressed=true]{background:var(--primary-color,#a5c1d6);color:#263c4b}
+.search-date-jump{display:flex;align-items:center;gap:8px;font-size:12px;color:#687884;flex-wrap:wrap}
+.search-date-jump input{min-width:0;flex:1;border:1px solid #e2e8ed;border-radius:10px;padding:7px;font:inherit;background:var(--card-bg,#fff);color:inherit}
+#search-history-screen .search-advanced-filters{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding:8px 15px;background:var(--card-bg,#fff);flex-shrink:0}
+#search-history-screen .search-advanced-filters select,#search-history-screen .search-advanced-filters input{min-width:0;width:100%;box-sizing:border-box;border:1px solid #e2e8ed;border-radius:10px;padding:8px;font:inherit;font-size:12px;background:var(--card-bg,#fff);color:#475e6c}
+#search-history-screen .search-advanced-filters label{display:flex;align-items:center;gap:6px;min-width:0;font-size:12px}
+#search-results-container{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain}
+#search-results-container .search-group-item{display:flex;flex-direction:column;align-items:stretch;text-align:left;width:100%;border:0;gap:7px;font:inherit;color:inherit}
+#search-results-container .search-group-item span{font-size:12px;color:#7a8790;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.search-result-open{display:block;width:100%;border:0;background:none;text-align:left;padding:0;color:inherit;font:inherit;cursor:pointer}
+.search-result-header{display:block!important;font-size:11px;color:#7a8790;line-height:1.6;overflow-wrap:anywhere}
+.search-result-content,.search-result-translation{overflow-wrap:anywhere;white-space:pre-wrap}
+.search-media-preview{display:block;width:100%;max-height:200px;border:0;border-radius:12px;padding:0;margin-top:10px;background:#eef2f4;overflow:hidden;object-fit:contain}
+.search-media-preview img{display:block;width:100%;max-height:200px;object-fit:contain}
+.search-result-item>button:not(.search-result-open):not(.search-media-preview),#search-results-container>button{border:0;border-radius:12px;background:#edf2f4;color:#475e6c;padding:10px 14px;margin-top:8px;font:inherit;font-size:12px}
+.search-detail-header{gap:8px;flex-wrap:wrap}
+.search-detail-header strong{font-size:14px}
+#search-scope-list>button{display:block;width:100%;text-align:left;border:0;background:none;padding:14px;border-bottom:1px solid #eee;font:inherit;color:inherit}
+#chat-history-navigation{display:flex;gap:5px;align-items:center;justify-content:center;flex-wrap:wrap;padding:7px 8px;background:var(--card-bg,#fff);border-bottom:1px solid #e8ebed;flex-shrink:0;z-index:2}
+#chat-history-navigation span{font-size:11px;color:#687884}
+#chat-history-navigation button{padding:7px 8px;font-size:11px}
+#chat-history-navigation button:disabled{opacity:.4}
+#chat-room-history-search{flex-shrink:0}
+.quoted-message[role=button]{cursor:pointer}
+#search-history-screen button:focus-visible,.quoted-message[role=button]:focus-visible,#chat-history-navigation button:focus-visible{outline:2px solid var(--primary-color,#a5c1d6);outline-offset:2px}
+@media(max-height:560px){.search-history-tools{padding:5px 12px;gap:4px}#search-history-screen .search-advanced-filters{padding:4px 12px}.search-header{padding:6px 12px}}

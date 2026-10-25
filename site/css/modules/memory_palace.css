@@ -127,3 +127,25 @@
 .emotion-textarea-grid label { display: flex; flex-direction: column; gap: 6px; color: #666; font-size: 12px; }
 .emotion-textarea-grid textarea { resize: vertical; line-height: 1.45; }
 @media (max-width: 520px) { .emotion-buff-fields, .emotion-textarea-grid { grid-template-columns: 1fr; } .emotion-buff-row { align-items: flex-start; flex-direction: column; } }
+
+.memory-palace-rooms { width:min(440px, calc(100vw - 28px)); box-sizing:border-box; max-height:85vh; overflow:auto; }
+.memory-palace-room-hint { color:#777; font-size:12px; line-height:1.6; }
+.memory-palace-room-row { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; padding:12px 0; border-bottom:1px solid #eee; }
+.memory-palace-room-row > div:first-child { min-width:0; flex:1 1 160px; overflow-wrap:anywhere; }
+.memory-palace-room-row strong { color:#333; font-size:14px; }
+.memory-palace-room-row small { display:block; margin-top:4px; color:#888; font-size:11px; }
+.memory-palace-room-controls { display:flex; align-items:center; gap:4px; margin-left:auto; }
+.memory-palace-room-controls button { border:0; border-radius:8px; background:#f4f4f5; color:#444; padding:8px; min-height:36px; font:inherit; font-size:12px; cursor:pointer; }
+.memory-palace-room-controls button:disabled { opacity:.3; cursor:default; }
+#memory-palace-rooms-close { margin-top:16px; width:100%; }
+#memory-palace-screen .memory-palace-filter-row { flex-wrap:wrap; }
+#memory-palace-screen .memory-palace-filter-row select { min-width:0; flex:1; }
+#memory-palace-screen #memory-palace-search { flex:1 0 100%; box-sizing:border-box; min-width:0; }
+
+#memory-palace-rooms-title { color:var(--text-color, #333); }
+#memory-palace-screen .memory-palace-master-row .kkt-item-label { display:block; flex:1; }
+#memory-palace-screen .memory-palace-master-row .kkt-item-control { flex-shrink:0; }
+.memory-palace-rooms { display:flex; flex-direction:column; overflow:hidden; }
+.memory-palace-rooms > h3, .memory-palace-rooms > p, .memory-palace-rooms > button { flex-shrink:0; }
+#memory-palace-rooms-list { overflow-y:auto; min-height:0; flex:1 1 auto; overscroll-behavior:contain; }
+#memory-palace-room-create-btn { width:100%; }

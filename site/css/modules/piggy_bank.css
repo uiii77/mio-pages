@@ -42,13 +42,7 @@
     font-variant-numeric: tabular-nums;
 }
 
-.piggy-bank-balance-value::after {
-    content: ' 元';
-    font-size: 16px;
-    font-weight: 500;
-    color: #888;
-    margin-left: 2px;
-}
+
 
 .piggy-bank-balance-actions {
     display: flex;
@@ -561,3 +555,27 @@
     color: #333;
     margin: 0 0 10px 0;
 }
+
+/* Wallet amounts carry their own currency symbol. */
+.piggy-bank-balance-value { overflow-wrap:anywhere; }
+.piggy-bank-other-balances { display:flex;flex-wrap:wrap;justify-content:center;gap:8px 16px;color:#777;font-size:13px;margin-bottom:16px; }
+.piggy-bank-other-balances:empty { display:none; }
+.piggy-bank-list-item .piggy-item-amount { max-width:48%;overflow-wrap:anywhere;text-align:right; }
+
+#send-transfer-modal .transfer-currency-note { font-size:12px;line-height:1.7;color:#777;overflow-wrap:anywhere; }
+
+#piggy-bank-screen [hidden] { display:none!important; }
+.piggy-view-tabs { border:1px solid #ece6df; }
+.piggy-view-tabs .piggy-tab.active { background:#f4ece4;color:#66503f; }
+
+#send-transfer-modal h3 { color:var(--text-color,#333); }
+#send-transfer-modal .form-group>label { color:#666; }
+#send-transfer-modal .payment-method-item { display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:12px;color:#555; }
+#send-transfer-modal .payment-method-item input { width:18px;flex:0 0 18px;margin:0; }
+#send-transfer-modal .pm-name { flex:1;min-width:70px;font-size:13px; }
+#send-transfer-modal .pm-balance { margin-left:auto;font-size:13px;overflow-wrap:anywhere; }
+#send-transfer-modal .payment-method-item:has(input:checked) { background:#faf5ef;border-color:#ddd0c1; }
+
+#send-transfer-modal [hidden] { display:none!important; }
+#send-transfer-modal #transfer-open-currency,#send-transfer-modal #transfer-use-cny { margin:0 0 12px;white-space:normal;overflow-wrap:anywhere; }
+#currency-rate-info,#currency-preview { line-height:1.7;overflow-wrap:anywhere; }

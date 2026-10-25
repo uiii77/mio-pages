@@ -56,6 +56,13 @@
     function action(text, handler) {
         const button = node('button', text); button.type = 'button'; button.onclick = handler; return button;
     }
+    function agendaCard(time, title, description, handler) {
+        const button = action('', handler); button.className = 'calendar-course';
+        const copy = node('span', null, 'calendar-agenda-copy');
+        copy.append(node('strong', title), node('span', description, 'calendar-muted'));
+        button.append(node('span', time, 'calendar-agenda-time'), copy);
+        return button;
+    }
     async function render() {
         const token = ++generation;
         const requested = range(selected, view), includePeriod = field('period').checked;
@@ -75,12 +82,15 @@
         snapshots = available;
         if (!sourceChosen && snapshots.length === 1) { sourceId = snapshots[0].id; sourceChosen = true; }
         if (sourceId && !snapshots.some(item => item.id === sourceId)) sourceId = '';
-        field('source').replaceChildren(new Option('不显示', ''), ...snapshots.map((item, i) => new Option(`${item.semester} · 课表 ${i + 1}`, item.id)));
+        field('source').replaceChildren(new Option('不显示', ''), ...snapshots.map((item, i) => new Option(`${item.semester} · ${item.provider === 'manual' ? '手工课表' : `课表 ${i + 1}`}`, item.id)));
         field('source').value = sourceId;
         field('source').closest('label').hidden = !snapshots.length;
         const projected = sourceId && !sourceError ? await global.Timetable.getCalendarDays(sourceId, requested).catch(() => { sourceError = '课表读取失败'; return []; }) : [];
         if (token !== generation) return;
         field('heading').textContent = view === 'month' ? selected.slice(0, 7).replace('-', '年') + '月' : view === 'day' ? selected : `${requested[0].slice(5)} — ${requested.at(-1).slice(5)}`;
+        field('previous').setAttribute('aria-label', { month: '上个月', week: '上一周', day: '前一天' }[view]);
+        field('next').setAttribute('aria-label', { month: '下个月', week: '下一周', day: '后一天' }[view]);
+        field('agenda').setAttribute('aria-label', view === 'week' ? '本周安排' : '当天安排');
         document.querySelectorAll('#health-screen [data-cal-view]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.calView === view)));
         field('period-summary').hidden = field('period-legend').hidden = !includePeriod;
         field('period-edit').disabled = !!periodError;
@@ -114,7 +124,9 @@
         }
         const agendaDates = view === 'week' ? requested : [selected];
         for (const date of agendaDates) {
-            const section = node('section'); section.append(node('h2', dayLabel(date)));
+            const section = node('section'), entries = [];
+            const heading = node('div', null, 'calendar-agenda-heading');
+            heading.append(node('h2', `${date === today() ? '今天 · ' : ''}${dayLabel(date)}`)); section.append(heading);
             const day = projected.find(item => item.date === date);
             if (sourceId) {
                 if (sourceError) section.append(node('p', sourceError, 'calendar-muted'));
@@ -122,28 +134,33 @@
                 else {
                     if (!day.courses.length) section.append(node('p', '该课表当天无课程', 'calendar-muted'));
                     for (const course of day.courses) {
-                        const time = course.startTime && course.endTime ? `${course.startTime}–${course.endTime}` : `第 ${course.sections.join('、')} 节`;
+                        const time = course.startTime ? course.startTime + (course.endTime ? '–' + course.endTime : '') : `第 ${course.sections.join('、')} 节`;
                         const snapshotId = sourceId;
-                        const button = action('', () => showCourse(course, date, snapshotId)); button.className = 'calendar-course';
-                        button.append(node('strong', course.name), node('span', `${time} · ${course.location || '地点未提供'}`, 'calendar-muted'));
-                        section.append(button);
+                        const button = agendaCard(time, course.name, `课程${course.source === 'manual' ? ' · 手动新增' : ''} · ${course.location || '地点未提供'}`, () => showCourse(course, date, snapshotId));
+                        button.dataset.courseId = course.id;
+                        entries.push({ button, order: course.startTime ? `1:${course.startTime}` : `2:${String(course.sections[0]).padStart(2, '0')}` });
                     }
                     if (day.missingCount || day.conflicts.length) section.append(node('p', '部分课程或个人调整需核对', 'calendar-muted'));
                 }
             }
-            for (const record of records.filter(item => item.date === date)) section.append(action(record.kind === 'start' ? '生理期 · 已记开始' : '生理期 · 已记结束', () => void openPeriod(date)));
+            for (const record of records.filter(item => item.date === date)) entries.push({
+                button: agendaCard('记录', record.kind === 'start' ? '生理期 · 已记开始' : '生理期 · 已记结束', '点击查看记录', () => void openPeriod(date)), order: '0:',
+            });
             for (const event of events.filter(item => eventOccursOn(item, date))) {
-                const button = action('', () => showEvent(event)); button.className = 'calendar-course';
+                const time = event.allDay ? '全天' : event.date < date ? '跨日' : event.start + (event.end && !event.endDate ? '–' + event.end : '');
+                const description = `个人${event.seriesId ? ' · ' + repeatLabels[event.recurrence.frequency] : ''}${event.endDate ? ' · ' + eventTime(event) : ''}${event.location ? ' · ' + event.location : ''}`;
+                const button = agendaCard(time, event.title, description, () => showEvent(event));
                 button.dataset.personalEventId = event.id;
                 if (event.seriesId) button.dataset.occurrenceDate = event.occurrenceDate;
-                button.append(node('strong', event.title), node('span', `个人${event.seriesId ? ' · ' + repeatLabels[event.recurrence.frequency] : ''} · ${eventTime(event)}${event.location ? ' · ' + event.location : ''}`, 'calendar-muted'));
-                section.append(button);
+                entries.push({ button, order: event.allDay ? '0:' : `1:${event.date < date ? '00:00' : event.start}` });
             }
             for (const reminder of reminders.filter(item => item.date === date)) {
-                const button = action('', () => showReminder(reminder)); button.className = 'calendar-course';
-                button.append(node('strong', reminder.title), node('span', `提醒 · ${reminder.characterName} · ${reminder.time || '未设时间'} · ${reminderStatus(reminder)}`, 'calendar-muted'));
-                section.append(button);
+                const button = agendaCard(reminder.time || '待定', reminder.title, `提醒 · ${reminder.characterName} · ${reminderStatus(reminder)}`, () => showReminder(reminder));
+                entries.push({ button, order: reminder.time ? `1:${reminder.time}` : '3:' });
             }
+            heading.append(node('span', `${entries.length} 项安排`, 'calendar-muted'));
+            entries.sort((a, b) => a.order.localeCompare(b.order)).forEach(entry => section.append(entry.button));
+            if (entries.some(entry => entry.order.startsWith('2:'))) section.append(node('p', '按节次列出的课程尚无具体钟点。', 'calendar-muted'));
             if (personalError || reminderError) section.append(node('p', [personalError, reminderError].filter(Boolean).join(' · '), 'calendar-muted'));
             if (!personalError && !reminderError && !sourceId && !records.some(item => item.date === date) && !events.some(item => eventOccursOn(item, date)) && !reminders.some(item => item.date === date)) section.append(node('p', '暂无日程', 'calendar-muted'));
             field('agenda').append(section);
@@ -157,6 +174,7 @@
     }
     const reminderStatus = reminder => reminder.done ? '已完成' : reminder.triggered ? '已触发' : '未完成';
     function showReminder(reminder) {
+        dialogContext++;
         const content = field('detail-content'); content.replaceChildren(node('h2', reminder.title));
         const repeat = { none: '不重复', daily: '每天', weekly: '每周', monthly: '每月' };
         for (const text of [`来自 ${reminder.characterName} · 提醒我`, `${reminder.date} ${reminder.time || '未设时间'}`, reminderStatus(reminder), repeat[reminder.repeat]]) content.append(node('p', text));
@@ -164,10 +182,11 @@
         field('detail').showModal();
     }
     function showCourse(course, date, snapshotId) {
+        dialogContext++;
         const content = field('detail-content'); content.replaceChildren(node('h2', course.name));
         for (const text of [date, `第 ${course.sections.join('、')} 节`, course.location || '地点未提供', course.teacher || '教师未提供']) content.append(node('p', text));
-        content.append(action('打开课表', () => {
-            if (global.TimetableUI.openFromCalendar({ snapshotId, date, courseId: course.id })) field('detail').close();
+        content.append(action('打开课表', async () => {
+            if (await global.TimetableUI.openFromCalendar({ snapshotId, date, courseId: course.id })) field('detail').close();
             else content.append(node('p', '课表正忙，请稍后重试', 'calendar-muted'));
         }));
         field('detail').showModal();
@@ -288,6 +307,7 @@
         focus?.focus();
     }
     function editEvent(event, scope = 'one', occurrence = '') {
+        dialogContext++;
         editScope = scope; editOccurrence = occurrence;
         repeatFrequency = event?.recurrence?.frequency || 'none';
         eventField('until').value = event?.recurrence?.until || '';
@@ -305,8 +325,29 @@
         field('editor').showModal();
         field('editor').scrollTop = 0;
     }
-    function cancelEdit() {
-        if (!saving && (JSON.stringify(draft()) === originalDraft || global.confirm('放弃未保存的修改？'))) field('editor').close();
+    let confirming = false, dialogContext = 0;
+    async function confirmAction(message, dialog) {
+        if (confirming) return false;
+        confirming = true;
+        const wasOpen = dialog.open, trigger = document.activeElement;
+        const screen = dialog.closest('.screen'), context = dialogContext;
+        const scrollTop = dialog.scrollTop, scrollLeft = dialog.scrollLeft;
+        const isCurrent = () => dialog.isConnected && screen?.classList.contains('active') && context === dialogContext;
+        if (wasOpen) dialog.close();
+        try {
+            const result = await global.showAppConfirmDialog({ title: '日历', message, dismissText: '' });
+            return result === 'confirm' && isCurrent();
+        } finally {
+            confirming = false;
+            if (wasOpen && isCurrent()) {
+                if (!dialog.open) dialog.showModal();
+                if (trigger?.isConnected && dialog.contains(trigger)) trigger.focus({ preventScroll: true });
+                dialog.scrollTop = scrollTop; dialog.scrollLeft = scrollLeft;
+            }
+        }
+    }
+    async function cancelEdit() {
+        if (!saving && !confirming && (JSON.stringify(draft()) === originalDraft || await confirmAction('放弃未保存的修改？', field('editor')))) field('editor').close();
     }
     function updateRepeat() {
         field('repeat-choice').textContent = repeatLabels[repeatFrequency];
@@ -318,6 +359,7 @@
         document.querySelectorAll('#health-screen [data-repeat]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.repeat === repeatFrequency)));
     }
     function scopeChoices(event, handler) {
+        dialogContext++;
         const content = field('detail-content'); content.replaceChildren(node('h2', '选择操作范围'));
         for (const scope of ['one', 'future', 'all']) { const button = action(scopeLabels[scope], async () => {
             try { await handler(scope); }
@@ -326,6 +368,7 @@
         content.append(action('取消', () => showEvent(event)));
     }
     function showEvent(event) {
+        dialogContext++;
         const content = field('detail-content'); content.replaceChildren(node('h2', event.title));
         for (const text of [event.endDate ? '' : event.date, eventTime(event), event.seriesId ? repeatLabels[event.recurrence.frequency] : '', event.location, event.notes]) if (text) content.append(node('p', text));
         content.append(action('编辑', () => {
@@ -339,12 +382,12 @@
         const remove = action('删除', async () => {
             if (event.seriesId) {
                 scopeChoices(event, async scope => {
-                    if (!global.confirm(`删除${scopeLabels[scope]}的日程？`)) return;
+                    if (!await confirmAction(`删除${scopeLabels[scope]}的日程？`, field('detail'))) return;
                     await global.PersonalSchedule.changeOccurrence(event.id, event.occurrenceDate, scope, null, event.revision);
                     field('detail').close(); await render();
                 }); return;
             }
-            if (!global.confirm('删除这条个人日程？删除后仅可从已有备份恢复。')) return;
+            if (!await confirmAction('删除这条个人日程？删除后仅可从已有备份恢复。', field('detail'))) return;
             remove.disabled = true;
             try { await global.PersonalSchedule.remove(event.id, event.revision); field('detail').close(); await render(); }
             catch (error) { content.append(node('p', error.message, 'calendar-muted')); }

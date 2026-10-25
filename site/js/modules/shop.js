@@ -33,11 +33,11 @@ function renderShopTabs() {
     tabsContainer.innerHTML = '';
     
     let tabs = [
-        { id: 'recommend', name: '🔥 推荐' },
-        { id: 'food', name: '🍔 食堂' },
-        { id: 'general', name: '🛍️ 百货' },
-        { id: 'guess', name: '❤️ 猜你喜欢' },
-        { id: 'character_choice', name: '👀 Ta想买？' }
+        { id: 'recommend', name: '推荐' },
+        { id: 'food', name: '食堂' },
+        { id: 'general', name: '百货' },
+        { id: 'guess', name: '猜你喜欢' },
+        { id: 'character_choice', name: 'TA 想买' }
     ];
 
     // 合并自定义分类
@@ -150,8 +150,8 @@ function initShopSystem() {
 
 // --- 自定义分类管理 ---
 
-function getShopSettings() {
-    const chat = db.characters.find(c => c.id === currentChatId);
+function getShopSettings(ownerId=currentChatId) {
+    const chat = db.characters.find(c => c.id === ownerId);
     if (chat && chat.shopSettings) {
         return chat.shopSettings;
     }
@@ -161,19 +161,17 @@ function getShopSettings() {
 async function saveShopSettings(settings) {
     const chat = db.characters.find(c => c.id === currentChatId);
     if (!chat) return;
+    await dexieDB.characters.update(chat.id, { shopSettings: settings });
     chat.shopSettings = settings;
-    await dexieDB.characters.update(chat.id, { shopSettings: chat.shopSettings });
 }
 
-function getCustomCategories() {
-    const settings = getShopSettings();
+function getCustomCategories(ownerId=currentChatId) {
+    const settings = getShopSettings(ownerId);
     return settings.customCategories || [];
 }
 
 async function saveCustomCategories(categories) {
-    const settings = getShopSettings();
-    settings.customCategories = categories;
-    await saveShopSettings(settings);
+    await saveShopSettings({...getShopSettings(),customCategories:categories});
 }
 
 async function saveItemCount() {
@@ -258,12 +256,14 @@ async function addCategory() {
 }
 
 async function deleteCategory(index) {
-    if (!confirm('确定要删除这个分类吗？')) return;
-    
-    const categories = getCustomCategories();
-    categories.splice(index, 1);
-    await saveCustomCategories(categories);
-    renderCategoryList();
+    const ownerId=currentChatId,category=getCustomCategories()[index];if(!category)return;
+    if(await showAppConfirmDialog({title:'删除商城分类',message:'确定删除分类“'+category.name+'”？',confirmText:'删除',dismissText:''})!=='confirm')return;
+    if(currentChatId!==ownerId)return;
+    const categories=[...getCustomCategories()],position=categories.findIndex(item=>item.id===category.id);
+    if(position<0)return;
+    categories.splice(position,1);
+    try{await saveCustomCategories(categories);renderCategoryList();}
+    catch{showToast('分类未能保存，原有分类保留。');}
 }
 
 // 将 deleteCategory 暴露给全局以便 HTML onclick 调用
@@ -317,7 +317,7 @@ async function handlePickupConfirm() {
         renderMessages(false, false); // 重新渲染，不强制滚动
         
         // 弹窗提示成功
-        alert(`提取成功！\n你获得了：${foundItemName}`);
+        showToast(`提取成功，你获得了：${foundItemName}`,5000);
         
         // 可选：发送一条系统消息或用户消息确认
         // sendSystemMessage(`成功提取了 ${foundItemName}`);
@@ -520,9 +520,15 @@ async function forceRefreshShop() {
     if (shopState.isLoading) return; // 避免重复点击
     
     // 检查是否已有商品，如果有则需要确认，否则直接开始
+    const ownerId=currentChatId;
     const hasItems = shopState.items && Object.values(shopState.items).some(arr => arr && arr.length > 0);
 
-    if (hasItems && !confirm('确定要清空当前商品并重新进货吗？')) return;
+    if(hasItems){
+        shopState.isLoading=true;let confirmed=false;
+        try{confirmed=await showAppConfirmDialog({title:'重新进货',message:'重新进货会替换当前商品；失败时保留原有内容。继续吗？',confirmText:'重新进货',dismissText:''})==='confirm';}
+        finally{shopState.isLoading=false;}
+        if(!confirmed||currentChatId!==ownerId)return;
+    }
 
     shopState.isLoading = true;
     shopState.currentTab = 'recommend'; // 重置回推荐页
@@ -534,18 +540,11 @@ async function forceRefreshShop() {
     updateTabsUI('recommend');
 
     try {
-        // 清空数据库中的缓存
-        const chat = db.characters.find(c => c.id === currentChatId);
-        if (chat) {
-            delete chat.shopData;
-            await dexieDB.characters.update(chat.id, { shopData: null });
-        }
-
-        await fetchShopData();
-        renderShopContent();
+        await fetchShopData(ownerId);
+        if(currentChatId===ownerId)renderShopContent();
     } catch (e) {
         console.error("商城刷新失败", e);
-        renderShopError();
+        if(currentChatId===ownerId){if(hasItems)renderShopContent();else renderShopError();showToast('进货未完成，原有商品保留。');}
     } finally {
         shopState.isLoading = false;
     }
@@ -573,11 +572,11 @@ function updateTabsUI(activeId) {
 
 function getTabName(id) {
     const map = {
-        'recommend': '🔥 推荐',
-        'food': '🍔 食堂',
-        'general': '🛍️ 百货',
-        'guess': '❤️ 猜你喜欢',
-        'character_choice': '👀 Ta想买？'
+        'recommend': '推荐',
+        'food': '食堂',
+        'general': '百货',
+        'guess': '猜你喜欢',
+        'character_choice': 'TA 想买'
     };
     
     if (map[id]) return map[id];
@@ -645,9 +644,9 @@ function renderShopInitialState() {
 }
 
 // 获取 AI 数据
-async function fetchShopData() {
+async function fetchShopData(ownerId=currentChatId) {
     // 构造 Prompt
-    const chat = db.characters.find(c => c.id === currentChatId);
+    const chat = db.characters.find(c => c.id === ownerId);
     if (!chat) return; // 应该不会发生
 
     if (chat.memoryMode === 'vector' && typeof prepareVectorMemoryContext === 'function') {
@@ -672,7 +671,7 @@ async function fetchShopData() {
     const dateStr = `${now.getMonth() + 1}月${now.getDate()}日`;
 
     // 获取商品数量设置
-    const settings = getShopSettings();
+    const settings = getShopSettings(ownerId);
     const itemCount = settings.itemCount || 8;
 
     // 构建分类 Prompt
@@ -685,7 +684,7 @@ async function fetchShopData() {
     `;
 
     // 添加自定义分类
-    const customCategories = getCustomCategories();
+    const customCategories = getCustomCategories(ownerId);
     customCategories.forEach(cat => {
         categoryPrompt += `\n        *   **${cat.id} (${cat.name})**：${cat.prompt}`;
     });
@@ -783,16 +782,11 @@ async function fetchShopData() {
 
     try {
         const result = JSON.parse(content);
-        shopState.banner = result.banner;
-        shopState.items = result.items;
-
-        // 保存到数据库
-        chat.shopData = {
-            banner: result.banner,
-            items: result.items,
-            lastUpdated: Date.now()
-        };
-        await dexieDB.characters.update(chat.id, { shopData: chat.shopData });
+        if(!result.items||typeof result.items!=='object'||Array.isArray(result.items)||!Object.values(result.items).every(Array.isArray))throw Error('INVALID_ITEMS');
+        const data={banner:result.banner,items:result.items,lastUpdated:Date.now()};
+        if(!await dexieDB.characters.update(chat.id,{shopData:data}))throw Error('CHARACTER_UNAVAILABLE');
+        chat.shopData=data;
+        if(currentChatId===ownerId){shopState.banner=data.banner;shopState.items=data.items;}
 
     } catch (e) {
         console.error("JSON Parse Error", e);
@@ -917,7 +911,7 @@ async function confirmPurchase() {
     if (deliveryType === 'pickup') {
         const code = document.getElementById('shop-pickup-code').value.trim();
         if (!code) {
-            alert('请输入自提口令');
+            showToast('请输入自提口令');
             return;
         }
         deliveryName = `自提口令: ${code}`;

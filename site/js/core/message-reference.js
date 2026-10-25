@@ -26,8 +26,7 @@
     function extractText(message) {
         if (!message || typeof message !== 'object') return '';
         if (typeof message.content === 'string') return message.content;
-        const textPart = Array.isArray(message.parts) && message.parts.find(part => part && part.type === 'text');
-        return textPart ? asText(textPart.text) : '';
+        return Array.isArray(message.parts) ? message.parts.filter(part => part?.type === 'text').map(part => asText(part.text)).join('\n') : '';
     }
 
     function parseContent(value) {
@@ -44,8 +43,12 @@
             return message.role === 'assistant' ? 'ai-voice' : 'user-audio';
         }
         if (parts.some(part => part && part.type === 'video')) return 'video';
-        if (parts.some(part => part && part.type === 'image')) return 'image';
+        if (parts.some(part => part && ['image','image_url'].includes(part.type))) return 'image';
         if (parts.some(part => part && (part.type === 'file' || part.type === 'document'))) return 'file';
+        if (parts.some(part => part && ['audio','voice'].includes(part.type))) return message.role === 'user' ? 'user-audio' : 'ai-voice';
+        if (/^(?:data:image\/|https?:\/\/\S+\.(?:png|jpe?g|gif|webp)(?:[?#]|$))/i.test(content) || /发来了一张图片/.test(content)) return 'image';
+        if (/^(?:data:video\/|https?:\/\/\S+\.(?:mp4|webm|mov)(?:[?#]|$))/i.test(content)) return 'video';
+        if (message.fileName || message.fileAssetId) return 'file';
         if (/\[(?:[^\]]*?)(?:转账|给你转账|向.+?转账)[：:]/.test(content)) return 'transfer';
         if (/\[(?:[^\]]*?)(?:表情包|发送的表情包)[：:]/.test(content)) return 'sticker';
         if (/\[(?:[^\]]*?)(?:照片\/视频|视频)[：:]/.test(content)) return 'video';
@@ -69,7 +72,7 @@
         }
         if (chatType === 'private') return chat && (chat.remarkName || chat.name) || '对方';
         const member = chat && Array.isArray(chat.members)
-            ? chat.members.find(entry => entry.id === message.senderId)
+            ? findById(chat.members, message.senderId)
             : null;
         return member && (member.groupNickname || member.name) || '成员';
     }
@@ -113,7 +116,7 @@
         if (!favorite || typeof favorite !== 'object') return [];
         if (Array.isArray(favorite.items) && favorite.items.length) {
             return favorite.items.map(item => ({
-                messageId: item.messageId || favorite.messageId || null,
+                messageId: item.messageId ?? favorite.messageId ?? null,
                 role: item.role || '',
                 senderId: item.senderId || null,
                 senderName: item.senderName || item.sender || favorite.sender || '未知',
@@ -130,7 +133,7 @@
         }
         const parsed = parseContent(favorite.content);
         return [{
-            messageId: favorite.messageId || null,
+            messageId: favorite.messageId ?? null,
             role: favorite.role || '',
             senderId: favorite.senderId || null,
             senderName: favorite.sender || '未知',
@@ -158,24 +161,35 @@
         }).filter(Boolean).join('\n');
     }
 
+    function findById(list, id) {
+        if (id == null) return null;
+        const exact = list.filter(entry => entry && entry.id === id);
+        if (exact.length) return exact.length === 1 ? exact[0] : null;
+        const legacy = list.filter(entry => entry && String(entry.id) === String(id));
+        return legacy.length === 1 ? legacy[0] : null;
+    }
+
     function getChat(dbValue, chatType, chatId) {
         const source = dbValue || global.db || {};
         const list = chatType === 'private' ? source.characters : source.groups;
-        return Array.isArray(list) ? list.find(entry => entry.id === chatId) : null;
+        return Array.isArray(list) ? findById(list, chatId) : null;
     }
 
     function resolve(chatType, chatId, messageId, dbValue) {
         const chat = getChat(dbValue, chatType, chatId);
         const message = chat && Array.isArray(chat.history)
-            ? chat.history.find(entry => entry.id === messageId)
+            ? findById(chat.history, messageId)
             : null;
         return message ? { chat, message } : null;
     }
 
     function locate(chatType, chatId, messageId, dbValue) {
-        if (!resolve(chatType, chatId, messageId, dbValue)) return false;
-        global._pendingMessageLocation = { chatType, chatId, messageId };
-        if (typeof global.openChatRoom === 'function') global.openChatRoom(chatId, chatType);
+        const resolved = resolve(chatType, chatId, messageId, dbValue);
+        if (!resolved) return false;
+        global.SearchSystem?.beforeLocate?.();
+        global._pendingMessageLocation = { chatType, chatId: resolved.chat.id, messageId: resolved.message.id };
+        if (typeof global.openChatRoom === 'function') global.openChatRoom(resolved.chat.id, chatType);
+        global.SearchSystem?.afterLocate?.(chatType, resolved.chat.id, resolved.message.id);
         return true;
     }
 
@@ -195,26 +209,52 @@
 
     function matches(message, filters) {
         const options = filters || {};
-        const timestamp = Number(message && message.timestamp) || 0;
+        const timestamp = timestampOf(message);
         const from = dayBounds(options.dateFrom, false);
         const to = dayBounds(options.dateTo, true);
         if (from != null && timestamp < from) return false;
         if (to != null && timestamp > to) return false;
         if (options.sender === 'user' && message.role !== 'user') return false;
         if (options.sender === 'assistant' && message.role === 'user') return false;
+        if (options.sender?.startsWith('member:') && (message.role === 'user' || String(message.senderId) !== options.sender.slice(7))) return false;
         const type = classify(message);
-        if (options.type && options.type !== 'all' && type !== options.type) return false;
+        if (options.type === 'audio' ? !['ai-voice','user-audio'].includes(type) : options.type && options.type !== 'all' && type !== options.type) return false;
         const keyword = asText(options.keyword).trim().toLocaleLowerCase();
         if (!keyword) return true;
-        const parsed = parseContent(extractText(message));
+        const raw = extractText(message);
+        const text = /^data:/i.test(raw) ? '' : raw;
+        const parsed = parseContent(text);
         const searchable = [
             message && message.transcriptOriginal,
             message && message.translation,
+            message && message.transcriptTranslation,
             parsed.original,
             parsed.translation,
-            extractText(message),
+            text,
+            message.fileName,
+            ...(Array.isArray(message.parts) ? message.parts : []).map(part => part?.name || part?.fileName || ''),
         ].filter(Boolean).join('\n').toLocaleLowerCase();
         return searchable.includes(keyword) || (keyword.length >= 3 && fuzzyIncludes(searchable, keyword));
+    }
+
+    function timestampOf(message) {
+        const value = message?.timestamp;
+        const numeric = Number(value);
+        return Number.isFinite(numeric) ? numeric : (Date.parse(value) || 0);
+    }
+
+    function nearestDate(history, date) {
+        const target = dayBounds(date, false);
+        if (target == null) return null;
+        let nearest = null, distance = Infinity;
+        for (const message of history || []) {
+            const stamp = timestampOf(message);
+            if (!stamp) continue;
+            const delta = Math.abs(stamp - target);
+            if (delta < distance) { nearest = message; distance = delta; }
+        }
+        const sameDay = (history || []).filter(message => timestampOf(message) >= target && timestampOf(message) <= dayBounds(date, true));
+        return sameDay.sort((a,b) => timestampOf(a)-timestampOf(b))[0] || nearest;
     }
 
     global.MessageReference = {
@@ -230,5 +270,7 @@
         matches,
         parseContent,
         extractText,
+        timestampOf,
+        nearestDate,
     };
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -6,6 +6,8 @@
     let view = 'day', dateCovered = false;
     let detailCourse = null, editableCourses = [], dirty = false, panel = '', panelTrigger = null;
     let syncState = null;
+    let editBaseline = null;
+    let confirming = false, manualDraft = null;
     let pendingShareRole = null;
     let pendingCalendarTarget = null;
     const note = text => { field('status').textContent = text; field('panel-status').textContent = text; };
@@ -24,7 +26,7 @@
         node.onclick = () => void run(action); return node;
     }
     async function run(action) {
-        if (busy) return;
+        if (busy || confirming) return;
         busy = true;
         const controls = [...document.querySelectorAll('#timetable-screen button, #timetable-screen input, #timetable-screen select')];
         const previous = controls.map(control => control.disabled);
@@ -36,17 +38,55 @@
             busy = false; updateControls();
         }
     }
+    async function confirmAction(message) {
+        if (confirming) return false;
+        confirming = true;
+        const dialog = field('dialog'), wasOpen = dialog.open;
+        const trigger = document.activeElement;
+        if (wasOpen) dialog.close();
+        try { return await global.showAppConfirmDialog({ title: '课程表', message, dismissText: '' }) === 'confirm'; }
+        finally { confirming = false; if (wasOpen) { dialog.showModal(); trigger?.focus?.(); } }
+    }
+    function connectionStatus() {
+        const state = global.TimetableBridge?.getStatus?.() || { code: 'unchecked' };
+        const messages = {
+            unchecked: ['尚未检查连接', '点击“检查连接”读取当前扩展状态，不会同步课程。'],
+            timeout: ['未收到扩展响应', '请在当前 Mio 标签页点击课表扩展，再检查连接。未响应不能确定是未安装还是通道未恢复。'],
+            unavailable: ['扩展连接不可用', '确认学校课表页仍打开；若学校页刷新、关闭或切换过账号，请在扩展中断开后重新配对。'],
+            'query-required': ['已配对 · 等待学校查询', '去山东管理学院的“学生课表按周次查询”正常查询一次，再回来检查连接。'],
+            ready: ['查询通道已就绪 · 待同步验证', '可同步学校所选周。通道就绪不代表学校登录仍有效，也不代表已取得最新课表。'],
+            'authorization-required': ['学校登录已失效', '请在学校页面正常重新登录、查询课表，再检查连接。'],
+            'invalid-response': ['连接返回内容异常', '请重新加载课表扩展并配对，确认学校所选学期和教学周。已有课表保留。'],
+        };
+        let [title, help] = messages[state.code] || messages.unavailable;
+        if (state.ready && selected && (selected.provider !== 'sdmu-weekly' || selected.scopeKey !== state.scopeKey || selected.semester !== state.semester)) {
+            title = '当前通道与所选缓存课表不同';
+            help = '“同步学校所选周”将使用当前配对及学期；旧课表和个人调整保留，不会自动合并。';
+        }
+        field('bridge-status').textContent = title;
+        field('bridge-help').textContent = help;
+        field('bridge-check-time').textContent = state.checkedAt ? `最近检查：${new Date(state.checkedAt).toLocaleTimeString('zh-CN')}` : '';
+        field('sync-school').disabled = busy || !state.ready;
+        return title;
+    }
     function updateControls() {
+        connectionStatus();
+        const bridge = global.TimetableBridge?.getStatus?.();
+        const canRefresh = selected && api().canRefresh(selected.provider, selected.scopeKey)
+            && !(selected.provider === 'sdmu-weekly' && bridge?.ready && bridge.semester !== selected.semester);
         const currentWeek = Number(field('week').value) || 1;
         field('previous-week').disabled = busy || !selected || currentWeek <= 1;
-        field('next-week').disabled = busy || !selected || currentWeek >= 60;
-        document.querySelector('#timetable-screen [data-tt-open="edit"]').disabled = busy || !selected;
+        field('next-week').disabled = busy || !selected || currentWeek >= (selected?.manualConfig?.weekCount || 60);
+        document.querySelector('#timetable-screen [data-tt-open="edit"]').disabled = busy;
         field('share-save').disabled = busy || !field('share-role').value || field('share-range').value !== 'off' && !selected;
-        field('refresh').disabled = busy || !selected || !api().canRefresh(selected.provider, selected.scopeKey);
-        field('refresh-current').disabled = busy || !selected || !api().canRefresh(selected.provider, selected.scopeKey) || !global.TimetableCore.resolveDate(selected, api().schoolDate()).covered;
+        field('refresh').disabled = busy || !canRefresh;
+        field('refresh-current').disabled = busy || !canRefresh || !global.TimetableCore.resolveDate(selected, api().schoolDate()).covered;
         field('auto-sync').disabled = busy || !selected || selected.provider !== 'sdmu-weekly' || !syncState?.autoSyncEnabled && !api().canRefresh(selected.provider, selected.scopeKey);
-        field('disconnect').disabled = busy || !selected;
-        field('save').disabled = busy || !selected || view === 'day' && !dateCovered;
+        field('disconnect').disabled = busy || !selected || selected.provider === 'manual';
+        field('delete-manual').hidden = selected?.provider !== 'manual';
+        field('delete-manual').disabled = busy || selected?.provider !== 'manual';
+        field('week').max = selected?.manualConfig?.weekCount || 60;
+        field('save').disabled = busy || !selected || view === 'day' && !dateCovered || field('type').value !== 'add' && !field('target').value;
         field('semester').disabled = busy || snapshots.length === 0;
         field('target-label').hidden = field('type').value === 'add';
         field('fields').disabled = field('type').value === 'cancel';
@@ -54,14 +94,42 @@
     }
     function fillCourse() {
         const course = editableCourses.find(item => item.id === field('target').value);
+        editBaseline = course || null;
         if (field('type').value === 'add') {
             for (const key of ['name', 'location', 'teacher', 'sections']) field(key).value = '';
-            field('weeks').value = field('week').value; field('weekday').value = '1';
+            field('weeks').value = selected?.provider === 'manual' ? `1-${selected.manualConfig.weekCount}` : field('week').value;
+            field('weekday').value = String(view === 'day' ? global.TimetableCore.resolveDate(selected, field('date').value).weekday || 1 : 1);
         } else if (course) {
             for (const key of ['name', 'location', 'teacher', 'weekday']) field(key).value = course[key];
             field('sections').value = course.sections.join(','); field('weeks').value = course.weeks.join(',');
         }
+        field('edit-hint').textContent = selected?.provider === 'manual'
+            ? `手工学期共 ${selected.manualConfig.weekCount} 周，每天 ${selected.manualConfig.sectionCount} 节；未设置具体钟点。`
+            : '只修改 Mio 中的个人安排，不回写学校课表；取消课程可在“我的调整”中撤销。';
         updateControls();
+    }
+    async function createManual() {
+        if (field('dialog').open) field('dialog').close();
+        const start = new Date(`${api().schoolDate()}T00:00:00Z`);
+        start.setUTCDate(start.getUTCDate() - (start.getUTCDay() + 6) % 7);
+        const draft = manualDraft || { semester: '', startDate: start.toISOString().slice(0, 10), weekCount: 20, sectionCount: 12 };
+        const result = await global.showAppFormDialog({ title: '新建手工课表', confirmText: '创建学期',
+            message: '无需连接学校。课程与教务来源独立保存；开始日填写第一教学周的周一，节次不推算具体钟点。',
+            fields: [
+                { name: 'semester', label: '学期名称', value: draft.semester, required: true, maxLength: 80 },
+                { name: 'startDate', label: '学期开始日（第一周周一）', type: 'date', value: draft.startDate, required: true },
+                { name: 'weekCount', label: '教学周数（1–60）', type: 'number', value: draft.weekCount, min: 1, max: 60, step: 1, required: true },
+                { name: 'sectionCount', label: '每天节数（1–30）', type: 'number', value: draft.sectionCount, min: 1, max: 30, step: 1, required: true },
+            ] });
+        if (!result) return;
+        manualDraft = result;
+        const snapshot = await api().createManualSemester(result);
+        manualDraft = null; dirty = false; panel = '';
+        field('semester').append(new Option(snapshot.semester, snapshot.id)); field('semester').value = snapshot.id;
+        selected = snapshot; view = 'day'; field('date').value = snapshot.manualConfig.startDate; field('week').value = '1';
+        await render();
+        await openPanel('edit'); field('type').value = 'add'; field('scope').value = 'all'; fillCourse();
+        note('手工课表已创建，现在可以添加课程');
     }
     async function render(calendarTarget = null) {
         const token = ++generation;
@@ -81,11 +149,11 @@
         if (!calendarTarget && selected?.coverage === 'weekly' && previousId !== selected.id) {
             const today = global.TimetableCore.resolveDate(selected, api().schoolDate());
             const cachedWeeks = Object.keys(selected.weekDates || {}).map(Number).filter(value => Number.isInteger(value) && value >= 1 && value <= 60).sort((a, b) => b - a);
-            currentWeek = today.covered ? today.week : cachedWeeks[0] || currentWeek;
+            currentWeek = today.covered ? today.week : selected.provider === 'manual' ? 1 : cachedWeeks[0] || currentWeek;
             field('week').value = String(currentWeek);
-            if (view === 'day') field('date').value = api().schoolDate();
+            if (view === 'day') field('date').value = selected.provider === 'manual' && !today.covered ? selected.manualConfig.startDate : api().schoolDate();
         }
-        field('semester').replaceChildren(...snapshots.map((row, index) => new Option(`${row.semester} · 课表 ${index + 1}`, row.id)));
+        field('semester').replaceChildren(...snapshots.map((row, index) => new Option(`${row.semester} · ${row.provider === 'manual' ? '手工课表' : `课表 ${index + 1}`}`, row.id)));
         if (selected) field('semester').value = selected.id;
         else if (calendarTarget) field('semester').value = '';
         field('courses').replaceChildren(); field('adjustments').replaceChildren(); field('changes').replaceChildren();
@@ -97,10 +165,16 @@
         if (!selected) {
             dateCovered = false;
             syncState = null; field('auto-sync').checked = false; field('auto-status').textContent = '连接并首次同步后可开启自动刷新';
-            field('connection').textContent = '尚未连接教务系统'; field('sync-time').textContent = '';
-            field('courses').append(element('p', '连接后将在这里显示你的课程。', 'tt-note'));
+            editableCourses = []; field('target').replaceChildren();
+            field('connection').textContent = '尚无已保存的学校课表'; field('sync-time').textContent = '';
+            const bridge = global.TimetableBridge?.getStatus?.();
+            const lastAttempt = bridge?.scopeKey ? await api().getSyncState('sdmu-weekly', bridge.scopeKey) : null;
+            if (token !== generation) return;
+            if (lastAttempt?.requiresAuthorization) field('connection').textContent += ' · 上次同步登录失效，请在学校页重新登录';
+            else if (lastAttempt?.status === 'error') field('connection').textContent += ' · 上次同步失败，请核对学校查询与连接后重试';
+            field('courses').append(element('p', '还没有课表。点击“添加课程”即可新建手工学期，无需连接学校；也可在“同步”中连接教务。', 'tt-empty'));
             renderNavigation(null, currentWeek);
-            field('sync-brief').textContent = '连接学校课表 ›';
+            field('sync-brief').textContent = `${connectionStatus()} ›`;
             return;
         }
         const snapshot = selected;
@@ -110,7 +184,11 @@
             api().listAdjustments(snapshot.id), api().listChanges(snapshot.id),
         ]);
         if (token !== generation) return;
-        editableCourses = [...snapshot.courses, ...adjustments.filter(item => item.type === 'add').map(item => item.course)];
+        editableCourses = global.TimetableCore.applyAdjustments(snapshot.courses, adjustments, {
+            week: effective.week || currentWeek, date: view === 'day' ? field('date').value : '', semester: snapshot.semester, scopeKey: snapshot.scopeKey,
+        }).courses;
+        // Week projection also includes adjustments limited to an individual mapped date.
+        editableCourses = editableCourses.map(course => effective.courses.find(item => item.id === course.id) || course);
         const targetId = field('target').value;
         field('target').replaceChildren(...editableCourses.map(course => new Option(`${course.name} · 周${course.weekday} · ${course.sections.join(',')}节`, course.id)));
         if (editableCourses.some(course => course.id === targetId)) field('target').value = targetId;
@@ -122,7 +200,13 @@
         field('connection').textContent = `${labels[state?.status] || '本地缓存'}${api().canRefresh(snapshot.provider, snapshot.scopeKey) ? '' : ' · 当前同步连接不可用'}`;
         const format = value => value ? new Date(value).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) : '暂无';
         field('sync-time').textContent = `成功同步：${format(state?.lastSuccessAt)}；最近尝试：${format(state?.lastAttemptAt)}（北京时间）`;
-        field('sync-brief').textContent = `${labels[state?.status] || '本地缓存'} · ${state?.lastSuccessAt ? format(state.lastSuccessAt) : '尚未同步'} ›`;
+        field('sync-brief').textContent = `${connectionStatus()} · ${labels[state?.status] || '本地缓存'} ›`;
+        if (snapshot.provider === 'manual') {
+            field('connection').textContent = '手工课表 · 未经教务核验';
+            field('sync-time').textContent = `${snapshot.manualConfig.startDate} 起 · ${snapshot.manualConfig.weekCount} 周 · 每天 ${snapshot.manualConfig.sectionCount} 节`;
+            field('auto-status').textContent = '手工课表不参与学校同步';
+            field('sync-brief').textContent = `${snapshot.semester} · 手工课表 · 来源与设置 ›`;
+        }
         field('changes-entry').textContent = `变动记录${changes.some(item => !item.acknowledged) ? ` · ${changes.filter(item => !item.acknowledged).length}` : ''}`;
         if (view === 'day' && effective.covered) {
             currentWeek = effective.week; field('week').value = String(currentWeek);
@@ -133,18 +217,19 @@
         renderNavigation(snapshot, currentWeek);
         const missing = snapshot.weekStatus?.[currentWeek]?.missingCount || 0;
         field('coverage').textContent = !covered
-            ? effective.reason === 'ambiguous-date' ? '该日期对应多个教学周，请核对学校日期映射。' : view === 'day' ? '该日期尚无已同步的学校日期映射，不能判断是否有课。' : '该教学周尚未同步，不能判断是否有课。'
+            ? snapshot.provider === 'manual' ? '该日期或周次不在手工学期范围内，请选择学期内日期。' : effective.reason === 'ambiguous-date' ? '该日期对应多个教学周，请核对学校日期映射。' : view === 'day' ? '该日期尚无已同步的学校日期映射，不能判断是否有课。' : '该教学周尚未同步，不能判断是否有课。'
             : `${view === 'day' ? `${effective.date} · ` : ''}第 ${currentWeek} 教学周${missing ? ` · 有 ${missing} 条来源缺失课程暂保留，需核对` : ''}`;
         renderCourses(effective.courses, covered, changes, adjustments, currentWeek, weekDates);
         if (effective.conflicts.length) field('courses').prepend(element('p', `有 ${effective.conflicts.length} 项调整无法应用，请在“我的调整”中核对并撤销。`, 'tt-note'));
         for (const adjustment of adjustments) {
             const row = element('article', '');
-            const name = adjustment.course?.name || snapshot.courses.find(course => course.id === adjustment.targetCourseId)?.name || '原课程已移除';
+            const name = adjustment.course?.name || snapshot.courses.find(course => course.id === adjustment.targetCourseId)?.name
+                || adjustments.find(item => item.type === 'add' && item.course.id === adjustment.targetCourseId)?.course.name || '原课程已移除';
             row.append(element('p', `${({ add: '新增', modify: '修改', cancel: '取消' })[adjustment.type]} · ${name}`));
             row.append(element('p', adjustment.date || (adjustment.week ? `第 ${adjustment.week} 周` : '所有适用教学周'), 'tt-note'));
             if (adjustment.type === 'modify') row.append(element('p', Object.entries(adjustment.patch).map(([key, value]) => `${({ name: '名称', location: '教室', teacher: '教师', weekday: '星期', sections: '节次', weeks: '周次' })[key] || key}：${value}`).join(' · '), 'tt-note'));
             row.append(button('撤销调整', async () => {
-                if (!global.confirm(`撤销“${name}”的这项调整？`)) return;
+                if (!await confirmAction(`撤销“${name}”的这项调整？教务原数据保留。`)) return;
                 await api().deleteAdjustment(adjustment.id, adjustment.revision); await render(); note('调整已撤销');
             })); field('adjustments').append(row);
         }
@@ -161,8 +246,8 @@
         if (!changes.length) field('changes').append(element('p', '暂无变动记录', 'tt-note'));
         return { snapshotId: snapshot.id, effective };
     }
-    function openPanel(name) {
-        if (dirty && !global.confirm('放弃尚未保存的修改？')) return false;
+    async function openPanel(name) {
+        if (confirming || dirty && !await confirmAction('放弃尚未保存的修改？')) return false;
         dirty = false; panel = name;
         const dialog = field('dialog');
         if (!dialog.open) panelTrigger = document.activeElement;
@@ -177,8 +262,8 @@
         dialog.scrollTop = 0;
         return true;
     }
-    function closePanel() {
-        if (busy || dirty && !global.confirm('放弃尚未保存的修改？')) return;
+    async function closePanel() {
+        if (busy || confirming || dirty && !await confirmAction('放弃尚未保存的修改？')) return;
         dirty = false; panel = ''; field('dialog').close(); panelTrigger?.focus?.();
     }
     function changeLabel(change) {
@@ -205,8 +290,8 @@
         }
         field('grid-hint').hidden = view !== 'week';
     }
-    function showCourse(course) {
-        if (!openPanel('detail')) return;
+    async function showCourse(course) {
+        if (!await openPanel('detail')) return;
         detailCourse = course;
         const body = field('course-detail'); body.replaceChildren(element('h3', course.name));
         for (const [label, value] of [['时间', course.startTime && course.endTime ? `${course.startTime}–${course.endTime}` : '学校未提供具体钟点'], ['星期', '一二三四五六日'[course.weekday - 1]], ['节次', course.sections.join('、')], ['教学周', course.weeks.join('、')], ['教室', course.location || '未提供'], ['教师', course.teacher || '未提供'], ['来源', course.source === 'manual' ? '手动新增' : '学校课表（已应用个人调整）']]) body.append(element('p', `${label} · ${value}`));
@@ -215,7 +300,7 @@
         const host = field('courses'); host.className = view === 'week' ? 'tt-grid-scroll' : 'tt-day-list';
         host.tabIndex = view === 'week' ? 0 : -1;
         host.setAttribute('aria-label', view === 'week' ? '按星期和节次排列的课表，可横向滚动' : '当日课程');
-        if (!covered) { host.append(element('p', '尚未同步此范围。可在“同步”中刷新对应教学周。', 'tt-empty')); return; }
+        if (!covered) { host.append(element('p', selected?.provider === 'manual' ? '请选择手工学期内的教学周或日期。' : '尚未同步此范围。可在“同步”中刷新对应教学周。', 'tt-empty')); return; }
         const card = course => {
             const node = button('', () => showCourse(course)); node.className = 'tt-course';
             node.dataset.courseId = course.id;
@@ -232,7 +317,7 @@
             if (!courses.length) host.append(element('p', '这一天，课表上没有课程。', 'tt-empty'));
             courses.forEach(course => host.append(card(course))); return;
         }
-        const maxSection = Math.max(8, ...courses.flatMap(course => course.sections));
+        const maxSection = Math.max(selected?.manualConfig?.sectionCount || 8, ...courses.flatMap(course => course.sections));
         const grid = element('div', '', 'tt-week-grid');
         const numbers = element('div', '', 'tt-section-column'); numbers.append(element('div', '节次', 'tt-grid-heading'));
         for (let section = 1; section <= maxSection; section++) numbers.append(element('div', String(section), 'tt-section-number'));
@@ -276,12 +361,13 @@
     }
     async function save() {
         const snapshot = selected;
-        if (!snapshot) throw new Error('请先连接并同步课表');
+        if (!snapshot) throw new Error('请先新建手工学期或同步学校课表');
         if (view === 'day' && !dateCovered) throw new Error('该日期尚未对应教学周，请切换周课表后调整');
         const type = field('type').value;
         const values = Object.fromEntries(['name', 'location', 'teacher', 'weekday', 'sections', 'weeks'].map(key => [key, field(key).value]));
         const normalized = type === 'cancel' ? null : global.TimetableCore.normalizeCourse(values, snapshot);
-        const original = editableCourses.find(course => course.id === field('target').value);
+        const original = editBaseline;
+        if (type !== 'add' && (!original || original.id !== field('target').value)) throw new Error('请选择要调整的课程');
         const patch = {};
         if (type === 'modify') for (const key of Object.keys(values)) if (JSON.stringify(original?.[key]) !== JSON.stringify(normalized[key])) patch[key] = normalized[key];
         if (type === 'modify' && !Object.keys(patch).length) throw new Error('还没有修改课程内容');
@@ -300,17 +386,44 @@
         field('close-panel').onclick = closePanel;
         dialog.addEventListener('cancel', event => { event.preventDefault(); closePanel(); });
         dialog.addEventListener('input', () => { if (panel === 'edit' || panel === 'sharing') dirty = true; });
-        document.querySelectorAll('#timetable-screen [data-tt-open]').forEach(node => {
-            node.onclick = () => { if (busy) return; if (openPanel(node.dataset.ttOpen) && node.dataset.ttOpen === 'edit') { field('type').value = 'add'; fillCourse(); } };
+        field('create-manual').onclick = () => void run(createManual);
+        field('delete-manual').onclick = () => void run(async () => {
+            const snapshot = selected;
+            if (snapshot?.provider !== 'manual' || !await confirmAction('删除这个手工学期及其课程和调整？其他手工学期与学校课表保持不变。')) return;
+            await api().clearScope(snapshot.provider, snapshot.scopeKey);
+            field('dialog').close(); panel = ''; field('semester').value = ''; selected = null;
+            await render(); note('手工学期已删除');
         });
-        field('edit-course').onclick = () => {
-            if (!detailCourse || !openPanel('edit')) return;
+        document.querySelectorAll('#timetable-screen [data-tt-open]').forEach(node => {
+            node.onclick = async () => {
+                if (busy || confirming) return;
+                if (node.dataset.ttOpen === 'edit' && !selected) { await run(createManual); return; }
+                if (await openPanel(node.dataset.ttOpen) && node.dataset.ttOpen === 'edit') { field('type').value = 'add'; field('scope').value = selected.provider === 'manual' ? 'all' : 'week'; fillCourse(); }
+            };
+        });
+        field('edit-course').onclick = async () => {
+            if (busy || !detailCourse || !await openPanel('edit')) return;
             field('type').value = 'modify'; field('target').value = detailCourse.id; fillCourse();
+            editBaseline = detailCourse; field('scope').value = 'week';
             for (const key of ['name', 'location', 'teacher', 'weekday']) field(key).value = detailCourse[key];
             field('sections').value = detailCourse.sections.join(','); field('weeks').value = detailCourse.weeks.join(',');
         };
+        field('cancel-course').onclick = async () => {
+            if (busy || !detailCourse || !await openPanel('edit')) return;
+            field('type').value = 'cancel'; field('scope').value = 'week'; field('target').value = detailCourse.id; fillCourse();
+        };
+        field('check-connection').onclick = () => void run(async () => {
+            await global.TimetableBridge?.probe(); await render(); note('连接检查完成；未请求学校课表数据。');
+        });
+        field('sync-school').onclick = () => void run(async () => {
+            try {
+                await global.TimetableBridge.refresh();
+                field('semester').value = ''; selected = null;
+                note('学校所选周已同步，个人调整保留');
+            } finally { await render(); }
+        });
         for (const [name, offset] of [['previous-week', -1], ['next-week', 1]]) field(name).onclick = () => void run(async () => {
-            const targetWeek = Math.max(1, Math.min(60, week() + offset));
+            const targetWeek = Math.max(1, Math.min(selected?.manualConfig?.weekCount || 60, week() + offset));
             const day = global.TimetableCore.resolveDate(selected, field('date').value).weekday || 1;
             const date = selected?.weekDates?.[targetWeek]?.find(row => row.weekday === day)?.date;
             field('week').value = String(targetWeek);
@@ -367,32 +480,34 @@
             if (!busy && !dialog.open && document.querySelector('#timetable-screen')?.classList.contains('active')) void run(render);
         });
         field('disconnect').onclick = () => void run(async () => {
-            if (!global.confirm('断开当前连接？本地课表和调整将保留。')) return;
-            try { await api().disconnect(selected.provider, selected.scopeKey); note('连接已断开，本地课表已保留'); }
+            const snapshot = selected;
+            if (!await confirmAction('断开当前连接？本地课表和调整将保留。')) return;
+            try { await api().disconnect(snapshot.provider, snapshot.scopeKey); note('连接已断开，本地课表已保留'); }
             finally { await render(); }
         });
         const reconnect = () => {
-            if (busy || dialog.open || !document.querySelector('#timetable-screen')?.classList.contains('active')) return;
+            if (busy || confirming || dialog.open && panel !== 'sync' || !document.querySelector('#timetable-screen')?.classList.contains('active')) return;
             void run(async () => { await global.TimetableBridge?.probe(); await render(); });
         };
         global.addEventListener('focus', reconnect);
         global.addEventListener('mio-timetable-connection', reconnect);
     }
     global.TimetableUI = Object.freeze({
-        openFromCalendar(target) {
-            if (busy || !target || typeof target.snapshotId !== 'string' || !target.snapshotId || typeof target.courseId !== 'string' || !target.courseId) return false;
+        async openFromCalendar(target) {
+            if (busy || confirming || !target || typeof target.snapshotId !== 'string' || !target.snapshotId || typeof target.courseId !== 'string' || !target.courseId) return false;
             try { global.TimetableCore.resolveDate(null, target.date); }
             catch { return false; }
-            if (dirty && !global.confirm('放弃尚未保存的修改？')) return false;
+            const destination = { snapshotId: target.snapshotId, date: target.date, courseId: target.courseId };
+            if (dirty && !await confirmAction('放弃尚未保存的修改？')) return false;
             dirty = false; panel = ''; detailCourse = null; field('dialog').close();
             pendingShareRole = null;
-            pendingCalendarTarget = { snapshotId: target.snapshotId, date: target.date, courseId: target.courseId };
+            pendingCalendarTarget = destination;
             document.querySelector('#timetable-screen .back-btn').dataset.target = 'health-screen';
             switchScreen('timetable-screen');
             return true;
         },
         openForRole(roleId) {
-            if (busy || !global.db?.characters?.some(role => String(role.id) === String(roleId))) return;
+            if (busy || confirming || !global.db?.characters?.some(role => String(role.id) === String(roleId))) return;
             pendingCalendarTarget = null;
             pendingShareRole = String(roleId);
             document.querySelector('#timetable-screen .back-btn').dataset.target = 'chat-settings-screen';
@@ -416,7 +531,7 @@
                     if (matches.length !== 1) { note('该课程已变化或不在此日期，请核对当天课表'); return; }
                     const card = [...field('courses').querySelectorAll('[data-course-id]')].find(node => node.dataset.courseId === calendarTarget.courseId);
                     card?.focus({ preventScroll: true }); card?.scrollIntoView({ block: 'center', behavior: 'instant' });
-                    showCourse(matches[0]);
+                    await showCourse(matches[0]);
                     return;
                 }
                 if (roleId && global.db?.characters?.some(role => String(role.id) === roleId)) {
@@ -425,7 +540,7 @@
                     if (snapshot) { field('semester').value = snapshot.id; await render(); }
                     field('share-role').value = roleId;
                     await renderSharing();
-                    openPanel('sharing');
+                    await openPanel('sharing');
                 }
             });
         }

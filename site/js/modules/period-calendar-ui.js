@@ -98,8 +98,14 @@
         f('cancel-edit').onclick = () => { if (!busy) renderDay(); };
         for (const kind of ['start', 'end']) f(kind).onclick = () => void change([{ date: selected, kind }]);
         f('range').onclick = () => { const rows = related(); edit(rows, rows.length === 1 && rows[0].kind === 'end' ? 'end' : 'range'); };
-        f('remove').onclick = () => {
-            if (!busy && global.confirm('撤销这次生理期记录？')) void change([], related());
+        f('remove').onclick = async () => {
+            if (busy) return;
+            const previous = related();
+            busy = true; f('sheet').close();
+            let result;
+            try { result = await global.showAppConfirmDialog({ title: '生理期记录', message: '撤销这次生理期记录？', dismissText: '' }); }
+            finally { busy = false; f('sheet').showModal(); f('remove').focus(); }
+            if (result === 'confirm') await change([], previous);
         };
         f('undo').onclick = async () => {
             if (busy || !receipt) return; busy = true;
