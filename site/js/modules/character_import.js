@@ -513,11 +513,6 @@ function setupCreateCharMethodSheet() {
         sheet.classList.remove('visible');
         document.getElementById('character-card-input').click();
     });
-    const restore = document.createElement('button');
-    restore.className = 'action-sheet-button';
-    restore.textContent = '恢复 Mio / OvO 专属角色存档';
-    restore.onclick = () => { sheet.classList.remove('visible'); document.getElementById('ovo-character-card-input').click(); };
-    document.getElementById('method-import-ovo-card-btn').after(restore);
 
     // 点击遮罩关闭
     sheet.addEventListener('click', (e) => {

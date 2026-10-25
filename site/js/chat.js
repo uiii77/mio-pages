@@ -35,7 +35,7 @@ function arrangeChatExpansionItems() {
 function setupChatRoom() {
     document.getElementById('chat-calendar-btn')?.addEventListener('click', () => { showPanel('none'); switchScreen('health-screen'); });
     document.getElementById('chat-records-search-btn')?.addEventListener('click', () => { switchScreen('chat-room-screen'); openDeleteChunkModal(); });
-    for(const id of ['chat-calendar-btn'])document.getElementById(id)?.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();event.currentTarget.click();}});
+    for(const id of ['chat-calendar-btn','chat-records-search-btn'])document.getElementById(id)?.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();event.currentTarget.click();}});
     document.getElementById('chat-trpg-btn')?.addEventListener('click', () => {
         showPanel('none'); window.TrpgPlayUI?.open();
     });
