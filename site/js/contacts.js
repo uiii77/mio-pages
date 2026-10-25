@@ -261,12 +261,21 @@ function renderContactList() {
     
     if (countEl) countEl.textContent = allContacts.length;
 
-    // 按名称排序
+    const preferences = chatDirectoryPreferences(true);
+    listContainer.classList.toggle('directory-compact', Boolean(preferences.compact));
     const sortedContacts = [...allContacts].sort((a, b) => {
+        if(preferences.grouped && a.folderId !== b.folderId) return String(a.folderId||'').localeCompare(String(b.folderId||''));
+        if(preferences.sort==='recent') return (b.history?.at(-1)?.timestamp||0)-(a.history?.at(-1)?.timestamp||0);
         return (a.remarkName || a.realName || '').localeCompare(b.remarkName || b.realName || '');
     });
 
+    let previousGroup = null;
     sortedContacts.forEach(char => {
+        if(preferences.grouped && previousGroup !== (char.folderId||'')) {
+            previousGroup = char.folderId||'';
+            const heading = document.createElement('li'); heading.className='section-title';
+            heading.textContent=(db.chatFolders||[]).find(folder=>folder.id===char.folderId)?.name||'未分组'; listContainer.append(heading);
+        }
         const li = document.createElement('li');
         li.className = 'profile-item';
         

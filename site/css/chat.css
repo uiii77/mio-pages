@@ -3033,3 +3033,22 @@
     border-radius: 12px;
     animation: messageLocatePulse 2.1s ease-out;
 }
+.directory-sheet {display:flex;flex-direction:column;max-height:calc(90dvh - env(safe-area-inset-bottom));overflow-y:auto;gap:6px;}
+.directory-sheet input[type=search] {box-sizing:border-box;width:100%;min-width:0;font:inherit;font-size:16px;padding:12px;border:1px solid #e8e3df;border-radius:12px;background:#faf9f7;}
+.directory-results {overflow-y:auto;min-height:60px;}
+.directory-sheet h3 {color:#403a36;}
+.directory-sheet .action-sheet-button {border-radius:0;background:transparent;border-bottom:1px solid #f0ece7;margin:0;padding:14px 8px;}
+.directory-sheet .action-sheet-button:last-child {border-bottom:0;color:#8c777e;}
+#delete-chunk-modal [hidden] {display:none!important;}
+#delete-chunk-modal [data-record-editor] {min-height:0;overflow-y:auto;}
+#delete-chunk-modal .modal-window>h3 {color:#403a36;}
+#delete-chunk-modal .modal-window>.action-sheet-button,#delete-chunk-modal .record-position-actions>.action-sheet-button {background:transparent;border-radius:0;border-bottom:1px solid #f0ece7;font-size:14px;min-height:44px;}
+#chat-room-history-search span,#chat-room-history-search small {display:block;}
+#chat-room-history-search small {margin-top:6px;font-weight:400;font-size:12px;color:#887b77;}
+.directory-sheet .action-sheet-button {flex-shrink:0;min-height:44px;text-align:left;white-space:normal;overflow-wrap:anywhere;}
+.directory-compact .profile-status {display:none;}
+.record-position-actions {display:flex;gap:8px;}
+.record-position-actions>* {flex:1;}
+#delete-chunk-modal .modal-window {overflow-y:auto;max-height:85dvh!important;}
+#chat-list-screen .action-btn-group,#contacts-screen .action-btn-group {gap:10px;}
+@media(max-width:360px){#chat-list-screen .action-btn-group,#contacts-screen .action-btn-group{gap:6px;}#chat-list-screen .action-btn,#contacts-screen .action-btn{width:30px;min-width:30px;}}

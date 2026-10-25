@@ -1,5 +1,74 @@
 // --- 聊天列表与文件夹管理模块 ---
 
+// Page-only preferences are local to this database, including isolated previews.
+function chatDirectoryPreferences(friends, patch) {
+    const key = 'mio-directory:' + dexieDB.name + ':' + (friends ? 'friends' : 'chats');
+    let value = {}; try { value = JSON.parse(localStorage.getItem(key) || '{}'); } catch {}
+    if(!value || typeof value!=='object' || Array.isArray(value)) value={};
+    value = {sort:friends?'name':'recent', ...value};
+    if (patch) { value = {...value, ...patch}; localStorage.setItem(key, JSON.stringify(value)); }
+    return value;
+}
+function chatDirectorySheet(title) {
+    const overlay = document.createElement('div'); overlay.className = 'modal-overlay visible';
+    overlay.setAttribute('role','dialog'); overlay.setAttribute('aria-modal','true'); overlay.setAttribute('aria-label',title);
+    const panel = document.createElement('div'); panel.className = 'modal-window directory-sheet';
+    const heading = document.createElement('h3'); heading.textContent = title;
+    const close = document.createElement('button'); close.className = 'action-sheet-button'; close.textContent = '关闭';
+    const origin = document.activeElement;
+    const dismiss = () => { overlay.remove(); origin?.focus({preventScroll:true}); };
+    close.onclick = dismiss; overlay.onclick = event => { if(event.target === overlay) dismiss(); };
+    overlay.onkeydown = event => {
+        if(event.key === 'Escape') { event.stopPropagation(); dismiss(); }
+        if(event.key==='Tab') {
+            const fields=[...panel.querySelectorAll('input,button')].filter(el=>!el.disabled&&el.getClientRects().length);
+            if(event.shiftKey&&document.activeElement===fields[0]) {event.preventDefault();fields.at(-1)?.focus();}
+            else if(!event.shiftKey&&document.activeElement===fields.at(-1)) {event.preventDefault();fields[0]?.focus();}
+        }
+    };
+    panel.append(heading, close); overlay.append(panel); document.body.append(overlay);
+    const row = (label, action) => { const button = document.createElement('button'); button.className = 'action-sheet-button'; button.textContent = label; button.onclick = async () => { try { await action(dismiss); } catch { showToast('操作未保存，请重试'); } }; panel.insertBefore(button, close); return button; };
+    close.focus(); return {panel, close, dismiss, row};
+}
+function openChatDirectorySearch(friends) {
+    const sheet = chatDirectorySheet(friends ? '搜索好友' : '搜索会话');
+    const input = document.createElement('input'); input.type = 'search'; input.placeholder = friends ? '好友名称' : '角色或群聊名称'; input.setAttribute('aria-label', input.placeholder);
+    const results = document.createElement('div'); results.className = 'directory-results';
+    sheet.panel.insertBefore(input, sheet.close); sheet.panel.insertBefore(results, sheet.close);
+    if(!friends) sheet.row('搜索所有聊天记录', dismiss => { dismiss(); SearchSystem.open(); });
+    function render() {
+        results.replaceChildren(); const query = input.value.trim().toLocaleLowerCase();
+        const rows = [...db.characters.map(c=>({chat:c,type:'private'})), ...(friends?[]:db.groups.map(c=>({chat:c,type:'group'})))];
+        for(const {chat,type} of rows.filter(({chat})=>[chat.remarkName,chat.realName,chat.name].some(name=>String(name||'').toLocaleLowerCase().includes(query)))) {
+            const button = document.createElement('button'); button.className = 'action-sheet-button'; button.textContent = (chat.remarkName||chat.realName||chat.name) + (type==='group'?' · 群聊':'');
+            button.onclick = () => { sheet.dismiss(); friends ? openProfileCard(chat.id) : openChatRoom(chat.id,type); }; results.append(button);
+        }
+        if(!results.children.length) results.textContent = '没有找到匹配的名称';
+    }
+    input.oninput = render; render(); input.focus();
+}
+function openChatDirectoryManager(friends) {
+    const sheet = chatDirectorySheet(friends ? '好友管理' : '会话管理');
+    const prefs = chatDirectoryPreferences(friends);
+    const update = patch => { chatDirectoryPreferences(friends, patch); friends ? renderContactList() : renderChatList(); sheet.dismiss(); };
+    sheet.row(prefs.sort==='name'?'按最近活动排序':'按名称排序', () => update({sort:prefs.sort==='name'?'recent':'name'}));
+    if(friends) {
+        sheet.row(prefs.grouped?'隐藏分组标题':'按会话文件夹分组', () => update({grouped:!prefs.grouped}));
+        sheet.row(prefs.compact?'显示好友状态':'仅显示头像与名称', () => update({compact:!prefs.compact}));
+    } else sheet.row(prefs.archived?'返回普通会话':'查看已归档会话', () => update({archived:!prefs.archived}));
+    sheet.row('新建分组', dismiss => { dismiss(); openCreateFolderModal(); });
+    for(const folder of db.chatFolders || []) sheet.row('管理分组 · '+folder.name, dismiss=>{dismiss();openEditFolderModal(folder.id);});
+    sheet.row(friends?'调整好友分组':'置顶、归档与分组', dismiss => {
+        dismiss(); const picker = chatDirectorySheet(friends?'选择好友':'选择会话');
+        for(const item of [...db.characters.map(chat=>({chat,type:'private'})),...(friends?[]:db.groups.map(chat=>({chat,type:'group'})))]) {
+            picker.row(item.chat.remarkName||item.chat.realName||item.chat.name, done => {
+                done(); if(friends) openMoveToFolderModal(item.chat.id,item.type);
+                else handleChatListLongPress(item.chat.id,item.type,Math.min(innerWidth-180,100),120);
+            });
+        }
+    });
+}
+
 // 聊天列表屏幕逻辑
 function setupChatListScreen() {
     renderChatList();
@@ -38,7 +107,7 @@ function setupChatListScreen() {
     const ovoCardInput = document.getElementById('ovo-character-card-input');
     if (importBtnKkt) {
         importBtnKkt.addEventListener('click', () => {
-            cardInput.click();
+            openChatDirectoryManager(false);
         });
     }
 
@@ -129,6 +198,9 @@ function setupChatListScreen() {
     setupCreateCharMethodSheet();
     setupDocImportSelectModal();
     setupDocPreviewModal();
+    document.querySelector('[data-friends-action="search"]').onclick = () => openChatDirectorySearch(true);
+    document.querySelector('[data-friends-action="add"]').onclick = openCreateCharMethodSheet;
+    document.querySelector('[data-friends-action="manage"]').onclick = () => openChatDirectoryManager(true);
 }
 
 // 文件夹管理
@@ -329,6 +401,19 @@ function handleChatListLongPress(chatId, chatType, x, y) {
     const itemName = chatType === 'private' ? chatItem.remarkName : chatItem.name;
     const menuItems = [
         {
+            label: chatItem.isArchived ? '取消归档' : '归档会话',
+            action: async () => {
+                const previous = chatItem.isArchived;
+                chatItem.isArchived = !previous;
+                try {
+                    const saved = chatType === 'private' ? await saveCharacter(chatId) : await saveGroup(chatId);
+                    if(saved !== true) throw Error('保存失败');
+                }
+                catch { chatItem.isArchived = previous; showToast('归档未保存，请重试'); }
+                renderChatList();
+            }
+        },
+        {
             label: chatItem.isPinned ? '取消置顶' : '置顶聊天',
             action: async () => {
                 chatItem.isPinned = !chatItem.isPinned;
@@ -397,10 +482,18 @@ function renderChatList() {
     }))];
 
     let filteredChats;
-    if (currentFolderId === 'all') {
-        filteredChats = allChats.filter(chat => !chat.folderId);
+    const preferences = chatDirectoryPreferences(false);
+    if (currentFolderId === 'all' || preferences.archived) {
+        filteredChats = allChats.filter(chat => preferences.archived || !chat.folderId);
     } else {
         filteredChats = allChats.filter(chat => chat.folderId === currentFolderId);
+    }
+
+    filteredChats = filteredChats.filter(chat => Boolean(chat.isArchived) === Boolean(preferences.archived));
+    document.querySelector('[data-directory-archive]')?.remove();
+    if(preferences.archived) {
+        const banner=document.createElement('button');banner.className='action-sheet-button';banner.dataset.directoryArchive='';banner.textContent='已归档会话 · 返回普通会话';
+        banner.onclick=()=>{chatDirectoryPreferences(false,{archived:false});renderChatList();};chatListContainer.before(banner);
     }
 
     document.getElementById('no-chats-placeholder').style.display = filteredChats.length === 0 ? 'block' : 'none';
@@ -417,6 +510,7 @@ function renderChatList() {
     };
     const sortedChats = filteredChats.sort((a, b) => {
         if (a.isPinned !== b.isPinned) return a.isPinned ? -1 : 1;
+        if(preferences.sort==='name') return String(a.remarkName||a.realName||a.name||'').localeCompare(String(b.remarkName||b.realName||b.name||''));
         const lastMsgTimeA = latestSortTime(a);
         const lastMsgTimeB = latestSortTime(b);
         return lastMsgTimeB - lastMsgTimeA;

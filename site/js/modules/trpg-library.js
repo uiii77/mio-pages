@@ -289,13 +289,20 @@
         field('results').innerHTML=rows.map(({pack,chunk})=>`<article><strong>${escape(pack.title)} · ${escape(pack.version)}</strong><small>${escape(chunk.fileName)} ${chunk.page?`PDF 第 ${chunk.page} 页`:`第 ${chunk.lineStart}–${chunk.lineEnd} 行`} ${escape(chunk.heading)} · 修订 ${chunk.revision}</small><pre>${escape(chunk.text)}</pre>${ctx.viewer==='kp'?`<details><summary>手动纠错</summary><textarea data-correct-text rows="5" maxlength="4000">${escape(chunk.text)}</textarea><button class="btn btn-secondary" data-correct="${escape(chunk.id)}" data-revision="${chunk.revision}">保存修订</button></details>`:''}</article>`).join('') || '<p>当前可见且已启用的资料中没有找到内容。</p>';
         return warning || (field('embedding').checked||field('rerank').checked?'增强检索完成；外发范围限于已授权且当前可见的资料':'本地检索完成，未调用 API');
     }
+    async function openPage(page='search') {
+        await task(render);
+        root().querySelectorAll('[data-library-section]').forEach(el=>{el.hidden=el.dataset.librarySection!==page;});
+        root().querySelectorAll('[data-library-page]').forEach(el=>el.setAttribute('aria-current',el.dataset.libraryPage===page?'page':'false'));
+        root().querySelector('[data-cancel]').hidden=page!=='import';
+    }
     function setup(){
         if(!root() || root().dataset.ready)return;root().dataset.ready='true';
         const enhanced=document.createElement('details');
         enhanced.innerHTML='<summary>可选增强检索</summary><p class="trpg-broadcast-note">使用全局独立 Embedding / Rerank 配置。勾选后会发送查询及已授权片段，可能产生服务费用；默认离线检索。</p><label class="lib-check"><input type="checkbox" data-lib="embedding">语义检索（先构建向量索引）</label><label class="lib-check"><input type="checkbox" data-lib="rerank">Rerank 重排</label>';
         field('results').before(enhanced);
         for(const name of ['viewer','campaign','embedding','rerank'])field(name).addEventListener('change',()=>{controller?.abort();field('results').replaceChildren();});
-        root().addEventListener('toggle',()=>{if(root().open)void task(render);});
+        root().querySelectorAll('[data-library-page]').forEach(button=>button.onclick=()=>openPage(button.dataset.libraryPage));
+        void openPage();
         field('viewer').addEventListener('change',()=>{field('results').replaceChildren();field('management').hidden=field('viewer').value!=='kp';});field('campaign').addEventListener('change',()=>field('results').replaceChildren());
         field('import').addEventListener('change',e=>{const file=e.target.files?.[0];e.target.value='';if(file)void task(async opts=>{await importFile(file,{...opts,version:field('version').value});await render();});});
         root().addEventListener('click',e=>{
@@ -321,5 +328,5 @@
             });
         });
     }
-    g.TrpgLibrary=Object.freeze({setup,list,importFile,install,update,remove,search,getChunk,correct,rebuild,download,buildVectors,clearVectors});
+    g.TrpgLibrary=Object.freeze({setup,openPage,list,importFile,install,update,remove,search,getChunk,correct,rebuild,download,buildVectors,clearVectors});
 })(window);

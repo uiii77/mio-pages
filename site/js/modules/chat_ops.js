@@ -1167,6 +1167,28 @@ async function withdrawMessage(messageId) {
 }
 
 function openDeleteChunkModal() {
+    const modal = document.getElementById('delete-chunk-modal');
+    if(!modal.querySelector('[data-record-position]')) {
+        const actions = document.createElement('div'); actions.className='record-position-actions'; actions.dataset.recordPosition='';
+        for(const [label,suffix] of [['回顶','top-all'],['回底','bottom']]) {
+            const button=document.createElement('button');button.className='action-sheet-button';button.textContent=label;
+            button.onclick=()=>{
+                const chat=MessageReference.getChat(db,currentChatType,currentChatId);
+                const message=suffix==='top-all'?chat?.history?.[0]:chat?.history?.at(-1);
+                modal.classList.remove('visible');
+                if(!message || !MessageReference.locate(currentChatType,currentChatId,message.id)) showToast('没有可定位的消息');
+            };actions.append(button);
+        }
+        document.getElementById('chat-room-history-search').after(actions);
+        const editor=document.createElement('section');editor.dataset.recordEditor='';editor.hidden=true;
+        const toggle=document.createElement('button');toggle.className='action-sheet-button';toggle.textContent='批量整理记录';toggle.setAttribute('aria-expanded','false');
+        toggle.onclick=()=>{editor.hidden=!editor.hidden;toggle.setAttribute('aria-expanded',String(!editor.hidden));};
+        actions.after(toggle,editor);
+        for(const id of ['delete-chunk-range-info','delete-chunk-hidden-info','delete-chunk-form','delete-chunk-preview-box']) editor.append(document.getElementById(id));
+        editor.append(document.getElementById('btn-block-range').parentElement);
+    }
+    modal.querySelector('[data-record-editor]').hidden=true;
+    modal.querySelector('[aria-expanded]').setAttribute('aria-expanded','false');
     const chat = (currentChatType === 'private') ? db.characters.find(c => c.id === currentChatId) : db.groups.find(g => g.id === currentChatId);
     if (!chat || !chat.history || chat.history.length === 0) {
         showToast('当前没有聊天记录可管理');

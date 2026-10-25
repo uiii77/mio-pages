@@ -8,8 +8,11 @@ const SearchSystem = {
         this.initialized = true;
         this.panel = document.getElementById('search-history-screen');
         this.home = this.panel.parentElement;
-        document.getElementById('chat-list-history-search').onclick = () => this.open();
-        document.getElementById('chat-room-history-search').onclick = () => this.open({chatType:currentChatType,chatId:currentChatId});
+        document.getElementById('chat-list-history-search').onclick = () => openChatDirectorySearch(false);
+        document.getElementById('chat-room-history-search').onclick = () => {
+            document.getElementById('delete-chunk-modal').classList.remove('visible');
+            this.open({chatType:currentChatType,chatId:currentChatId});
+        };
         document.getElementById('search-scope-select').onclick = () => this.openScopeModal();
         ['search-ignore-status','search-type-filter','search-sender-filter','search-date-from','search-date-to'].forEach(id => {
             document.getElementById(id).addEventListener('change', () => { this.detailGroup = null; this.resultLimit = 50; void this.performSearch(); });

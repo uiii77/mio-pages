@@ -3,8 +3,9 @@
     const node=(tag,text)=>{const el=document.createElement(tag);if(text!=null)el.textContent=text;return el;};
     const uid=()=>crypto.randomUUID();
     const player={viewer:'player',playerId:'local-user'};
-    let host,body,title,current=null,tab='story',busy=false,previous,visibleCount=100,controller;
+    let host,body,title,current=null,tab='story',busy=false,previous,visibleCount=100,controller,section='adventures';
     function button(label,action){const el=node('button',label);el.type='button';el.className='btn btn-secondary';el.onclick=async()=>{if(busy)return;el.disabled=true;try{await action();}catch(error){showToast(error.message||'操作未完成，请重试');}finally{el.disabled=false;}};return el;}
+    function entry(label,description,action){const el=button('',action);el.className='trpg-library-entry';const text=node('span');text.append(node('strong',label),node('small',description));el.append(text,node('span','›'));return el;}
     const roleName=id=>(db.characters||[]).find(row=>String(row.id)===id)?.realName||'调查员';
     const permission=()=>({version:1,players:['local-user'],characters:current.cards.map(card=>card.characterId).filter(Boolean),shared:[],expired:false});
     async function commit(command){current=await CoC7.dispatch(current.id,{id:uid(),at:Date.now(),...command},current.revision);}
@@ -30,12 +31,15 @@
         }catch(error){showToast(error.message);}};
         const wrap=node('div');wrap.append(button('导入模组 / 存档',()=>input.click()),input);return wrap;
     }
-    async function tools(kind){
+    async function tools(kind, page='search'){
         const id=current?.id;host.hidden=true;TRPGBroadcast.open({returnTarget:'chat-room-screen'});
         const screen=document.getElementById('trpg-broadcast-screen');
         const target=kind==='rules'?document.getElementById('trpg-library'):kind==='cards'?document.getElementById('coc7-tools'):null;
         for(const panel of screen.querySelectorAll('main>details'))panel.open=panel===target;
-        for(const panel of screen.querySelector('main').children)panel.hidden=target?panel!==target:panel.tagName==='DETAILS';
+        for(const panel of screen.querySelector('main').children)panel.hidden=target?panel!==target:['coc7-tools','trpg-library'].includes(panel.id);
+        document.getElementById('trpg-broadcast-title').textContent=kind==='rules'?'规则与资料':kind==='cards'?'角色卡':'可选播报工具';
+        document.getElementById('trpg-broadcast-new-btn').hidden=kind!=='broadcast';
+        if(kind==='rules') await TrpgLibrary.openPage(page);
         if(target)target.scrollIntoView({block:'start'});
         if(kind==='cards'&&id){await CoC7.selectCampaign(id);}
         screen.querySelector('.back-btn').addEventListener('click',async event=>{
@@ -82,9 +86,23 @@
         if(!host?.isConnected)return;
         body.replaceChildren();title.textContent=current?.title||'我的跑团';
         if(!current){
-            const intro=node('p','和伙伴一起，让故事发生。');intro.className='trpg-play-intro';body.append(intro,button('创建跑团',newCampaign),importButton());
+            title.textContent=({adventures:'我的冒险',modules:'模组库',rules:'规则与资料',cards:'角色卡',broadcast:'可选播报工具'})[section];
+            const nav=node('nav');nav.className='trpg-play-tabs';
+            for(const [key,label] of [['adventures','我的冒险'],['modules','模组库'],['rules','规则与资料'],['cards','角色卡'],['broadcast','播报工具']]){const el=button(label,async()=>{section=key;await render();});el.setAttribute('aria-current',section===key?'page':'false');nav.append(el);}body.append(nav);
+            if(section==='rules'||section==='modules'){
+                body.append(node('p',section==='rules'?'把用得上的规则放在手边。':'带上自己的故事，开启新的冒险。'));
+                if(section==='modules') body.append(importButton());
+                for(const pack of await TrpgLibrary.list()){const card=node('article');card.className='trpg-player-card';card.append(node('h3',pack.title),node('p',pack.enabled?'已启用':'尚未启用'));body.append(card);}
+                const menu=node('section');menu.className='trpg-library-menu';menu.append(entry('导入自有资料','添加规则、扩展或模组',()=>tools('rules','import')),entry('资料与权限','整理资料与可见范围',()=>tools('rules','permissions')),entry('查阅资料','按关键词查找已导入的内容',()=>tools('rules','search')));body.append(menu);return;
+            }
+            if(section==='cards'){
+                for(const campaign of await CoC7.list()){const card=node('article');card.className='trpg-player-card';card.append(node('h3',campaign.title),node('p',campaign.cards.map(c=>c.name).join(' · ')||'还没有调查员'),button('查看角色卡',async()=>{current=await CoC7.get(campaign.id);tab='cards';await render();}));body.append(card);}
+                body.append(button('创建跑团',newCampaign));return;
+            }
+            if(section==='broadcast'){body.append(node('p','将已授权的剧情片段整理为播报，不影响冒险存档。'),button('打开播报工具',()=>tools('broadcast')));return;}
+            const intro=node('p','和伙伴一起，让故事发生。');intro.className='trpg-play-intro';body.append(intro,button('创建跑团',newCampaign));
             for(const campaign of await CoC7.list()){const row=button('',async()=>{current=await CoC7.get(campaign.id);tab='story';await render();});row.className='trpg-campaign-card';row.append(node('strong',campaign.title),node('span',`${campaign.cards.length} 位调查员 · ${campaign.events.length} 条记录`));body.append(row);}
-            body.append(button('规则与自有资料',()=>tools('rules')),button('可选播报工具',()=>tools('broadcast')));return;
+            return;
         }
         current=await CoC7.get(current.id);
         const nav=node('nav');nav.className='trpg-play-tabs';for(const [key,label] of [['story','剧情'],['free','闲聊'],['cards','调查员'],['notes','手记'],['settings','主持与存档']]){const el=button(label,async()=>{tab=key;await render();});el.setAttribute('aria-current',key===tab?'page':'false');nav.append(el);}body.append(nav);
@@ -112,7 +130,7 @@
     async function open(){
         if(host?.isConnected){host.hidden=false;await render();return;}
         previous=document.activeElement;host=node('div');host.className='trpg-play-app';host.setAttribute('role','dialog');host.setAttribute('aria-modal','true');host.setAttribute('aria-label','跑团');const header=node('header');title=node('h2');
-        const back=button('‹',async()=>{if(busy)return;if(current){current=null;await render();}else{host.remove();previous?.focus({preventScroll:true});}});back.setAttribute('aria-label','返回');
+        const back=button('‹',async()=>{if(busy)return;if(current){current=null;await render();}else if(section!=='adventures'){section='adventures';await render();}else{host.remove();previous?.focus({preventScroll:true});}});back.setAttribute('aria-label','返回');
         header.append(back,title);body=node('main');host.append(header,body);document.body.append(host);
         host.addEventListener('keydown',event=>{
             if(event.key==='Escape'){event.preventDefault();controller?controller.abort():back.click();}

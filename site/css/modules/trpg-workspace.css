@@ -32,3 +32,17 @@
 .trpg-play-compose {display:flex;align-items:flex-end;gap:8px;margin-top:14px;}
 .trpg-play-compose textarea {flex:1;min-width:0;font:inherit;font-size:16px;border:1px solid #e8ddd7;border-radius:12px;padding:12px;box-sizing:border-box;max-height:160px;}
 .trpg-play-compose .btn {margin:0;flex-shrink:0;}
+.trpg-play-app [hidden],#trpg-broadcast-screen [hidden] {display:none!important;}
+.trpg-play-app main>p {color:#86776f;font-size:14px;line-height:1.6;}
+.trpg-play-app main>.btn {text-align:left;min-height:44px;}
+#trpg-library .trpg-play-tabs {position:static;flex-wrap:wrap;background:transparent;}
+#trpg-library h3 {font-size:16px;margin:12px 0;}
+.trpg-play-tabs {scrollbar-width:none;}
+.trpg-play-tabs::-webkit-scrollbar {display:none;}
+.trpg-library-menu {border:1px solid #eee6df;background:#fff;border-radius:16px;overflow:hidden;margin-top:20px;}
+.trpg-library-entry {display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;padding:18px 16px;border:0;border-bottom:1px solid #f0ece7;background:transparent;color:#4b4039;text-align:left;font:inherit;cursor:pointer;}
+.trpg-library-entry:last-child {border-bottom:0;}
+.trpg-library-entry strong,.trpg-library-entry small {display:block;}
+.trpg-library-entry strong {font-size:15px;font-weight:600;}
+.trpg-library-entry small {margin-top:6px;font-size:12px;color:#8d7e74;}
+.trpg-library-entry>span:last-child {font-size:24px;color:#b39b80;}
