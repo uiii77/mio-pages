@@ -1,0 +1,23 @@
+{
+  "provider": "openfoodfacts",
+  "retrievedAt": 1792900976870,
+  "region": "unknown",
+  "response": {
+    "code": "3017620422003",
+    "errors": [],
+    "product": {
+      "brands": "Nutella, Ferrero",
+      "code": "3017620422003",
+      "last_modified_t": 1792487392,
+      "product_name": "Nutella",
+      "quantity": "400 g e"
+    },
+    "result": {
+      "id": "product_found",
+      "lc_name": "Product found",
+      "name": "Product found"
+    },
+    "status": "success",
+    "warnings": []
+  }
+}

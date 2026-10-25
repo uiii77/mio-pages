@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "facts": [
+    {
+      "id": "off:3017620422003",
+      "kind": "product",
+      "name": "Nutella",
+      "barcode": "3017620422003",
+      "brand": "Nutella, Ferrero",
+      "quantity": "400 g e",
+      "source": {
+        "provider": "openfoodfacts",
+        "attribution": "Open Food Facts contributors",
+        "license": "ODbL-1.0 / Database Contents License",
+        "url": "https://world.openfoodfacts.org/product/3017620422003",
+        "retrievedAt": 1792900976870,
+        "region": "unknown",
+        "modifiedAt": 1792487392000
+      },
+      "availability": "unknown",
+      "specifications": "source_description_only"
+    },
+    {
+      "id": "off:3274080005003",
+      "kind": "product",
+      "name": "isabelle",
+      "barcode": "3274080005003",
+      "brand": "Cristaline",
+      "quantity": "1500 ml",
+      "source": {
+        "provider": "openfoodfacts",
+        "attribution": "Open Food Facts contributors",
+        "license": "ODbL-1.0 / Database Contents License",
+        "url": "https://world.openfoodfacts.org/product/3274080005003",
+        "retrievedAt": 1792916328909,
+        "region": "unknown",
+        "modifiedAt": 1791984269000
+      },
+      "availability": "unknown",
+      "specifications": "source_description_only"
+    }
+  ]
+}

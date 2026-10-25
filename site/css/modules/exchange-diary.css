@@ -1,0 +1,14 @@
+.exchange-diary-main{height:100%;overflow:auto;padding:14px 14px 28px;background:var(--bg-color,#f8f8fb)}
+.exchange-diary-card{margin:0 auto 12px;max-width:760px;background:var(--card-bg,#fff);border:1px solid rgba(0,0,0,.06);border-radius:18px;box-shadow:0 6px 20px rgba(0,0,0,.04);padding:14px}
+.exchange-diary-toolbar{display:grid;grid-template-columns:1fr 160px;gap:10px;align-items:end}
+.exchange-diary-toolbar label,.exchange-diary-api label{display:flex;flex-direction:column;gap:6px;font-size:13px;color:#555}
+.exchange-diary-toolbar select,.exchange-diary-toolbar input,.exchange-diary-api input{width:100%;box-sizing:border-box;border:1px solid #e6e6ea;border-radius:10px;background:#fff;padding:9px 10px;color:inherit}
+.exchange-diary-role-toggle{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;border-top:1px solid #f0f0f2;padding-top:10px;font-size:13px;color:#555}
+.exchange-diary-pages{display:grid;grid-template-columns:1fr 1fr;gap:12px;background:transparent;border:0;box-shadow:none;padding:0}
+.exchange-diary-page{min-height:280px;background:#fffdf4;border:1px solid #f0e7c8;border-radius:16px;padding:13px;display:flex;flex-direction:column;gap:10px}
+.exchange-diary-character-page{background:#f4f7ff;border-color:#dce6fb}
+.exchange-diary-page-heading{display:flex;flex-direction:column;gap:3px}.exchange-diary-page-heading strong{font-size:15px}.exchange-diary-page-heading span{font-size:11px;color:#8c8c96}
+.exchange-diary-page textarea{flex:1;min-height:220px;resize:vertical;border:0;outline:0;background:transparent;color:inherit;line-height:1.7;font:inherit}
+.exchange-diary-status-row{display:flex;justify-content:space-between;gap:10px;color:#666;font-size:13px}.exchange-diary-button-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.exchange-diary-api{display:flex;flex-direction:column;gap:9px}.exchange-diary-api summary{cursor:pointer;font-weight:600}.exchange-diary-api small{color:#888}
+@media (max-width:620px){.exchange-diary-toolbar{grid-template-columns:1fr}.exchange-diary-pages{grid-template-columns:1fr}.exchange-diary-page{min-height:220px}.exchange-diary-page textarea{min-height:160px}.exchange-diary-button-row .btn{flex:1 1 45%}}

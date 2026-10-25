@@ -1,0 +1,33 @@
+#music-screen { background: var(--mio-field, #f8f8f8); font-family: var(--font-family); color: var(--mio-copy, #2a3032); }
+#music-screen .music-main { flex: 1; min-height: 0; overflow-y: auto; padding: 16px; }
+#music-screen .music-card { background: var(--mio-surface, #fff); border-radius: 12px; padding: 16px; }
+#music-screen h2 { font-size: calc(18px * var(--app-font-scale, 1)); font-weight: 600; margin: 8px 0 16px; overflow-wrap: anywhere; }
+#music-screen .music-caption { font-size: calc(12px * var(--app-font-scale, 1)); color: var(--mio-muted, #888); line-height: 1.6; }
+#music-screen audio { display: block; width: 100%; max-width: 100%; }
+#music-screen button { font-family: inherit; }
+#music-screen .music-controls { display: flex; gap: 12px; margin-top: 12px; }
+#music-screen .music-controls button { flex: 1; }
+#music-screen .music-main button { border: 0; border-radius: 8px; padding: 10px; background: var(--accent-color, #e5eded); color: var(--text-color, #2a3032); font-size: calc(14px * var(--app-font-scale, 1)); cursor: pointer; }
+#music-screen .music-track { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border-color, #eee); padding: 8px 0; }
+#music-screen .music-track:last-child { border-bottom: 0; }
+#music-screen .music-track .music-name { flex: 1; min-width: 0; text-align: left; background: transparent; overflow-wrap: anywhere; }
+#music-screen .music-track .music-name { color: var(--mio-copy, #2a3032); }
+#music-screen .music-track [aria-current="true"] { font-weight: 600; background: var(--accent-color, #e5eded); }
+#music-screen button:disabled { opacity: .45; cursor: default; }
+#music-screen .music-lyrics-card { margin-top: 12px; }
+#music-screen .music-sharing { margin-top: 12px; }
+#music-screen .music-sharing summary { cursor: pointer; font-weight: 600; }
+#music-screen .music-sharing label { display: block; margin-top: 12px; }
+#music-screen .music-sharing select { display: block; width: 100%; margin-top: 8px; }
+#music-screen .music-sharing .music-sharing-check { display: flex; align-items: center; gap: 8px; }
+#music-screen .music-sharing-check input { flex: 0 0 auto; }
+#music-screen .music-candidates { margin-top: 12px; }
+#music-screen [data-music="suggestion-candidates"] { max-height: 180px; overflow-y: auto; }
+#music-screen [data-music="suggestion-card"][hidden] { display: none; }
+#music-screen [data-music="suggestion-text"], #music-screen .music-sharing-check { overflow-wrap: anywhere; }
+#music-screen .music-lyrics { max-height: 220px; overflow-y: auto; overscroll-behavior: contain; }
+#music-screen .music-lyric-line { margin: 0; padding: 6px 8px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--mio-muted); font-size: calc(14px * var(--app-font-scale, 1)); }
+#music-screen .music-lyric-line[aria-current="true"] { color: var(--mio-copy); background: var(--mio-field); border-radius: 8px; font-weight: 600; }
+body.night-mode-active #music-screen .music-main button { background: var(--mio-field); color: var(--mio-copy); }
+body.night-mode-active #music-screen .music-track .music-name:not([aria-current="true"]) { background: transparent; }
+#music-screen .music-field{display:block;margin:12px 0}#music-screen .music-field :is(input,select,textarea){display:block;width:100%;box-sizing:border-box;margin-top:6px}#music-screen .music-results{max-height:320px;overflow:auto;overflow-wrap:anywhere}#music-screen .music-results>button{margin:6px 0}#music-screen .music-account-qr{display:block;max-width:200px;width:100%;margin:12px auto}#music-screen [hidden]{display:none!important}#music-screen .music-controls{flex-wrap:wrap}#music-screen .music-lyric-line[role="button"]{cursor:pointer}

@@ -1,0 +1,26 @@
+{
+  "name": "Mio",
+  "short_name": "Mio",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "description": "A world of your own.",
+  "icons": [
+    {
+      "src": "assets/icons/mio-app.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "assets/icons/mio-app.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ],
+  "id": "./"
+}

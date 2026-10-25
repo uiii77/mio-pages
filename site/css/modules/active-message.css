@@ -1,0 +1,11 @@
+.active-message-hidden {
+    display: none !important;
+}
+
+.active-message-task-row .kkt-item-label {
+    min-width: 0;
+}
+
+.active-message-task-row .kkt-item-hint {
+    overflow-wrap: anywhere;
+}
