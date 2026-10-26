@@ -140,7 +140,7 @@
     }
     function mount(feature,prefix,configId) {
         const enabled=$(prefix+'-enabled');const editor=bindEditor(prefix,{feature,enabled});if(!editor)return;
-        const route=registry().readRegistry(db).routes[feature]||{},config=registry().readRegistry(db).configs[route.configId]||{};
+        const route=registry().readRegistry(db).routes[feature]||{},config=registry().presetConfig(route.presetRef,db)||registry().readRegistry(db).configs[route.configId]||{};
         editor.fill(config);enabled.checked=route.enabled===true;editor.presetRef=route.presetRef||'';editor.presets.value=editor.presetRef;
         const description=$(prefix+'-section')?.querySelector('.api-card-desc');if(description&&['schedule','emotion'].includes(feature))description.textContent='功能开启后默认继承主 API，需要时可选择预设或单独覆盖。';
         if(['schedule','emotion'].includes(feature)&&$(prefix+'-status'))$(prefix+'-status').textContent='关闭专属配置会恢复继承，原配置保留。';
@@ -172,7 +172,7 @@
         editor.owner=owner;
         labelOverride(editor.enabled,'使用角色专属 API');
         const binding=owner.featureApiBindings?.[feature]||owner.apiFeatureBindings?.[feature]||{};
-        editor.fill(registry().readRegistry(db).configs[binding.configId]||{});
+        editor.fill(registry().presetConfig(binding.presetRef,db)||registry().readRegistry(db).configs[binding.configId]||{});
         editor.presetRef=binding.presetRef||'';editor.presets.value=editor.presetRef;editor.enabled.checked=binding.enabled===true;editor.refresh();return editor;
     }
     async function saveRole(feature,prefix,owner,configId) {
