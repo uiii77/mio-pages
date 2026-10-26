@@ -1,1 +1,1 @@
-window.MioRelease=Object.freeze({"commit":"b742e319824ae9990f12ee6132c8bb5ba6e0b916","publicSite":true,"basePath":"/mio-pages/","schemaVersion":44,"dirty":false});
+window.MioRelease=Object.freeze({"commit":"af1e41bc24d0803ced7685a4eccc12efb60f6640","publicSite":true,"basePath":"/mio-pages/","schemaVersion":44,"dirty":false});

@@ -136,6 +136,42 @@
         return { selected: buffer.slice(0, Math.min(count, 120)), bufferCount: buffer.length, hotZoneCount: ordered.length - candidates.length, skipReason: '', waterline };
     }
 
+    // A manual job snapshots IDs and text fingerprints, never copies or rewrites chat history.
+    function planHistoryArchive(messages, selection = {}, config = {}) {
+        const all = Array.isArray(messages) ? messages : [];
+        let selected = all;
+        if (selection.mode === 'recent') selected = all.slice(-Math.max(1, Number(selection.count) || 100));
+        if (selection.mode === 'numbers') selected = all.filter(m => m.ordinal >= Number(selection.start) && m.ordinal <= Number(selection.end));
+        if (selection.mode === 'dates') selected = all.filter(m => m.timestamp >= Number(selection.start) && m.timestamp <= Number(selection.end));
+        if (selection.mode === 'messages') {
+            const start = all.findIndex(m => m.id === selection.start), end = all.findIndex(m => m.id === selection.end);
+            if (start < 0 || end < start) throw Error('请按聊天顺序选择有效的起止消息');
+            selected = all.slice(start, end + 1);
+        }
+        if (!selected.length) throw Error('此范围没有可整理的文字或语音原文');
+        const seen = new Set();
+        for (const m of selected) {
+            if (!m.id || seen.has(m.id)) throw Error('所选记录含缺失或重复的消息 ID，请先核对记录；不会改写原消息');
+            seen.add(m.id);
+        }
+        // Unknown context sizes use a conservative 8K budget; reserve room for instructions and output.
+        const context = Math.max(2048, Number(config.contextWindow || config.contextLength) || 8192);
+        const budget = Math.max(512, Math.min(24000, Math.floor(context * 0.5) - 1024));
+        const batches = []; let units = [], used = 0, characters = 0;
+        const flush = () => { if (units.length) batches.push({ units, status: 'pending', attempts: 0 }); units = []; used = 0; };
+        for (const message of selected) {
+            const hash = memoryFingerprint(message.text); characters += message.text.length;
+            for (let start = 0; start < message.text.length;) {
+                if (units.length >= 100 || budget - used < 256) flush();
+                const end = Math.min(message.text.length, start + budget - used - 128);
+                units.push({ id: message.id, hash, start, end, last: end === message.text.length });
+                used += end - start + 128; start = end;
+            }
+        }
+        flush();
+        return { total: selected.length, batches, characters, budget };
+    }
+
     function linkKey(leftId, rightId, type) {
         const [sourceId, targetId] = String(leftId) < String(rightId) ? [String(leftId), String(rightId)] : [String(rightId), String(leftId)];
         return `${sourceId}|${targetId}|${type}`;
@@ -457,7 +493,7 @@
         DIGEST_REPORT_TRIGGERS, DIGEST_REPORT_KEEP,
         ACTIVATION_DECAY, ACTIVATION_MAX_EXPAND, ACTIVATION_PERSONALITY_WEIGHTS,
         id, normalizeNode, normalizeEventBox, normalizeRoomPlateEntry, normalizeRoomPlate, normalizeAnticipation, advanceAnticipation, normalizeDigestReportSection, normalizeDigestReport, normalizeStringList, normalizeArchiveState, resolveWaterline,
-        selectArchiveWindow, memoryFingerprint, linkKey, normalizeLink, buildAutomaticLinks, spreadingActivation,
+        selectArchiveWindow, planHistoryArchive, memoryFingerprint, linkKey, normalizeLink, buildAutomaticLinks, spreadingActivation,
         tokenize, bm25, cosine, hybridSearch, formatContext
     };
 })(typeof window !== 'undefined' ? window : globalThis);

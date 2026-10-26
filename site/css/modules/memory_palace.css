@@ -156,3 +156,6 @@
 .memory-palace-rooms > h3, .memory-palace-rooms > p, .memory-palace-rooms > button { flex-shrink:0; }
 #memory-palace-rooms-list { overflow-y:auto; min-height:0; flex:1 1 auto; overscroll-behavior:contain; }
 #memory-palace-room-create-btn { width:100%; }
+#palace-history-status { padding:0 15px; line-height:1.7; overflow-wrap:anywhere; }
+#palace-history-actions { flex-wrap:wrap; gap:8px; }
+#palace-history-actions[hidden], #palace-history-actions button[hidden], #palace-history-status[hidden] { display:none; }
