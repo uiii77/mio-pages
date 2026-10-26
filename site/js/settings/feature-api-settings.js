@@ -193,9 +193,9 @@
     function searchModels(select) {
         if(!select||modelPickers.has(select))return;
         select.hidden=true;
-        const trigger=button('选择模型',()=>openModelPicker(select));trigger.className='mio-model-trigger';trigger.setAttribute('aria-haspopup','dialog');
+        const trigger=button('选择模型',()=>{if(select.id==='api-node-model-results')setModel(select,$('api-node-model').value);return openModelPicker(select);});trigger.className='mio-model-trigger';trigger.setAttribute('aria-haspopup','dialog');
         select.after(trigger);
-        const refresh=()=>{const text=select.selectedOptions[0]?.textContent||select.value||'选择模型';if(trigger.textContent!==text)trigger.textContent=text;trigger.disabled=select.disabled;};
+        const refresh=()=>{const text=select.id==='api-node-model-results'?$('api-node-model').value||'选择模型':select.selectedOptions[0]?.textContent||select.value||'选择模型';if(trigger.textContent!==text)trigger.textContent=text;trigger.disabled=select.disabled;};
         select.addEventListener('change',refresh);modelPickers.set(select,{trigger,refresh});refresh();
     }
     async function openModelPicker(select) {
@@ -221,6 +221,11 @@
         modelPickers.get(select)?.refresh();
     }
     document.addEventListener('DOMContentLoaded',()=>{
+        const nodeModel=$('api-node-model'),nodeResults=$('api-node-model-results');
+        if(nodeModel&&nodeResults){
+            nodeModel.hidden=true;nodeModel.type='hidden';nodeModel.after(nodeResults);
+            nodeModel.form?.addEventListener('submit',event=>{if(!nodeModel.value.trim()){event.preventDefault();event.stopImmediatePropagation();showToast('请先选择模型');modelPickers.get(nodeResults)?.trigger.click();}},true);
+        }
         let scheduled=false;
         const refreshPickers=()=>{scheduled=false;document.querySelectorAll('select[id*="model"]').forEach(searchModels);for(const picker of modelPickers.values())picker.refresh();};
         const observer=new MutationObserver(()=>{if(!scheduled){scheduled=true;requestAnimationFrame(refreshPickers);}});
