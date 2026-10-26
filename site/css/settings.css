@@ -3342,5 +3342,6 @@ body.night-mode-active .storage-console-tab { background: #292929; color: #ddd; 
 #api-settings-screen .api-nested-details>.kkt-item:has(input[type=range]) .kkt-item-label {text-align:left;}
 #api-settings-screen .api-nested-details:has(#elevenlabs-stability)>.kkt-item:has(input[type=range]) {grid-template-columns:1fr;gap:6px;}
 #api-settings-screen .api-nested-details:has(#elevenlabs-stability)>.kkt-item {padding:14px!important;box-sizing:border-box;}
+#api-settings-screen .api-nested-details:has(#elevenlabs-stability) .kkt-item-control:has(.kkt-switch) {justify-content:flex-end;}
 #api-settings-screen .api-section-card .kkt-item:has(input[type=password])>.kkt-item-label,
 #api-settings-screen .api-section-card .kkt-item:has(input[type=text])>.kkt-item-label {min-width:80px;flex-shrink:0;word-break:keep-all;}
