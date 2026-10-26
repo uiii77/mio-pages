@@ -67,7 +67,7 @@
         const rows=JSON.parse(await file.text());if(!Array.isArray(rows)||rows.length>200)throw Error('预设格式不正确');
         const next=structuredClone(db.apiPresets||[]);
         for(const p of rows){
-            if(!p?.name||!p.data||typeof p.name!=='string'||p.name.length>200)throw Error('预设缺少有效名称或配置');
+            if(!p?.name||!p.data||typeof p.data!=='object'||Array.isArray(p.data)||typeof p.name!=='string'||p.name.length>200)throw Error('预设缺少有效名称或配置');
             const d=p.data;if(!['newapi','deepseek','claude','gemini','openai-noauth'].includes(d.provider||'newapi'))throw Error('仅支持聊天 API 预设');
             if(d.service&&d.service!=='llm')throw Error('此预设不属于聊天接口，请在对应服务中导入');
             for(const key of ['apiUrl','url','apiKey','key','model'])if(d[key]!=null&&typeof d[key]!=='string')throw Error('预设字段必须为文字');
