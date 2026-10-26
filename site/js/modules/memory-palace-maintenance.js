@@ -80,7 +80,8 @@
         locks.add(c.id);
         try {
             const { now, day } = clock(c, options.realNow);
-            const id = `mpg:${c.id}:${day}`;
+            const scope = Palace.archiveScope(c);
+            const id = `mpg:${c.id}:${scope ? `${encodeURIComponent(scope)}:` : ''}${day}`;
             const previous = await Palace.getDigestReport(id);
             if (previous || c.memoryPalaceLastGovernanceDay === day) return { skipped: true, reason: 'already-done' };
             if (!options.force && c.memoryPalaceGovernanceRetryAt > Date.now()) return { skipped: true, reason: 'retry-delay' };
@@ -95,7 +96,7 @@
                 const hash = Core.memoryFingerprint(item.content);
                 if (existingKeys.has(hash)) continue;
                 existingKeys.add(hash);
-                const node = Core.normalizeNode({ id: Core.id('mpn'), characterId:c.id, owner:c.id, subject:'reflection', content:item.content, layer:'cognition', room:'self_room', confidence:0.6, sourceNodeIds:item.sourceNodeIds, source:{type:'night_governance',reportId:id,characterDate:day}, revision:1 });
+                const node = Core.normalizeNode({ id: Core.id('mpn'), characterId:c.id, owner:c.id, subject:'reflection', content:item.content, layer:'cognition', room:'self_room', confidence:0.6, sourceNodeIds:item.sourceNodeIds, source:Palace.scopeSource(c,{type:'night_governance',reportId:id,characterDate:day}), revision:1 });
                 changes.push({ before:null, after:node });
             }
             const report = Core.normalizeDigestReport({ id, characterId:c.id, trigger:'auto',

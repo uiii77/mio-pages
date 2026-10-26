@@ -32,6 +32,11 @@ function getPromptAgeInfo(birthday, clockConfig, realNow) {
     };
 }
 
+function getPromptTimelineInstruction(character) {
+    if (typeof VirtualClock === 'undefined' || !VirtualClock.resolveCharacter(character)?.enabled) return '';
+    return '时间背景用于判断当地作息、日程与事件先后。角色与用户的日期各属自己的时间线，年份之差不代表已经等待或分离的时长；历史消息的发送时间只是交流记录。普通聊天围绕当前话题回应；询问时间、约定日程或谈及跨年代事物时，结合相关时间自然回答。是否感慨以及如何表达，由角色原有人设、性格、关系和当前语境决定，不需要每轮说明年代差。';
+}
+
 function appendElevenLabsVoicePrompt(prompt, character) {
     const service = globalThis.MinimaxTTSService;
     const cfg = service?.config;
@@ -275,7 +280,7 @@ function generatePrivateSystemPrompt(character, opts) {
     if (activeNode) {
         let nodePrompt = `当前为剧情节点「${activeNode.name}」，你正在扮演一个角色。请严格遵守以下规则：\n`;
         nodePrompt += `核心规则：\n`;
-        nodePrompt += `A. 当前时间：现在是 ${currentTime}。\n\n`;
+        nodePrompt += `A. 角色当地时间：${currentTime}。${getPromptTimelineInstruction(character)}\n\n`;
         
         nodePrompt += `角色和对话规则：\n`;
         if (worldBooksBefore) nodePrompt += `${worldBooksBefore}\n`;
@@ -499,7 +504,7 @@ function generatePrivateSystemPrompt(character, opts) {
 
     let prompt = `你正在一个名为“404”的线上聊天软件中扮演一个角色。请严格遵守以下规则：\n`;
     prompt += `核心规则：\n`;
-    prompt += `A. 当前时间：现在是 ${currentTime}。你应知晓当前时间，但除非对话内容明确相关，否则不要主动提及或评论时间（例如，不要催促我睡觉）。\n`;
+    prompt += `A. 角色当地时间：${currentTime}。${getPromptTimelineInstruction(character) || '时间仅在与当前话题相关时自然使用。'}\n`;
     
     if (character.enableDynamicAge && character.birthday) {
         const ageInfo = getPromptAgeInfo(character.birthday, characterClock, realNow);
@@ -507,13 +512,6 @@ function generatePrivateSystemPrompt(character, opts) {
             prompt += `[System Notice] 你的出生日期是${ageInfo.birthYear}年${ageInfo.birthMonth}月${ageInfo.birthDay}日，今天是你${ageInfo.age}岁的生日，请在对话中自然地表现出这一点。\n`;
         } else if (ageInfo) {
             prompt += `[System Notice] 你的出生日期是${ageInfo.birthYear}年${ageInfo.birthMonth}月${ageInfo.birthDay}日，你现在的年龄是${ageInfo.age}岁。\n`;
-        }
-    }
-    if (clockApi ? clockApi.isActive(characterClock) : (character.enableDynamicTimezone && character.charTimezone)) {
-        const timeStr = clockApi ? clockApi.format(characterClock, realNow) : getLocalTimeInTimezone(character.charTimezone);
-        const timezone = clockApi ? clockApi.getTimeZone(characterClock) : character.charTimezone;
-        if (timeStr) {
-            prompt += `[System Notice] 你当前所在的当地时间是：${timeStr}${timezone ? ` (${timezone})` : ''}。\n`;
         }
     }
     if (!db.apiSettings || db.apiSettings.onlineRoleEnabled !== false) {

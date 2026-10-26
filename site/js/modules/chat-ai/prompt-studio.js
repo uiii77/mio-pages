@@ -305,7 +305,10 @@
         const userTimeZone = clockApi ? clockApi.getTimeZone(userClock) : character.myTimezone;
         const charNotice = [];
         if (character.enableDynamicAge && charAge.age) charNotice.push(`[系统提示] 你的出生日期是${charAge.birthday}，${charAge.isBirthday ? `今天是你${charAge.age}岁的生日` : `你现在${charAge.age}岁`}。`);
-        if (charLocalTime) charNotice.push(`[系统提示] 你当前所在地的当地时间是：${charLocalTime}${charTimeZone ? ` (${charTimeZone})` : ''}。`);
+        if (charLocalTime) charNotice.push(opts?.timeAlreadyIncluded
+            ? (charTimeZone ? `角色时区：${charTimeZone}。` : '')
+            : `角色当地时间：${charLocalTime}${charTimeZone ? ` (${charTimeZone})` : ''}。`);
+        if (typeof getPromptTimelineInstruction === 'function') charNotice.push(getPromptTimelineInstruction(character));
         const userNotice = [];
         if (character.myEnableDynamicAge && userAge.age) userNotice.push(`[系统提示] 与你对话的用户出生于${userAge.birthday}，${userAge.isBirthday ? `今天是其${userAge.age}岁生日` : `现在${userAge.age}岁`}。`);
         if (userLocalTime) userNotice.push(`[系统提示] 用户当前所在地的当地时间是：${userLocalTime}${userTimeZone ? ` (${userTimeZone})` : ''}。`);
@@ -433,7 +436,7 @@
     }
 
     function compileItems(character, items, opts = {}, preset = null) {
-        const variables = buildVariables(character, opts);
+        const variables = buildVariables(character, { ...opts, timeAlreadyIncluded: items.some(entry => entry.enabled !== false && (!entry.condition || entry.condition === 'always') && /\{\{(?:当前时间|角色当地时间)\}\}/.test(entry.content || '')) });
         const unresolved = new Set();
         const details = [];
         const pieces = [];

@@ -41,6 +41,72 @@ function getArchivesForCharacter(characterId) {
     return db.archives.filter(a => a.characterId === characterId).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
 }
 
+function createChatArchiveScopeId() {
+    if (globalThis.crypto?.randomUUID) return `chat_${globalThis.crypto.randomUUID()}`;
+    return `chat_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+// Start a new chat archive without touching persona/settings or deleting records owned by older archives.
+// Independent memory stores use chatArchiveScopeId as their read boundary.
+function resetCharacterForNewArchive(character) {
+    if (!character) return '';
+    character.chatArchiveScopeId = createChatArchiveScopeId();
+    character.history = [];
+    character.tokens = 0;
+    if (character.memory) {
+        character.memory.journal = [];
+        character.memory.context = '';
+    }
+    character.memoryJournals = [];
+    character.nodes = [];
+    character.activeNodeId = null;
+    character.chatHistory = [];
+    character.messages = [];
+    character.chatContext = '';
+    character.chatSummary = '';
+    character.autoJournalState = 'idle';
+    character.autoJournalPending = false;
+    character.memoryPalaceArchiveState = {};
+    character.memoryPalaceGovernanceError = '';
+    character.memoryPalaceGovernanceRetryAt = 0;
+    character.memoryPalaceLastGovernanceDay = '';
+    if (character.memoryTables && typeof character.memoryTables === 'object') {
+        character.memoryTables.data = {};
+        character.memoryTables.history = [];
+        character.memoryTables.lastChangedFieldPaths = [];
+        character.memoryTables.lastUpdateMsgId = null;
+        character.memoryTables.lastUpdateMsgTimestamp = null;
+        character.memoryTables.autoUpdateState = 'idle';
+        character.memoryTables.autoUpdatePending = false;
+    }
+    if (character.vectorMemory && typeof character.vectorMemory === 'object') {
+        character.vectorMemory.entries = [];
+        character.vectorMemory.history = [];
+        character.vectorMemory.lastSummarizedMsgId = null;
+        character.vectorMemory.lastSummarizedMsgTimestamp = null;
+        character.vectorMemory.lastContextBlock = '';
+        character.vectorMemory.lastRetrievedEntryIds = [];
+        character.vectorMemory.lastQueryText = '';
+        character.vectorMemory.lastPreparedAt = null;
+        character.vectorMemory.lastCacheKey = '';
+        character.vectorMemory.lastRetrievalMode = '';
+        character.vectorMemory.autoSummaryState = 'idle';
+        character.vectorMemory.autoSummaryPending = false;
+    }
+
+    character.blockHistory = [];
+    character.friendRequests = [];
+    character.charBlockHistory = [];
+    character.userFriendRequests = [];
+    character.isBlocked = false;
+    character.blockedAt = null;
+    character.blockReapply = null;
+    character.isBlockedByChar = false;
+    character.blockedByCharAt = null;
+    character.blockedByCharReason = null;
+    return character.chatArchiveScopeId;
+}
+
 async function createArchive(characterId, archiveName) {
     const character = db.characters.find(c => c.id === characterId);
     if (!character) {

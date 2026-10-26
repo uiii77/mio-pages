@@ -323,12 +323,14 @@
     }
 
     async function buildStudyContext(scope, details) {
+        if (scope === 'auto') scope = state.pendingAnchor?.segmentIndex === details.session.segmentIndex && state.pendingQuote ? 'selection' : 'page';
+        if (scope === 'page' || scope === 'paragraph') return prepareTeachingContext(scope, details);
         if (scope === 'selection') {
             if (!state.pendingAnchor || !state.pendingQuote || state.pendingAnchor.segmentIndex !== details.session.segmentIndex) throw new Error('请先选择当前段落中的原文');
             const anchor = core().validateAnchor(state.pendingAnchor, details.document, details.chunk);
             if (anchor.status !== 'valid' || details.chunk.text.slice(anchor.startOffset, anchor.endOffset) !== state.pendingQuote) throw new Error('当前选区已失效，请重新选择');
             return {
-                scope:'selection',scopeLabel:`第 ${details.session.segmentIndex + 1} 段的用户选区`,batches:[state.pendingQuote],
+                scope:'selection',scopeLabel:`第 ${details.session.segmentIndex + 1} 段的用户选区`,batches:partitionStudyText([state.pendingQuote]),
                 anchor:{...anchor},quote:state.pendingQuote,chapterId:details.chunk.chapterId || '',
                 startIndex:details.session.segmentIndex,endIndex:details.session.segmentIndex + 1,inputChars:state.pendingQuote.length,
             };
@@ -376,14 +378,20 @@
         return finish({content:await ask('study-synthesis-'+prompt,notes.map((note,index)=>`分片摘记 ${index+1}\n${note}`).join('\n\n'),['tutor','lecture'].includes(mode)?2200:mode==='explanation'?1400:1100),requestCount});
     }
     async function prepareTeachingContext(scope,details,anchor){
+        if(scope==='auto'){anchor=anchor||state.pendingAnchor;scope=anchor?.segmentIndex===details.session.segmentIndex?'selection':'page';}
         if(scope==='chapter')return buildStudyContext('chapter',details);
         const chunk=details.chunk;if(!chunk?.text?.trim())throw Error('当前段落没有可供讲解的文字');
         let sourceText=chunk.text,selected=core().makeAnchor(details.document,chunk.index,0,sourceText.length,sourceText,chunk);
         if(scope==='selection'){
             selected=core().validateAnchor(anchor,details.document,chunk);if(selected.status!=='valid'||selected.segmentIndex!==details.session.segmentIndex)throw Error('选区已失效，请重新选择');
             sourceText=chunk.text.slice(selected.startOffset,selected.endOffset);if(!sourceText||core().hashQuote(sourceText)!==selected.quoteHash)throw Error('选区内容已变化');
-        }else if(scope!=='paragraph')throw Error('未知讲解范围');
-        return {scope,scopeLabel:scope==='selection'?'用户选中的原文':'当前段落',batches:partitionStudyText([sourceText]),anchor:selected,quote:sourceText,startIndex:chunk.index,endIndex:chunk.index+1,inputChars:sourceText.length};
+        }else if(scope==='paragraph'){
+            const offset=state.pendingAnchor?.segmentIndex===chunk.index?state.pendingAnchor.startOffset:0;
+            const start=chunk.text.lastIndexOf('\n',Math.max(0,offset-1))+1;
+            const next=chunk.text.indexOf('\n',offset),end=next<0?chunk.text.length:next;
+            sourceText=chunk.text.slice(start,end);selected=core().makeAnchor(details.document,chunk.index,start,end,sourceText,chunk);
+        }else if(scope!=='page')throw Error('未知讲解范围');
+        return {scope,scopeLabel:scope==='selection'?'用户选中的原文':scope==='page'?'当前页':'当前段落',batches:partitionStudyText([sourceText]),anchor:selected,quote:sourceText,startIndex:chunk.index,endIndex:chunk.index+1,inputChars:sourceText.length};
     }
 
     async function listStudyNotes(characterId, documentId) {
@@ -394,7 +402,7 @@
         if (state.aiBusy) return;
         const details = await currentReadingDetails();
         if (!details) return notify('当前内容暂时无法读取');
-        const scope = documentRef('reading-study-scope')?.value === 'chapter' ? 'chapter' : 'selection';
+        const scope = documentRef('reading-study-scope')?.value || 'auto';
         const mode = documentRef('reading-study-mode')?.value === 'explanation' ? 'explanation' : 'summary';
         const snapshot = {characterId:state.characterId,documentId:state.documentId,segmentIndex:details.session.segmentIndex};
         state.aiBusy = true;
@@ -459,16 +467,13 @@
         const details = await currentReadingDetails();
         if (!details) return notify('当前段落暂时无法读取');
         const snapshot = { characterId: state.characterId, documentId: state.documentId, segmentIndex: details.session.segmentIndex };
-        const quote = state.pendingAnchor?.segmentIndex === details.session.segmentIndex
-            ? state.pendingQuote
-            : String(details.chunk.text || '').slice(0, Math.min(240, String(details.chunk.text || '').length));
-        const anchor = state.pendingAnchor?.segmentIndex === details.session.segmentIndex
-            ? { ...state.pendingAnchor }
-            : core().makeAnchor(details.document, details.session.segmentIndex, 0, quote.length, quote, details.chunk);
         state.aiBusy = true;
         setAiStatus('角色正在回应当前段落…', 'busy');
         try {
-            const content = await requestReadingAi('discussion', { ...details, question });
+            const context = await buildStudyContext(documentRef('reading-study-scope')?.value || 'auto', details);
+            const { quote, anchor } = context;
+            const result = await requestStudyAi('tutor', { ...context, question, style:'dialogue' }, details);
+            const content = result.content;
             const current = await currentReadingDetails();
             if (state.characterId !== snapshot.characterId || state.documentId !== snapshot.documentId || current?.session.segmentIndex !== snapshot.segmentIndex) throw new Error('阅读位置已变化，本次结果未保存');
             const threadId = core().makeAnnotationId();
@@ -968,7 +973,7 @@
         list.innerHTML = notes.length ? notes.map(item => {
             const scope = item.studyScope === 'chapter'
                 ? `章节 · ${chapters.get(item.studyChapterId) || item.studyChapterId || '未知章节'}`
-                : '当前选区';
+                : ({page:'当前页',paragraph:'当前段落'}[item.studyScope] || '当前选区');
             const label = item.kind === 'study-explanation' ? '分层讲解' : '总结';
             return `<article class="reading-study-card"><div class="reading-annotation-head"><strong>${label}</strong><span>${escapeHtml(scope)} · ${item.inputChars.toLocaleString()} 字 · ${item.requestCount} 次请求</span><button type="button" data-reading-delete-study="${escapeHtml(item.id)}" aria-label="删除这条学习笔记">删除</button></div><p>${escapeHtml(item.content)}</p></article>`;
         }).join('') : '<p class="reading-annotation-empty">还没有学习笔记。选择原文或当前章节后按需生成。</p>';
@@ -992,7 +997,6 @@
         const startOffset = prefix.toString().length;
         const quote = range.toString();
         if (!quote.trim()) { if (options.silent !== true) notify('请选择包含文字的范围'); return false; }
-        if (quote.length > 1200) { if (options.silent !== true) notify('单次选区不能超过 1200 字'); return false; }
         const characterId = state.characterId, documentId = state.documentId;
         const document = await getDocument(documentId);
         const session = document && await getSession(characterId, documentId);
@@ -1004,7 +1008,7 @@
         const status = documentRef('reading-selection-status');
         if (status) status.textContent = `已选择 ${quote.length} 字：${quote.slice(0, 36)}${quote.length > 36 ? '…' : ''}`;
         if (options.focus !== false) documentRef('reading-annotation-content')?.focus();
-        selection.removeAllRanges();
+        if (options.preserve !== true) selection.removeAllRanges();
         return true;
     }
 
@@ -1195,6 +1199,11 @@
     }
 
     function setup() {
+        documentRef('reading-screen')?.addEventListener('pointerdown', event => {
+            if (event.target.closest('[data-reading-sheet], #reading-capture-selection-btn')) {
+                void captureSelection({silent:true,focus:false,preserve:true}).catch(error=>notify(error.message));
+            }
+        });
         global.ReadingWorkspace?.setup();
         global.ReadingTutor?.setup();
         documentRef('reading-images-scan')?.addEventListener('click', () => queueReaderOperation(() => renderImageList(true)));

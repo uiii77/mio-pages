@@ -2474,46 +2474,7 @@ function loadSettingsToSidebar() {
                 const confirmed = await customConfirm('确定要为该角色开启新档吗？\n当前角色的所有聊天记录、上下文和日记将被清空，但人设等基础设置会保留。\n\n建议在此操作前先保存当前进度的存档！', '提示');
                 if (!confirmed) return;
                 
-                // 清空记录与状态
-                char.history = [];
-                char.tokens = 0;
-                if (char.memory) {
-                    char.memory.journal = [];
-                    char.memory.context = '';
-                }
-                char.nodes = [];
-                char.chatHistory = [];
-                char.messages = [];
-                char.chatContext = '';
-                char.chatSummary = '';
-                if (char.memoryTables && typeof char.memoryTables === 'object') {
-                    char.memoryTables.data = {};
-                    char.memoryTables.history = [];
-                    char.memoryTables.lastChangedFieldPaths = [];
-                }
-                if (char.vectorMemory && typeof char.vectorMemory === 'object') {
-                    char.vectorMemory.entries = [];
-                    char.vectorMemory.history = [];
-                    char.vectorMemory.lastSummarizedMsgId = null;
-                    char.vectorMemory.lastSummarizedMsgTimestamp = null;
-                    char.vectorMemory.lastContextBlock = '';
-                    char.vectorMemory.lastRetrievedEntryIds = [];
-                    char.vectorMemory.lastQueryText = '';
-                    char.vectorMemory.autoSummaryState = 'idle';
-                    char.vectorMemory.autoSummaryPending = false;
-                }
-                
-                // 同步清空拉黑和好友申请相关记忆
-                char.blockHistory = [];
-                char.friendRequests = [];
-                char.charBlockHistory = [];
-                char.userFriendRequests = [];
-                char.isBlocked = false;
-                char.blockedAt = null;
-                char.blockReapply = null;
-                char.isBlockedByChar = false;
-                char.blockedByCharAt = null;
-                char.blockedByCharReason = null;
+                resetCharacterForNewArchive(char);
                 
                 // 隐藏角色拉黑遮罩（如果有）
                 var charBlockedOverlay = document.getElementById('char-blocked-overlay');

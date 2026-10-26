@@ -116,7 +116,7 @@ function serializeChatHistoryForGemini(chat, chatType, historySlice, apiConfig =
            prefix = `[system: ${timeStr}]`;
 
            if (db.apiSettings && db.apiSettings.timePerceptionEnabled && timeDiff > 30 * 60 * 1000 && lastMsgTimeForAI !== 0) {
-               prefix += `\n[system: 距离上次互动已过去 ${formatTimeGap(timeDiff)}。话题可能已中断，请自然地开启新话题或对时间流逝做出反应。]`;
+               prefix += `\n[system: 两条记录的发送间隔：${formatTimeGap(timeDiff)}。仅供判断对话衔接，不预设角色的感受或回复话题。]`;
            }
 
            prefix += '\n';

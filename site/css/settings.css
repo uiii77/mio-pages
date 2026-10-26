@@ -3347,3 +3347,47 @@ body.night-mode-active .storage-console-tab { background: #292929; color: #ddd; 
 .api-node-model-row:has(.mio-model-trigger) {display:flex;gap:8px;min-width:0;}
 #api-settings-screen .api-section-card .kkt-item:has(input[type=password])>.kkt-item-label,
 #api-settings-screen .api-section-card .kkt-item:has(input[type=text])>.kkt-item-label {min-width:80px;flex-shrink:0;word-break:keep-all;}
+
+/* API forms keep explanatory text separate from value/action rows on small screens. */
+#api-settings-screen .api-card-header > div,
+#api-settings-screen .kkt-item-label { min-width:0; flex:1; text-align:left; white-space:normal; overflow-wrap:anywhere; }
+#api-settings-screen :is(.api-card-desc,.api-field-tip,.kkt-item-hint,.mio-api-source) {
+    text-align:left!important; white-space:normal!important; overflow:visible; text-overflow:clip;
+    width:auto; max-width:100%; min-width:0; line-height:1.55; word-break:normal; overflow-wrap:anywhere;
+}
+#api-settings-screen .api-field-tip { padding:6px 0; margin:0; }
+#api-settings-screen .kkt-item { gap:10px; flex-wrap:wrap; }
+#api-settings-screen .kkt-item > :is(p,.api-field-tip) { flex:0 0 100%; }
+#api-settings-screen .kkt-item-control { min-width:0; max-width:100%; flex-wrap:wrap; }
+#api-settings-screen .kkt-item:has(input:not([type=checkbox]):not([type=range]),textarea,select) > .kkt-item-label {
+    flex:0 0 100%; min-width:0; word-break:normal;
+}
+#api-settings-screen .kkt-item:has(input:not([type=checkbox]):not([type=range]),textarea,select) > .kkt-item-control {
+    flex:1 1 100%; width:100%; justify-content:flex-start;
+}
+#api-settings-screen .kkt-item-control :is(input[type=text],input[type=password],input[type=url],input:not([type]),select,textarea) {
+    flex:1 1 0; width:100%; min-width:0; max-width:100%; box-sizing:border-box;
+    text-align:left!important; direction:ltr; font:inherit; font-size:13px; line-height:1.5;
+    border:1px solid var(--border-color,#eadfe5); border-radius:10px; padding:9px 12px;
+    color:var(--text-color,#443b42); background:var(--mio-surface,#fff); box-shadow:none;
+}
+#api-settings-screen .kkt-item-control select { padding-right:28px; }
+#api-settings-screen .kkt-item-control .btn,
+#api-settings-screen .btn-neutral,
+#api-settings-screen .mio-api-state .btn,
+#api-settings-screen .mio-api-presets .btn {
+    flex:0 0 auto; width:auto; margin:0; min-height:36px; padding:7px 12px;
+    border:0; border-radius:10px; box-shadow:none; font:inherit; font-size:12px;
+    color:var(--text-color,#443b42); background:color-mix(in srgb,var(--primary-color,#a76c83) 22%,var(--mio-surface,#fff));
+}
+#api-settings-screen .mio-api-state .kkt-item-control { flex:0 0 auto; }
+#api-settings-screen .mio-api-presets { padding:10px 0; gap:8px; }
+#api-settings-screen .mio-api-presets select { direction:ltr; width:100%; min-width:0; }
+#api-settings-screen .mio-api-presets > .btn:last-child { background:transparent; }
+#api-settings-screen .api-nested-details:has(#elevenlabs-stability) > .kkt-item { padding:12px 0!important; }
+#api-settings-screen .api-nested-details input[type=range] { margin:10px 2px; min-height:24px; }
+#api-settings-screen .api-nested-details .kkt-item-control:has(input[type=range]) { flex-wrap:nowrap; padding:0 2px; box-sizing:border-box; }
+.mio-model-dialog :is(label,p,.app-form-dialog-title) { text-align:left; white-space:normal; overflow-wrap:anywhere; }
+.mio-model-dialog .mio-model-manual { width:auto; min-height:36px; box-shadow:none; }
+.mio-model-dialog input { border-color:var(--border-color,#eadfe5); color:var(--text-color,#443b42); background:var(--mio-surface,#fff); }
+#api-settings-screen #api-settings-search-input { text-align:left; min-width:0; }

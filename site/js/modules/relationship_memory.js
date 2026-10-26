@@ -18,14 +18,21 @@
         return (global.db?.characters || []).find(item => String(item.id) === String(id)) || null;
     }
 
+    function archiveScope(character) { return String(character?.chatArchiveScopeId || ''); }
+    function scopedOwnerId(character) {
+        const scope = archiveScope(character);
+        return scope ? `${character?.id || ''}#chat-archive:${scope}` : String(character?.id || '');
+    }
+
     function idFor(character) {
-        return Core.profileId(character?.id || '', 'user', 'user');
+        return Core.profileId(scopedOwnerId(character), 'user', 'user');
     }
 
     async function getProfile(character) {
         if (!character || !global.dexieDB?.relationshipMemoryProfiles) return Core.normalizeProfile(null, { ownerId: character?.id || '' });
-        const record = await global.dexieDB.relationshipMemoryProfiles.get(idFor(character));
-        return Core.normalizeProfile(record, { ownerId: character.id, subjectType: 'user', subjectId: 'user' });
+        const id = idFor(character);
+        const record = await global.dexieDB.relationshipMemoryProfiles.get(id);
+        return Core.normalizeProfile(record ? { ...record, id } : { id }, { ownerId: character.id, subjectType: 'user', subjectId: 'user' });
     }
 
     async function saveProfile(profile) {
@@ -109,35 +116,39 @@
         try {
             const profile = await getProfile(character);
             const block = Core.formatContext(profile);
-            runtime.set(character.id, { profile, block, preparedAt: Date.now() });
+            runtime.set(character.id, { scope:archiveScope(character), profile, block, preparedAt: Date.now() });
             return block;
         } catch (error) {
             console.warn('[RelationshipMemory] context preparation failed:', error);
-            runtime.set(character.id, { profile: Core.normalizeProfile(null, { ownerId: character.id }), block: '', error: error.message });
+            runtime.set(character.id, { scope:archiveScope(character), profile: Core.normalizeProfile(null, { ownerId: character.id }), block: '', error: error.message });
             return '';
         }
     }
 
     function getContext(character) {
         ensureSettings(character);
-        return character?.memoryPalaceEnabled && character?.relationshipMemoryEnabled ? (runtime.get(character.id)?.block || '') : '';
+        const prepared = runtime.get(character?.id);
+        return character?.memoryPalaceEnabled && character?.relationshipMemoryEnabled && prepared?.scope === archiveScope(character) ? (prepared.block || '') : '';
     }
 
     async function consumeAiResponse(value, character) {
         ensureSettings(character);
+        const scope = archiveScope(character);
         const result = Core.extractLearnedMarkers(value);
         if (!character?.memoryPalaceEnabled || !character?.relationshipMemoryEnabled || !result.learned.length) return { cleaned: result.cleaned, learned: [] };
         try {
             let profile = await getProfile(character);
             result.learned.forEach(text => { profile = Core.appendImpression(profile, text, 'ai'); });
+            if (archiveScope(character) !== scope) return { cleaned: result.cleaned, learned: [] };
             profile = await saveProfile(profile);
-            runtime.set(character.id, { profile, block: Core.formatContext(profile), preparedAt: Date.now() });
+            runtime.set(character.id, { scope, profile, block: Core.formatContext(profile), preparedAt: Date.now() });
         } catch (error) { console.warn('[RelationshipMemory] failed to save learned impression:', error); }
         return { cleaned: result.cleaned, learned: result.learned };
     }
 
     async function checkAndTriggerTopicArchive(character, options = {}) {
         ensureSettings(character);
+        const scope = archiveScope(character);
         if (!character?.memoryPalaceEnabled || !character?.relationshipMemoryEnabled) return { skipped: true, reason: 'disabled' };
         if (locks.has(character.id)) return { skipped: true, reason: 'lock' };
         locks.add(character.id);
@@ -151,13 +162,14 @@
             if (!pending.length) return { skipped: true, reason: 'empty' };
             const summary = await summarizeTopic(character, pending);
             if (!summary) return { skipped: true, reason: 'api-unavailable' };
+            if (archiveScope(character) !== scope) return { skipped: true, reason: 'archive-changed' };
             const next = Core.appendTopic(profile, summary, {
                 source: 'ai', startMessageIndex: waterline, endMessageIndex: waterline + pending.length,
                 messageIds: pending.map(item => item.id),
             });
             next.topicWaterline = waterline + pending.length;
             const saved = await saveProfile(next);
-            runtime.set(character.id, { profile: saved, block: Core.formatContext(saved), preparedAt: Date.now() });
+            runtime.set(character.id, { scope, profile: saved, block: Core.formatContext(saved), preparedAt: Date.now() });
             return { skipped: false, processed: pending.length, stored: 1 };
         } catch (error) {
             console.warn('[RelationshipMemory] topic archive failed without blocking chat:', error);

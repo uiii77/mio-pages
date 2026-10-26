@@ -342,32 +342,50 @@
 
     function sharedEntities(left, right) {
         const normalize = value => String(value || '').normalize('NFKC').trim().toLocaleLowerCase();
-        const leftSet = new Set((left?.entities || []).map(normalize).filter(Boolean));
-        return (right?.entities || []).map(normalize).filter(entity => leftSet.has(entity));
+        const generic = new Set(['我', '你', '他', '她', '它', '用户', '角色', '对方', 'ta', 'user', 'assistant']);
+        const leftSet = new Set((left?.entities || []).map(normalize).filter(entity => entity && !generic.has(entity)));
+        return (right?.entities || []).map(normalize).filter(entity => entity && !generic.has(entity) && leftSet.has(entity));
     }
 
     function buildAutomaticLinks(newNodes, existingNodes, existingLinks = []) {
+        const linkLimit = 20;
         const fresh = Array.isArray(newNodes) ? newNodes : [];
         const old = Array.isArray(existingNodes) ? existingNodes : [];
         const known = new Set((existingLinks || []).map(link => linkKey(link.sourceId, link.targetId, link.type)));
+        const degrees = new Map();
+        (existingLinks || []).filter(link => link.origin !== 'manual').forEach(link => {
+            degrees.set(String(link.sourceId), (degrees.get(String(link.sourceId)) || 0) + 1);
+            degrees.set(String(link.targetId), (degrees.get(String(link.targetId)) || 0) + 1);
+        });
         const results = [];
         const add = (left, right, type, strength) => {
             if (!left?.id || !right?.id || left.id === right.id || left.characterId !== right.characterId) return;
+            if ((degrees.get(String(left.id)) || 0) >= linkLimit || (degrees.get(String(right.id)) || 0) >= linkLimit) return;
             const key = linkKey(left.id, right.id, type);
             if (known.has(key)) return;
             known.add(key);
             const [sourceId, targetId] = String(left.id) < String(right.id) ? [left.id, right.id] : [right.id, left.id];
             results.push(normalizeLink({ characterId: left.characterId, sourceId, targetId, type, strength, origin: 'automatic' }));
+            degrees.set(String(left.id), (degrees.get(String(left.id)) || 0) + 1);
+            degrees.set(String(right.id), (degrees.get(String(right.id)) || 0) + 1);
         };
         fresh.forEach((node, index) => {
-            [...old, ...fresh.slice(index + 1)].forEach(other => {
+            [...old, ...fresh.slice(index + 1)].map(other => {
                 const sameBatch = node?.source?.type === 'auto_archive' && node.source.batchId && node.source.batchId === other?.source?.batchId;
                 const distance = Math.abs(nodeEventTimestamp(node) - nodeEventTimestamp(other));
+                const entities = sharedEntities(node, other);
+                const sameEventBox = node.eventBoxId && node.eventBoxId === other?.eventBoxId;
+                return { other, sameBatch, distance, entities, sameEventBox };
+            }).sort((left, right) => Number(right.sameEventBox) - Number(left.sameEventBox)
+                || Number(right.sameBatch) - Number(left.sameBatch)
+                || left.distance - right.distance
+                || right.entities.length - left.entities.length).forEach(({ other, sameBatch, distance, entities, sameEventBox }) => {
                 const bothArchived = node?.source?.type === 'auto_archive' && other?.source?.type === 'auto_archive';
-                if (sameBatch || (bothArchived && distance < 24 * 60 * 60 * 1000)) add(node, other, 'temporal', sameBatch ? 0.5 : 0.3);
+                if (sameEventBox) add(node, other, 'temporal', 0.7);
+                else if (sameBatch || (bothArchived && distance < 24 * 60 * 60 * 1000)) add(node, other, 'temporal', sameBatch ? 0.5 : 0.3);
                 const historyEvidence = [node,other].every(n=>n?.source?.type==='history_archive' && n.source.startTimestamp>0);
-                if (historyEvidence && distance < 24*60*60*1000 && sharedEntities(node,other).length) add(node,other,'temporal',0.3);
-                if (sharedEntities(node, other).length) add(node, other, 'person', 0.6);
+                if (!sameEventBox && historyEvidence && distance < 24*60*60*1000 && entities.length) add(node,other,'temporal',0.3);
+                if (entities.length) add(node, other, 'person', 0.6);
             });
         });
         return results;

@@ -265,10 +265,10 @@
             authorName: clean(source.authorName || (characterAuthored ? '角色' : '我'), 120),
             visibility, source: source.source === 'ai' ? 'ai' : 'manual',
             content: clean(source.content, 4000),
-            quote: String(source.quote == null ? '' : source.quote).replace(/[\u0000\u0008\u000b\u000c\u000e-\u001f]/g, '').slice(0, 1200),
+            quote: String(source.quote == null ? '' : source.quote).replace(/[\u0000\u0008\u000b\u000c\u000e-\u001f]/g, ''),
             anchor,
             threadId: clean(source.threadId, 220), replyToId: clean(source.replyToId, 220),
-            studyScope: source.studyScope === 'chapter' ? 'chapter' : (source.studyScope === 'selection' ? 'selection' : ''),
+            studyScope: ['chapter','selection','page','paragraph'].includes(source.studyScope) ? source.studyScope : '',
             studyChapterId: clean(source.studyChapterId, 220),
             contextStartIndex: Math.max(0, Math.floor(Number(source.contextStartIndex) || 0)),
             contextEndIndex: Math.max(0, Math.floor(Number(source.contextEndIndex) || 0)),
@@ -381,8 +381,8 @@
         if(value.schemaVersion!==undefined&&![1,2].includes(value.schemaVersion))throw Error('阅读玩法版本不兼容');
         const next={schemaVersion:value.schemaVersion||1,version:value.version??0,mode:value.mode??'reading',advancePolicy:value.advancePolicy??'manual',unit:value.unit??'paragraph'};
         if(!Number.isSafeInteger(next.version)||next.version<0||!PLAY_MODES.includes(next.mode)||!['manual','after_reply'].includes(next.advancePolicy)||!['paragraph','chapter'].includes(next.unit))throw Error('阅读玩法设置无效');
-        const tutor=value.tutor||{enabled:false,scope:'paragraph',style:'dialogue'};
-        if(typeof tutor.enabled!=='boolean'||!['paragraph','selection','chapter'].includes(tutor.scope)||!['dialogue','socratic','structured'].includes(tutor.style))throw Error('导师设置无效');
+        const tutor=value.tutor||{enabled:false,scope:'auto',style:'dialogue'};
+        if(typeof tutor.enabled!=='boolean'||!['auto','page','paragraph','selection','chapter'].includes(tutor.scope)||!['dialogue','socratic','structured'].includes(tutor.style))throw Error('导师设置无效');
         next.tutor={enabled:tutor.enabled,scope:tutor.scope,style:tutor.style};
         return next;
     }

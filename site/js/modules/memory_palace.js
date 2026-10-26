@@ -7,6 +7,19 @@
     const roomPlateWriteQueues = new Map();
     const roomLayoutWriteQueues = new Map();
     const anticipationWriteQueues = new Map();
+    const AUTO_EVENT_BOX_MEMBER_LIMIT = 15;
+    function archiveScope(character) { return String(character?.chatArchiveScopeId || ''); }
+    function characterForId(characterId) { return (db.characters || []).find(item => String(item.id) === String(characterId)) || null; }
+    function nodeInArchiveScope(node, character) {
+        return String(node?.source?.chatArchiveScopeId || '') === archiveScope(character);
+    }
+    function sourceForArchive(character, source) {
+        const next = source && typeof source === 'object' ? { ...source } : { type: 'manual' };
+        const scope = archiveScope(character);
+        if (scope) next.chatArchiveScopeId = scope;
+        else delete next.chatArchiveScopeId;
+        return next;
+    }
     function withTimeout(promise, milliseconds = 45000) {
         let timer;
         return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('记忆处理超时，可稍后重试')), milliseconds); })]).finally(() => clearTimeout(timer));
@@ -72,6 +85,7 @@
         const rows = Array.isArray(parsed) ? parsed : parsed?.memories;
         if (!Array.isArray(rows)) throw new Error('记忆处理 API 返回格式错误');
         const roomAliases = { 客厅: 'living_room', 卧室: 'bedroom', 书房: 'study', 用户房间: 'user_room', 自我房间: 'self_room', 阁楼: 'attic', 窗台: 'windowsill' };
+        const references = input => [...new Set((Array.isArray(input) ? input : input == null ? [] : [input]).map(item => String(item || '').trim()).filter(Boolean))];
         return rows.map(item => ({
             ...Core.normalizeNode(item),
             content: String(item?.content || item?.memory || '').trim().slice(0, 2000),
@@ -82,7 +96,27 @@
             mood: item?.mood,
             sourceMessageIds: [...new Set((Array.isArray(item?.sourceMessageIds || item?.messageIds) ? (item.sourceMessageIds || item.messageIds) : []).map(String))],
             mergeInto: String(item?.mergeInto || ''),
+            relatedTo: references(item?.relatedTo || item?.relatedMemoryIds),
+            sameAs: references(item?.sameAs),
+            eventName: String(item?.eventName || '').replace(/\s+/g, ' ').trim().slice(0, 120),
+            eventTags: Core.normalizeStringList(item?.eventTags).slice(0, 20),
         })).filter(item => item.content);
+    }
+
+    function resolveExtractionReferences(candidates, existing = []) {
+        const old = existing.filter(item => item?.id);
+        const oldIds = new Set(old.map(item => String(item.id)));
+        const aliases = new Map(old.map((item, index) => [`O${index}`, String(item.id)]));
+        const resolveOld = value => {
+            const key = String(value || '').trim();
+            return aliases.get(key.toUpperCase()) || (oldIds.has(key) ? key : '');
+        };
+        return candidates.map((candidate, index) => ({
+            ...candidate,
+            mergeInto: resolveOld(candidate.mergeInto),
+            relatedMemoryIds: [...new Set(candidate.relatedTo.map(resolveOld).filter(Boolean))],
+            sameAsIndices: [...new Set(candidate.sameAs.map(value => /^N(\d+)$/i.exec(value)?.[1]).filter(value => value != null).map(Number).filter(value => value >= 0 && value < index))],
+        }));
     }
 
     function buildExtractionPrompt(character, messages) {
@@ -95,10 +129,12 @@
         return [
             '你是聊天长期记忆整理器。只提取对未来互动有稳定价值的事实、关系变化、重要事件、偏好、承诺、目标或持续状态，不要复述寒暄。',
             '不得编造，不要把翻译、格式标签或系统说明当作事实。相似内容合并为一条，但不同日期发生的相似事件不得误合并。',
+            '只有同一次具体经历的前因、过程、结果才能算同一事件；仅仅人物、地点或主题相同不算。偏好、设定和一般事实通常没有事件，事件字段应留空。',
             '房间只能是 living_room、bedroom、study、user_room、self_room、attic、windowsill。importance 为 1-10。',
             '每条记忆另带 layer：episodes经历、facts事实、states近况、relations关系、knowledge知识、cognition认知、intentions愿望约定；房间与层独立。subject是事实主体；confidence为0到1；factKey仅用于同一主体同一属性（如饮食偏好），不确定留空。不得自行推测期限。',
             `sourceMessageIds 只能从以下 ID 中选择：${[...allowedIds].join(', ')}`,
-            '只返回 JSON：{"memories":[{"content":"客观完整的记忆","room":"user_room","tags":["标签"],"entities":["实体"],"importance":7,"mood":"可选","sourceMessageIds":["消息ID"]}]}。没有值得长期保存的内容时返回 {"memories":[]}。',
+            '同一批中重复事实合并；若两条独立记忆属于同一具体事件，后者用 sameAs:["N0"] 指向前面输出。具体事件可提供稳定简短的 eventName（5-16字）和 eventTags；非事件不要填写。',
+            '只返回 JSON：{"memories":[{"content":"客观完整的记忆","room":"user_room","tags":["标签"],"entities":["实体"],"importance":7,"mood":"可选","sourceMessageIds":["消息ID"],"sameAs":[],"eventName":"仅具体事件填写","eventTags":[]}]}。没有值得长期保存的内容时返回 {"memories":[]}。',
             '',
             '[角色设定（仅用于辨认身份，不得自行扩写）]',
             `角色：${character.remarkName || character.name || '角色'}`,
@@ -117,14 +153,19 @@
             : `${String(config.url || config.baseUrl || '').replace(/\/$/, '')}/v1/chat/completions`;
         const headers = global.getApiConfigHeaders ? global.getApiConfigHeaders(config)
             : { 'Content-Type': 'application/json', ...(config.key ? { Authorization: `Bearer ${config.key}` } : {}) };
+        const existingBlock = options.existing?.length ? [
+            '', '[已有记忆候选：只用于判重或确认同一具体事件，不得当作新事实来源]',
+            ...options.existing.map((node, index) => `O${index} | id=${node.id} | ${String(node.content || '').replace(/\s+/g, ' ').trim()}`),
+            '内容完全相同才填写 mergeInto:"O0"；同一具体事件但内容不同才填写 relatedTo:["O0"]。仅同人物、地点或主题不得关联。引用只能使用上面列出的 O 编号。',
+        ].join('\n') : '';
         const response = await withTimeout(request(options.signal ? {...config,streamEnabled:false} : config, {
             model: config.model,
-            messages: [{ role: 'user', content: buildExtractionPrompt(character, messages) + (options.existing?.length ? '\n[已有记忆，仅用于去重，不作为新事实来源]\n' + JSON.stringify(options.existing.map(n => ({id:n.id,content:n.content}))) + '\n仅当新事实与已有记忆含义完全一致时，返回该条事实及 mergeInto（已有记忆ID），补全来源；有新信息、变化或不同事件时必须独立保留。合并本批相同事实，避免碎片。' : '') }],
+            messages: [{ role: 'user', content: buildExtractionPrompt(character, messages) + existingBlock }],
             temperature: Number.isFinite(Number(config.temperature)) ? Number(config.temperature) : 0.2,
             ...(options.signal ? {max_tokens:Math.min(2048,Math.max(256,Math.floor((Number(config.contextWindow || config.contextLength)||8192)/4)))} : {}),
             stream: false,
         }, headers, endpoint, false, options.signal ? {signal:options.signal,onUsage:options.onUsage,beforeRequest:options.onRequest} : null), options.timeout || 45000);
-        return parseExtractionReply(response);
+        return resolveExtractionReferences(parseExtractionReply(response), options.existing || []);
     }
 
     function historyEntries(character) {
@@ -133,17 +174,25 @@
             return entry && { ...entry, ordinal: i + 1 };
         }).filter(Boolean);
     }
-    const historyJobKey = id => `memoryPalaceHistoryJob:${id}`;
+    const historyJobKey = id => {
+        const scope = archiveScope(characterForId(id));
+        return `memoryPalaceHistoryJob:${id}${scope ? `:${encodeURIComponent(scope)}` : ''}`;
+    };
     async function getHistoryJob(characterId) {
         return (await dexieDB.globalSettings.get(historyJobKey(characterId)))?.value || null;
     }
     async function putHistoryJob(characterId, job) {
         await dexieDB.globalSettings.put({key:historyJobKey(characterId),value:job});
     }
+    function historyBatchProcessed(batch) {
+        const saved = Number(batch?.processedMessages);
+        if (Number.isFinite(saved) && saved >= 0) return Math.floor(saved);
+        return (batch?.units || []).filter(unit => unit.last).length;
+    }
     function historyProgress(job) {
         const done = job.batches.filter(b => b.status === 'success');
-        const processed = done.reduce((sum,b) => sum + b.units.filter(u => u.last).length, 0);
-        return { processed, remaining:job.total-processed, completed:done.length, totalBatches:job.batches.length };
+        const processed = done.reduce((sum,b) => sum + historyBatchProcessed(b), 0);
+        return { processed, remaining:Math.max(0,job.total-processed), completed:done.length, totalBatches:job.batches.length };
     }
     async function renderHistoryProgress(character) {
         if (!character || character.id !== ui.characterId) return;
@@ -169,44 +218,122 @@
         const config = featureConfig('memoryProcess',character);
         if (!config) throw Error('请先配置主 API；记忆宫殿会自动继承');
         const plan = Core.planHistoryArchive(historyEntries(character), selection, config);
-        const job = {id:Core.id('mph'),status:'paused',createdAt:Date.now(),selection,...plan,concurrency:selection.concurrency===2?2:1,error:'',stored:0,merged:0};
+        const job = {id:Core.id('mph'),chatArchiveScopeId:archiveScope(character),status:'paused',createdAt:Date.now(),selection,...plan,concurrency:Math.min(2,plan.batches.length),error:'',stored:0,merged:0};
         await putHistoryJob(character.id,job);
         return job;
     }
-    async function commitHistoryBatch(character, job, index, candidates, mergeTargets, cache) {
+    function createLiveHistoryLookup(character) {
+        let source=null,length=-1,index=new Map();
+        const refresh=(force=false)=>{
+            const next=character.history||[];
+            if(!force&&next===source&&next.length===length)return;
+            source=next;length=next.length;index=new Map(next.map((message,position)=>[String(message?.id??''),{message,position}]));
+        };
+        return id=>{
+            refresh();let record=index.get(String(id));
+            if(record&&source[record.position]!==record.message){refresh(true);record=index.get(String(id));}
+            const entry=originalMessageEntry(record?.message,true);
+            return entry?.id===String(id)?entry:null;
+        };
+    }
+    function ensureHistoryBatchMetrics(batch) {
+        const metrics=batch.metrics ||= {};
+        for(const key of ['apiMs','prepareMs','writeMs','requests','inputTokens','outputTokens'])if(!Number.isFinite(Number(metrics[key])))metrics[key]=0;
+        metrics.usageReported=metrics.usageReported===true;
+        return metrics;
+    }
+    function selectHistoryMergeContext(nodes, wordSet, budget, tokenCache, jobId) {
+        const active=nodes.filter(node=>!node.archived);
+        const recent=active.filter(node=>node.source?.type==='history_archive'&&node.source.jobId===jobId)
+            .sort((left,right)=>(Number(right.source?.batch)||0)-(Number(left.source?.batch)||0)||right.updatedAt-left.updatedAt).slice(0,3);
+        const ranked=active.map(node=>{
+            let cached=tokenCache.get(node.id);
+            if(!cached||cached.content!==node.content){cached={content:node.content,tokens:Core.tokenize(node.content)};tokenCache.set(node.id,cached);}
+            return {node,score:cached.tokens.reduce((sum,word)=>sum+Number(wordSet.has(word)),0)};
+        }).sort((left,right)=>right.score-left.score||right.node.updatedAt-left.node.updatedAt).map(item=>item.node);
+        let size=0;const selected=[];
+        for(const node of [...recent,...ranked]){
+            if(selected.length>=6)break;
+            if(selected.some(item=>item.id===node.id)||size+node.content.length>budget)continue;
+            selected.push(node);size+=node.content.length;
+        }
+        return selected;
+    }
+    function cleanEventName(value) {
+        const name=String(value||'').replace(/\s+/g,' ').trim().slice(0,120);
+        const generic=new Set(['事件','聊天','对话','日常','日常聊天','未命名事件']);
+        return name.length>=2&&!generic.has(name)?name:'';
+    }
+    function eventNameKey(value) { return cleanEventName(value).normalize('NFKC').toLocaleLowerCase().replace(/[\s\p{P}\p{S}]+/gu,''); }
+    function eventTime(node) { return Math.max(0,Number(node?.source?.endTimestamp)||Number(node?.source?.startTimestamp)||0); }
+    async function bindExtractedEvent(characterId, candidate, node, relatedNodes, eventBoxes, existing) {
+        const related=[...new Map((relatedNodes||[]).filter(item=>item&&!item.archived&&item.id!==node.id).map(item=>[item.id,item])).values()];
+        const occupiedIds=[...new Set([node,...related].map(item=>item.eventBoxId).filter(Boolean))];
+        if(occupiedIds.length>1)return node;
+        let box=occupiedIds.length?eventBoxes.find(item=>item.id===occupiedIds[0]):null;
+        const name=cleanEventName(candidate.eventName);
+        if(!box&&name){
+            const time=eventTime(node),week=7*24*60*60*1000;
+            box=eventBoxes.filter(item=>item.status==='open'&&item.nodeIds.length<AUTO_EVENT_BOX_MEMBER_LIMIT&&eventNameKey(item.name)===eventNameKey(name))
+                .find(item=>time>0&&item.nodeIds.some(id=>{const member=existing.find(value=>value.id===id);const memberTime=eventTime(member);return memberTime>0&&Math.abs(time-memberTime)<=week;}));
+        }
+        if(!box&&!name)return node;
+        if(!box){
+            box=Core.normalizeEventBox({id:Core.id('mpe'),characterId,name,tags:candidate.eventTags,nodeIds:[],createdAt:Date.now(),updatedAt:Date.now()},{characterId});
+            eventBoxes.push(box);
+        }
+        if(box.status==='sealed')return node;
+        const additions=[node,...related].filter(item=>!item.eventBoxId||item.eventBoxId===box.id)
+            .filter(item=>!box.nodeIds.includes(item.id)).slice(0,Math.max(0,AUTO_EVENT_BOX_MEMBER_LIMIT-box.nodeIds.length));
+        if(!additions.length)return node;
+        box=Core.normalizeEventBox({...box,tags:[...box.tags,...(candidate.eventTags||[])],nodeIds:[...box.nodeIds,...additions.map(item=>item.id)],updatedAt:Date.now()},{characterId});
+        const boxIndex=eventBoxes.findIndex(item=>item.id===box.id);eventBoxes[boxIndex]=box;
+        const updated=additions.map(item=>Core.normalizeNode({...item,eventBoxId:box.id},{characterId}));
+        await dexieDB.memoryPalaceNodes.bulkPut(updated);
+        await dexieDB.memoryPalaceEventBoxes.put(box);
+        for(const item of updated){const index=existing.findIndex(value=>value.id===item.id);if(index>=0)existing[index]=item;}
+        return updated.find(item=>item.id===node.id)||node;
+    }
+    async function commitHistoryBatch(character, job, index, candidates, mergeTargets, cache, currentEntry) {
         const batch = job.batches[index], ids = [...new Set(batch.units.map(u=>u.id))];
-        const selectedIds=new Set(ids);
-        const current = new Map((character.history||[]).filter(m=>selectedIds.has(String(m.id))).map(m=>originalMessageEntry(m,true)).filter(Boolean).map(m=>[m.id,m]));
+        const current = new Map(ids.map(id=>[id,currentEntry(id)]).filter(([,entry])=>entry));
         if (batch.units.some(u=>!current.has(u.id)||Core.memoryFingerprint(current.get(u.id).text)!==u.hash)) throw Error('本批原消息已变化，未保存结果；请重新选择范围');
         // Nodes and the success cursor commit together; an interrupted write cannot leave half a batch.
-        await dexieDB.transaction('rw',dexieDB.memoryPalaceNodes,dexieDB.globalSettings,async()=>{
+        await dexieDB.transaction('rw',dexieDB.memoryPalaceNodes,dexieDB.memoryPalaceEventBoxes,dexieDB.globalSettings,async()=>{
             const saved = await getHistoryJob(character.id);
             if (saved?.id !== job.id) throw Error('整理任务已变化，请重新打开');
             if (saved.batches[index]?.status === 'success') return;
             const existing = cache || await listNodes(character.id);
-            const changed=[];
-            for (const candidate of candidates) {
+            const eventBoxes=(await dexieDB.memoryPalaceEventBoxes.where('characterId').equals(character.id).toArray()).map(item=>Core.normalizeEventBox(item,{characterId:character.id}));
+            const changed=[],resolved=[];
+            for (let candidateIndex=0;candidateIndex<candidates.length;candidateIndex++) {
+                const candidate=candidates[candidateIndex];
                 const sources = candidate.sourceMessageIds.filter(id=>ids.includes(id));
-                if (!sources.length) sources.push(...ids);
+                if (!sources.length) continue;
                 const identical = existing.find(n => !n.archived && n.content.trim() === candidate.content.trim() && (n.subject || '') === (candidate.subject || '') && (n.layer !== 'episodes' || (n.source?.messageIds || []).some(id=>sources.includes(id))));
                 const proposed = mergeTargets.find(n=>n.id===candidate.mergeInto);
                 const semantic = proposed && existing.find(n=>n.id===proposed.id && n.content===proposed.content && !n.archived);
                 const proposedMatch = identical || semantic;
                 const match=proposedMatch ? await dexieDB.memoryPalaceNodes.get(proposedMatch.id) : null;
                 if(match && match.content!==proposedMatch.content)throw Error('记忆已被编辑，整理结果已缓存，请重试保存');
+                let node;
                 if (match) {
                     // Keep existing wording, room, annotations and ID; only append evidence.
                     match.source = {...match.source,messageIds:[...new Set([...(match.source?.messageIds || []),...sources])]};
                     match.revision = (match.revision || 0)+1; match.updatedAt=Date.now();
-                    await dexieDB.memoryPalaceNodes.put(match);changed.push(match.id);existing[existing.findIndex(n=>n.id===match.id)]=match; job.merged++; continue;
+                    await dexieDB.memoryPalaceNodes.put(match);node=Core.normalizeNode(match,{characterId:character.id});changed.push(node.id);existing[existing.findIndex(n=>n.id===node.id)]=node;job.merged++;
+                } else {
+                    const times=sources.map(id=>current.get(id)?.timestamp).filter(t=>t>0);
+                    node = Core.normalizeNode({...candidate,id:Core.id('mpn'),characterId:character.id,source:sourceForArchive(character,{type:'history_archive',jobId:job.id,batch:index,messageIds:sources,startTimestamp:times.length?Math.min(...times):0,endTimestamp:times.length?Math.max(...times):0}),revision:1});
+                    await dexieDB.memoryPalaceNodes.put(node); existing.push(node); job.stored++;
+                    changed.push(node.id);
                 }
-                const times=sources.map(id=>current.get(id)?.timestamp).filter(t=>t>0);
-                const node = Core.normalizeNode({...candidate,id:Core.id('mpn'),characterId:character.id,source:{type:'history_archive',jobId:job.id,batch:index,messageIds:sources,startTimestamp:times.length?Math.min(...times):0,endTimestamp:times.length?Math.max(...times):0},revision:1});
-                await dexieDB.memoryPalaceNodes.put(node); existing.push(node); job.stored++;
-                changed.push(node.id);
+                const related=[...(candidate.relatedMemoryIds||[]).map(id=>existing.find(item=>item.id===id)),...(candidate.sameAsIndices||[]).map(value=>resolved[value])];
+                node=await bindExtractedEvent(character.id,candidate,node,related,eventBoxes,existing);
+                resolved[candidateIndex]=node;
             }
             batch.status='success'; batch.error=''; batch.finishedAt=Date.now(); job.error='';
-            batch.nodeIds=changed;delete batch.result;delete batch.mergeTargets;
+            batch.nodeIds=changed;batch.processedMessages=historyBatchProcessed(batch);delete batch.units;delete batch.result;delete batch.mergeTargets;
             await putHistoryJob(character.id,job);
         });
         runtime.delete(character.id);
@@ -234,32 +361,37 @@
             job=await getHistoryJob(character.id);
             if (!job || ['completed','cancelled'].includes(job.status)) return;
             if(job.status==='running'&&job.batches.some(b=>b.status==='running')){
-                job.status='failed';job.error='上次请求中断，服务可能已计费；已返回的结果保留，请核对后再点重试';
-                job.batches.filter(b=>b.status==='running').forEach(b=>{b.status='failed';b.error=job.error;});await putHistoryJob(character.id,job);return job;
+                job.batches.filter(b=>b.status==='running').forEach(batch=>{
+                    batch.status='pending';batch.error='';const metrics=ensureHistoryBatchMetrics(batch);
+                    metrics.interruptedRequests=(metrics.interruptedRequests||0)+1;
+                });
+                job.status='paused';job.error='上次请求中断；继续操作将只重试未保存结果的批次，该请求可能曾被服务计费';
+                await putHistoryJob(character.id,job);
             }
             job.status='running'; job.error=''; await putHistoryJob(character.id,job);
             const entries=historyEntries(character), byId=new Map(entries.map(m=>[m.id,m]));
             if (byId.size!==entries.length) throw Error('历史记录包含重复 ID，请先核对');
             nodes=await listNodes(character.id);
+            const currentEntry=createLiveHistoryLookup(character),nodeTokenCache=new Map();
             let saveQueue=Promise.resolve();
             const checkpoint=()=>{saveQueue=saveQueue.then(()=>putHistoryJob(character.id,job));return saveQueue;};
             while(job.batches.some(b=>b.status!=='success')) {
                 if(control.action || !character.memoryPalaceEnabled) {control.action ||= 'paused';break;}
-                const pending=job.batches.filter(b=>b.status!=='success'&&b.status!=='ready').slice(0,job.concurrency===2?2:1);
+                const concurrency=Math.min(2,Math.max(1,Number(job.concurrency)||1));
+                const pending=job.batches.filter(b=>b.status!=='success'&&b.status!=='ready').slice(0,concurrency);
+                pending.forEach(batch=>{batch.status='running';batch.error='';ensureHistoryBatchMetrics(batch);});
+                if(pending.length)await checkpoint();
                 await Promise.all(pending.map(async batch=>{
                     const started=performance.now();
-                    batch.metrics ||= {apiMs:0,prepareMs:0,writeMs:0,requests:0,inputTokens:0,outputTokens:0,usageReported:false};
                     const metrics=batch.metrics;
                     try {
                         const messages=batch.units.map(unit=>{const m=byId.get(unit.id);if(!m||Core.memoryFingerprint(m.text)!==unit.hash)throw Error('原消息已修改或缺失，请重新选择范围');return {...m,text:m.text.slice(unit.start,unit.end)};});
                         const words=Core.tokenize(messages.map(m=>m.text).join(' '));
                         const wordSet=new Set(words);
-                        let size=0;
                         const config=featureConfig('memoryProcess',character)||{};
                         const budget=Math.min(1200,Math.floor((Number(config.contextWindow||config.contextLength)||8192)*0.15));
-                        const existing=nodes.filter(n=>!n.archived).map(n=>({n,score:Core.tokenize(n.content).reduce((sum,w)=>sum+Number(wordSet.has(w)),0)})).sort((a,b)=>b.score-a.score).slice(0,6).map(x=>x.n).filter(n=>(size+=n.content.length)<=budget);
+                        const existing=selectHistoryMergeContext(nodes,wordSet,budget,nodeTokenCache,job.id);
                         metrics.prepareMs+=performance.now()-started;
-                        batch.status='running';await checkpoint();
                         for(let attempt=0;attempt<3;attempt++) {
                             const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),45000),apiStart=performance.now();
                             batch.attempts++;metrics.requests++;
@@ -294,9 +426,8 @@
                     }
                     if(batch.status!=='ready')break;
                     const writeStart=performance.now();
-                    await commitHistoryBatch(character,job,index,batch.result,batch.mergeTargets||[],nodes);
+                    await commitHistoryBatch(character,job,index,batch.result,batch.mergeTargets||[],nodes,currentEntry);
                     batch.metrics ||= {};batch.metrics.writeMs=(batch.metrics.writeMs||0)+performance.now()-writeStart;
-                    await checkpoint();
                 }
                 await renderHistoryProgress(character);
             }
@@ -334,7 +465,7 @@
     async function chooseHistoryRange(character) {
         const previous=await getHistoryJob(character.id);
         if(previous&&!['completed','cancelled'].includes(previous.status)){await renderHistoryProgress(character);document.getElementById('palace-progress-modal').classList.add('visible');return;}
-        const chosen=await showAppFormDialog({title:'整理聊天记忆',message:'保留原聊天和已有记忆，整理文字及语音原文。自动整理设置不变。',fields:[{name:'mode',label:'整理范围',type:'select',value:'all',options:[{value:'all',label:'全部历史'},{value:'custom',label:'自选范围'},{value:'recent',label:'最近消息'}]},{name:'concurrency',label:'请求调度',type:'select',value:'1',options:[{value:'1',label:'稳妥 · 逐批整理'},{value:'2',label:'加速 · 最多同时 2 批'}]}],confirmText:'下一步'});
+        const chosen=await showAppFormDialog({title:'整理聊天记忆',message:'保留原聊天和已有记忆，整理文字及语音原文。系统会自动分批并连续处理，自动整理设置不变。',fields:[{name:'mode',label:'整理范围',type:'select',value:'all',options:[{value:'all',label:'全部历史'},{value:'custom',label:'自选范围'},{value:'recent',label:'最近消息'}]}],confirmText:'下一步'});
         if(!chosen)return;
         let selection=chosen;
         if(chosen.mode==='recent'){
@@ -356,7 +487,6 @@
                 if(selection.start>selection.end)throw Error('结束范围不能早于开始范围');
             }
         }
-        selection.concurrency=Number(chosen.concurrency)||1;
         const plan=Core.planHistoryArchive(historyEntries(character),selection,featureConfig('memoryProcess',character)||{});
         const confirmed=await showAppConfirmDialog({title:'开始整理？',message:`所选 ${plan.total} 条消息，预计 ${plan.batches.length} 次提取请求。输入与输出约 ${Math.ceil(plan.characters/4+plan.batches.length*500).toLocaleString()}–${Math.ceil(plan.characters+plan.batches.length*3000).toLocaleString()} Token（估算，重试或缩小批次会增加调用）。\n可暂停并在刷新后继续；保持此页面打开可连续完成。${previous?'重新整理仅追加或合并来源，不覆盖已有记忆。':''}`,confirmText:'开始整理',cancelText:'暂不开始'});
         if(confirmed!==true && confirmed!=='confirm')return;
@@ -532,10 +662,12 @@
 
     async function listNodes(characterId, room = 'all') {
         if (!dexieDB?.memoryPalaceNodes || !characterId) return [];
+        const character = characterForId(characterId);
         const list = room === 'all'
             ? await dexieDB.memoryPalaceNodes.where('characterId').equals(characterId).toArray()
             : await dexieDB.memoryPalaceNodes.where('[characterId+room]').equals([characterId, room]).toArray();
-        return list.map(node => Core.normalizeNode(node, { characterId })).sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt - a.updatedAt);
+        return list.map(node => Core.normalizeNode(node, { characterId })).filter(node => nodeInArchiveScope(node, character))
+            .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt - a.updatedAt);
     }
 
     async function getNode(id) { return dexieDB?.memoryPalaceNodes ? dexieDB.memoryPalaceNodes.get(id) : null; }
@@ -835,16 +967,18 @@
         const character = (db.characters || []).find(item => item.id === (payload.characterId || ui.characterId));
         if (!character) throw new Error('未找到角色');
         const existing = payload.id ? await getNode(payload.id) : null;
-        const contentChanged = !existing || String(existing.content || '').trim() !== String(payload.content || '').trim();
-        const node = Core.normalizeNode({ ...existing, ...payload, characterId: character.id, updatedAt: Date.now(), embedded: contentChanged ? false : existing?.embedded, embeddingProfileKey: contentChanged ? '' : existing?.embeddingProfileKey }, { characterId: character.id });
-        node.revision = (existing?.revision || 0) + 1;
+        const scopedExisting = existing && nodeInArchiveScope(existing, character) ? existing : null;
+        const safePayload = existing && !scopedExisting ? { ...payload, id: Core.id('mpn') } : payload;
+        const contentChanged = !scopedExisting || String(scopedExisting.content || '').trim() !== String(safePayload.content || '').trim();
+        const node = Core.normalizeNode({ ...scopedExisting, ...safePayload, characterId: character.id, source:sourceForArchive(character, safePayload.source || scopedExisting?.source), updatedAt: Date.now(), embedded: contentChanged ? false : scopedExisting?.embedded, embeddingProfileKey: contentChanged ? '' : scopedExisting?.embeddingProfileKey }, { characterId: character.id });
+        node.revision = (scopedExisting?.revision || 0) + 1;
         if (!node.content) throw new Error('记忆正文不能为空');
         let vectorRecord = null;
         let embeddingError = null;
         try {
             if (options.localOnly) {
                 // Explicit local imports must not send their content to an embedding provider.
-            } else if (!contentChanged && existing?.embedded) {
+            } else if (!contentChanged && scopedExisting?.embedded) {
                 // 只改标签/房间/固定状态时保留原向量，不发 API。
             } else {
             const vector = (await embedTexts([node.content], character))[0];
@@ -852,7 +986,7 @@
                 node.embedded = true;
                 node.embeddingProfileKey = embeddingProfile(vector, character);
                 const config = featureConfig('embedding', character) || {};
-                vectorRecord = { memoryId: node.id, characterId: character.id, vector, dimensions: vector.length, model: config.model || '', profileKey: node.embeddingProfileKey, updatedAt: Date.now() };
+                vectorRecord = { memoryId: node.id, characterId: character.id, chatArchiveScopeId:archiveScope(character), vector, dimensions: vector.length, model: config.model || '', profileKey: node.embeddingProfileKey, updatedAt: Date.now() };
             }
             }
         } catch (error) {
@@ -907,7 +1041,7 @@
             const vector = vectors[index];
             if (!Array.isArray(vector) || !vector.length) return;
             node.embedded = true; node.embeddingProfileKey = embeddingProfile(vector, character); node.updatedAt = Date.now();
-            records.push({ memoryId: node.id, characterId, vector, dimensions: vector.length, model: config.model || '', profileKey: node.embeddingProfileKey, updatedAt: Date.now() });
+            records.push({ memoryId: node.id, characterId, chatArchiveScopeId:archiveScope(character), vector, dimensions: vector.length, model: config.model || '', profileKey: node.embeddingProfileKey, updatedAt: Date.now() });
         });
         await dexieDB.transaction('rw', dexieDB.memoryPalaceNodes, dexieDB.memoryPalaceVectors, async () => {
             if (nodes.length) await dexieDB.memoryPalaceNodes.bulkPut(nodes);
@@ -948,7 +1082,8 @@
         let queryVector = null;
         try { queryVector = (await withTimeout(embedTexts([query], character), 8000))[0] || null; }
         catch (error) { console.warn('[MemoryPalace] embedding fallback:', error); }
-        const vectorRecords = await dexieDB.memoryPalaceVectors.where('characterId').equals(character.id).toArray();
+        const nodeIds = new Set(nodes.map(node => node.id));
+        const vectorRecords = (await dexieDB.memoryPalaceVectors.where('characterId').equals(character.id).toArray()).filter(record => nodeIds.has(record.memoryId));
         const compatible = queryVector ? vectorRecords.filter(record => record.dimensions === queryVector.length) : [];
         if (character.memoryPalaceSevenEnabled && global.MemoryGovernanceCore) {
             const results = await global.MemoryGovernanceCore.recall(nodes, compatible, await listLinks(character.id), query, queryVector, {
@@ -982,18 +1117,19 @@
         try {
             const results = await search(character, query);
             const block = Core.formatContext(results, character.memoryPalaceTopK);
-            runtime.set(character.id, { query, block, ids: results.map(item => item.node.id), preparedAt: Date.now() });
+            runtime.set(character.id, { scope:archiveScope(character), query, block, ids: results.map(item => item.node.id), preparedAt: Date.now() });
             return block;
         } catch (error) {
             console.warn('[MemoryPalace] context preparation failed:', error);
-            runtime.set(character.id, { query, block: '', ids: [], error: error.message, preparedAt: Date.now() });
+            runtime.set(character.id, { scope:archiveScope(character), query, block: '', ids: [], error: error.message, preparedAt: Date.now() });
             return '';
         }
     }
 
     function getContext(character) {
         ensureSettings(character);
-        return character.memoryPalaceEnabled ? (runtime.get(character.id)?.block || '') : '';
+        const prepared = runtime.get(character.id);
+        return character.memoryPalaceEnabled && prepared?.scope === archiveScope(character) ? (prepared.block || '') : '';
     }
 
     function combineContexts(character, legacyContext) {
@@ -1482,7 +1618,7 @@
             : [];
         const nodes = data.nodes.map(node => {
             const id = Core.id('mpn'); idMap.set(String(node.id || ''), id);
-            return Core.normalizeNode({ ...node, id, characterId: character.id, eventBoxId: eventBoxIdMap.get(String(node.eventBoxId || '')) || null, embedded: false, embeddingProfileKey: '' }, { characterId: character.id });
+            return Core.normalizeNode({ ...node, id, characterId: character.id, source:sourceForArchive(character,node.source), eventBoxId: eventBoxIdMap.get(String(node.eventBoxId || '')) || null, embedded: false, embeddingProfileKey: '' }, { characterId: character.id });
         });
         const importedNodeIds = new Set(nodes.map(node => node.id));
         const assigned = new Set();
@@ -1761,6 +1897,7 @@
 
     global.MemoryPalace = {
         featureConfig, withTimeout, render, getRoomLayout, saveRoomLayout,
+        archiveScope, scopeSource:sourceForArchive,
         historyEntries, getHistoryJob, historyProgress, createHistoryJob, runHistoryJob, controlHistoryJob,
         ensureSettings, listNodes, getNode, saveNode, deleteNode, reembed, search, prepareContext,
         getContext, combineContexts, buildQuery, open, setup, importData,
