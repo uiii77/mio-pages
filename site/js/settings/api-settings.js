@@ -212,7 +212,8 @@ function setupApiSettingsApp() {
                 });
                 
                 // 尝试恢复之前的选择，或者使用设置中的值
-                if (models.includes(currentVal)) {
+                if (currentVal && !models.includes(currentVal)) modelSelect.add(new Option(currentVal,currentVal));
+                if (currentVal) {
                     modelSelect.value = currentVal;
                 } else if (db.apiSettings && db.apiSettings.model && models.includes(db.apiSettings.model)) {
                     modelSelect.value = db.apiSettings.model;
@@ -684,7 +685,7 @@ async function fetchApiNodeModels(readDraft, setStatus) {
         result.forEach(model => { const option = document.createElement('option'); option.value = model; option.textContent = model; select.appendChild(option); });
         const resultRow = document.getElementById('api-node-model-results-row');
         if (resultRow) resultRow.hidden = !result.length;
-        if (result.length) { select.value = result[0]; document.getElementById('api-node-model').value = result[0]; }
+        if (result.length) { const current=document.getElementById('api-node-model').value;if(current&&!result.includes(current))select.add(new Option(current,current));select.value=current||result[0];if(!current)document.getElementById('api-node-model').value=result[0]; }
         setStatus(result.length ? `已拉取 ${result.length} 个模型` : '接口未返回模型', !result.length);
     } catch (error) { setStatus(error.message, true); }
 }

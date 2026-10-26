@@ -3314,3 +3314,33 @@ body.night-mode-active .storage-console-tab { background: #292929; color: #ddd; 
 .mio-api-source {font-size:13px;color:#776961;overflow-wrap:anywhere;}
 .mio-api-state {grid-column:1/-1;gap:12px;}
 .mio-api-advanced .api-field-tip {padding:8px 14px;margin:0;overflow-wrap:anywhere;}
+.mio-model-trigger {flex:1;min-width:0;max-width:100%;border:1px solid #e7dce2;border-radius:10px;background:#fff;color:#493f47;padding:9px 12px;text-align:left;font:inherit;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;}
+.mio-model-trigger::after {content:' ▾';color:#a77e93;}
+.mio-model-dialog .app-form-dialog {width:min(440px,calc(100vw - 24px));max-height:85dvh;overflow:auto;box-sizing:border-box;}
+.mio-model-dialog [hidden] {display:none!important;}
+.mio-model-results {max-height:40dvh;overflow:auto;overscroll-behavior:contain;margin:8px 0;}
+.mio-model-option {display:block;width:100%;text-align:left;padding:12px;border:0;border-radius:9px;background:white;color:#443b42;font:inherit;font-size:14px;overflow-wrap:anywhere;}
+.mio-model-option[aria-selected=true] {background:#fff0f5;color:#a04872;box-shadow:inset 3px 0 #d68cab;}
+.mio-model-option small {display:block;font-size:11px;color:#756772;margin-top:4px;}
+.mio-model-manual {border:0;background:none;color:#9c5c7e;font:inherit;font-size:12px;padding:10px 2px;text-align:left;}
+.mio-model-dialog input {width:100%;min-width:0;box-sizing:border-box;border:1px solid #eadfe5;border-radius:10px;padding:11px 12px;font:inherit;background:#fff;color:#352e34;}
+#api-settings-screen .kkt-item:has(.mio-model-trigger),.mio-api-advanced .kkt-item:has(.mio-model-trigger) {display:flex;flex-wrap:wrap;gap:8px;padding:12px 14px;}
+#api-settings-screen .kkt-item:has(.mio-model-trigger)>.kkt-item-label,.mio-api-advanced .kkt-item:has(.mio-model-trigger)>.kkt-item-label {flex:0 0 100%;text-align:left;}
+#api-settings-screen .kkt-item-control:has(.mio-model-trigger),.mio-api-advanced .kkt-item-control:has(.mio-model-trigger) {width:100%;max-width:none;display:flex;gap:8px;}
+#api-settings-screen .kkt-item-control:has(.mio-model-trigger)>.btn,.mio-api-advanced .kkt-item-control:has(.mio-model-trigger)>.btn {width:auto;min-width:44px;flex:0 0 auto;padding:6px 10px;background:#fff6da;border:0;color:#795e2c;font-size:12px;}
+.mio-api-presets>.btn {flex:0 0 auto;width:auto;min-height:32px;padding:6px 12px;font-size:12px;background:#f9edf3;color:#87506c;}
+.mio-api-presets>.btn:last-child {background:transparent;color:#746971;}
+.mio-api-presets>select {text-align:left!important;border:1px solid #eadfe5!important;background:white!important;padding:9px 10px!important;border-radius:9px!important;}
+.mio-api-advanced .api-field-tip {color:#766a73;}
+#api-settings-screen .api-field-tip {text-align:left;white-space:normal;overflow-wrap:anywhere;box-sizing:border-box;max-width:100%;padding:8px 14px;}
+#api-settings-screen .api-nested-details:has(#elevenlabs-stability)>.kkt-item {display:grid;grid-template-columns:minmax(90px,1fr) minmax(0,1.8fr);gap:12px;padding:14px;align-items:center;}
+#api-settings-screen .api-nested-details:has(#elevenlabs-stability) .kkt-item-control {display:flex;align-items:center;gap:12px;width:100%;min-width:0;max-width:none;}
+#api-settings-screen .api-nested-details input[type=range] {min-width:0;flex:1;width:100%;margin:8px 0;padding:0;accent-color:#c987a6;}
+#api-settings-screen [data-eleven-value] {min-width:34px;text-align:right;font-variant-numeric:tabular-nums;font-size:12px;color:#735c69;}
+#api-settings-screen .api-nested-details:has(#elevenlabs-stability)>.kkt-item:has(textarea) {display:flex;gap:10px;}
+#api-settings-screen .api-nested-details>.kkt-item:has(input[type=range]) {grid-template-columns:1fr;gap:6px;}
+#api-settings-screen .api-nested-details>.kkt-item:has(input[type=range]) .kkt-item-label {text-align:left;}
+#api-settings-screen .api-nested-details:has(#elevenlabs-stability)>.kkt-item:has(input[type=range]) {grid-template-columns:1fr;gap:6px;}
+#api-settings-screen .api-nested-details:has(#elevenlabs-stability)>.kkt-item {padding:14px!important;box-sizing:border-box;}
+#api-settings-screen .api-section-card .kkt-item:has(input[type=password])>.kkt-item-label,
+#api-settings-screen .api-section-card .kkt-item:has(input[type=text])>.kkt-item-label {min-width:80px;flex-shrink:0;word-break:keep-all;}

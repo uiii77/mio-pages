@@ -2,6 +2,7 @@
     'use strict';
     const $=id=>document.getElementById(id);
     const editors=new Map();
+    const modelPickers=new Map(), modelNames=new Map();
     const registry=()=>global.FeatureApiRegistry;
     const node=(tag,text,className)=>{const el=document.createElement(tag);if(text!=null)el.textContent=text;if(className)el.className=className;return el;};
     const providers=[['newapi','OpenAI 兼容 / 自定义'],['deepseek','DeepSeek'],['claude','Claude'],['gemini','Gemini'],['openai-noauth','本地免密接口']];
@@ -32,13 +33,14 @@
             const data=await response.json();
             const rows=data.data||data.models;
             if(!Array.isArray(rows))throw Error('服务未返回可识别的模型列表');
+            for(const item of rows)if(item&&typeof item==='object'){const id=String(item.id||item.name||item.model||'').replace(/^models\//,'');modelNames.set(id,item.display_name||item.displayName||item.name||id);}
             const models=[...new Set(rows.filter(item=>provider!=='gemini'||!item.supportedGenerationMethods||item.supportedGenerationMethods.includes(kind==='embedding'?'embedContent':'generateContent')).map(item=>typeof item==='string'?item:item.id||item.name||item.model).filter(Boolean).map(id=>String(id).replace(/^models\//,'')))];
             if(!models.length)throw Error('服务没有返回可用模型，已保留原选择');
             return models;
         } catch(error) { if(error.name==='AbortError')throw Error('模型拉取已取消或超时，已保留原选择');throw error; }
         finally {clearTimeout(timer);signal?.removeEventListener('abort',cancel);}
     }
-    function setModel(select,value) {if(value&&!Array.from(select.options).some(o=>o.value===value))select.add(new Option(value,value));select.value=value||'';}
+    function setModel(select,value) {if(value&&!Array.from(select.options).some(o=>o.value===value))select.add(new Option(value,value));select.value=value||'';modelPickers.get(select)?.refresh();}
     function labelOverride(enabled,text) {
         const title=enabled.closest('.kkt-item')?.querySelector('.kkt-item-label');if(title){title.textContent=text;return;}
         const label=enabled.closest('label');if(!label)return;
@@ -102,7 +104,6 @@
         let provider=$(prefix+'-provider');
         if(!provider){provider=node('select');provider.id=prefix+'-provider';for(const [value,label] of providers)provider.add(new Option(label,value));}
         const parent=host||url.closest('.api-section-card')||url.closest('.kkt-group')||url.closest('label')?.parentElement||url.parentElement;
-        const search=node('input');search.type='search';search.placeholder='搜索模型';search.setAttribute('aria-label','搜索模型');
         const advanced=node('section',null,'mio-api-advanced');advanced.hidden=true;
         const current=node('span',null,'mio-api-source');
         const expand=button('高级设置',()=>{advanced.hidden=!advanced.hidden;expand.setAttribute('aria-expanded',String(!advanced.hidden));});expand.setAttribute('aria-expanded','false');
@@ -111,29 +112,29 @@
         (enabledRow||url.closest('.kkt-item')||parent.firstChild).after(stateRow,advanced);
         const move=el=>{if(!el)return;let holder=el.closest('.kkt-item')||el.closest('label');if(!holder)holder=row(el===url?'API 地址':el===key?'密钥':el===model?'模型':'服务商',el);if(!advanced.contains(holder))advanced.append(holder);};
         if(provider.isConnected)move(provider);else advanced.append(row('服务商',provider));move(url);move(key);move(model);
-        const modelTools=node('div',null,'mio-api-model-tools');const fetchButton=button('拉取模型',async()=>{
+        const fetchButton=button('拉取模型',async()=>{
             if(editor.controller){editor.controller.abort();return;}
             const snapshot=JSON.stringify(read());editor.controller=new AbortController();fetchButton.textContent='取消拉取';status.textContent='正在拉取模型…';
             try{const models=await fetchModels(read(),{signal:editor.controller.signal});if(snapshot!==JSON.stringify(read())){status.textContent='配置已变化，请重新拉取';return;}editor.models=models;renderModels();status.textContent='已拉取 '+models.length+' 个模型';}
             catch(error){status.textContent=error.message;}
-            finally{editor.controller=null;fetchButton.textContent='拉取模型';}
-        });modelTools.append(search,fetchButton);(model.closest('.kkt-item')||model.closest('label')).after(modelTools);
+            finally{editor.controller=null;fetchButton.textContent='拉取';}
+        });fetchButton.textContent='拉取';searchModels(model);modelPickers.get(model).trigger.after(fetchButton);
         const presets=node('select');presets.setAttribute('aria-label','共享 API 预设');presetOptions(presets);
         const toolbar=node('div',null,'api-sub-presets-strip mio-api-presets');toolbar.append(presets,
             button('应用',()=>{const preset=registry().presetConfig(presets.value,db);if(!preset)throw Error('请选择预设');fill(preset);editor.presetRef=presets.value;if(enabled)enabled.checked=true;status.textContent='预设已应用，保存后生效';}),
             button('另存',async()=>{await savePreset(read());status.textContent='预设操作已完成';}),
-            button('管理',managePresets),button('导入',chooseImport),button('导出',exportPresets));
-        const manual=button('无法拉取？手动指定模型',async()=>{const answer=await showAppFormDialog({title:'指定模型',fields:[{name:'model',label:'模型名称',value:model.value,required:true}]});if(answer){if(answer.model.length>512)throw Error('模型名称过长');setModel(model,answer.model.trim());model.dispatchEvent(new Event('change',{bubbles:true}));}});
-        const status=node('p',null,'api-field-tip');status.setAttribute('role','status');status.setAttribute('aria-live','polite');advanced.append(toolbar,manual,status);
+            button('更多',presetMore));
+        const status=node('p',null,'api-field-tip');status.setAttribute('role','status');status.setAttribute('aria-live','polite');advanced.append(toolbar,status);
         if(kind!=='llm') {toolbar.hidden=true;for(const option of Array.from(provider.options))if(!['newapi','openai-noauth'].includes(option.value))option.remove();}
         const fallback=$(prefix+'-fallback');if(fallback)fallback.closest('.kkt-item').hidden=true;
         let models=Array.from(model.options).map(o=>o.value).filter(Boolean);
         let savedConfig={};
         function read(){return {...savedConfig,provider:provider.value||'newapi',authMode:provider.value==='openai-noauth'?'none':savedConfig.provider==='openai-noauth'&&provider.value!=='openai-noauth'?'bearer':savedConfig.authMode,url:url.value.trim(),baseUrl:url.value.trim(),key:key.value.trim(),apiKey:key.value.trim(),model:model.value,service:kind,...($(prefix+'-stream')?{streamEnabled:$(prefix+'-stream').checked}: {})};}
         function fill(config){savedConfig=structuredClone(config);const value=config.provider||'newapi';if(!Array.from(provider.options).some(o=>o.value===value))provider.add(new Option(value,value));provider.value=value;url.value=config.url||config.baseUrl||config.apiUrl||'';key.value=config.key||config.apiKey||'';setModel(model,config.model||'');models=Array.from(model.options).map(o=>o.value).filter(Boolean);}
-        function renderModels(){const selected=model.value,filter=search.value.toLowerCase();const list=editor.models||models;model.replaceChildren();for(const value of [...new Set([selected,...list])].filter(Boolean).filter(value=>value===selected||value.toLowerCase().includes(filter)))model.add(new Option(value,value));if(selected)model.value=selected;}
+        function renderModels(){const selected=model.value,list=editor.models||models;model.replaceChildren();for(const value of [...new Set([selected,...list])].filter(Boolean))model.add(new Option(modelNames.get(value)||value,value));setModel(model,selected);}
+
         const editor={prefix,feature,legacyKey,enabled,model,provider,presets,status,current,advanced,read,fill,presetRef:'',refresh:()=>{const result=feature?registry().resolve(feature,{context:editor.owner}):null;current.textContent=feature?registry().sourceLabel(result):enabled?.checked?'功能专属配置':'继承主 API';}};
-        search.oninput=renderModels;for(const el of [provider,url,key,model])el.addEventListener('change',()=>{editor.presetRef='';editor.controller?.abort();if(el===provider)savedConfig.apiProtocol=apiProviderToGenerationProtocol(provider.value);});
+        for(const el of [provider,url,key,model])el.addEventListener('change',()=>{editor.presetRef='';editor.controller?.abort();if(el===provider)savedConfig.apiProtocol=apiProviderToGenerationProtocol(provider.value);});
         enabled?.addEventListener('change',()=>{current.textContent=enabled.checked?'专属设置保存后生效':'继承主 API';});
         editors.set(prefix,editor);return editor;
     }
@@ -185,13 +186,51 @@
         try{if(await saveCharacter(owner.id)===false)throw Error('角色 API 设置未保存');}catch(error){owner.featureApiBindings=before;if(db.apiFeatureRegistry===next)await persistRegistry(beforeRegistry);throw error;}
         editor.refresh();editor.status.textContent='设置已保存';
     }
-    function searchModels(select) {
-        if(!select||select.dataset.mioSearch)return;select.dataset.mioSearch='true';
-        const search=node('input');search.type='search';search.placeholder='搜索模型';search.setAttribute('aria-label','搜索模型');search.className='mio-api-model-search';
-        const box=node('div',null,'mio-api-model-tools');box.append(search,button('手动指定',async()=>{const answer=await showAppFormDialog({title:'指定模型',fields:[{name:'model',label:'模型名称',value:select.value,required:true}]});if(answer)setModel(select,answer.model.trim());}));select.closest('.kkt-item')?.after(box);
-        search.oninput=()=>{for(const option of select.options)option.hidden=option.value!==select.value&&!option.textContent.toLowerCase().includes(search.value.toLowerCase());};
+    async function presetMore() {
+        const choice=await showAppFormDialog({title:'预设操作',fields:[{name:'action',label:'操作',type:'select',options:[{value:'manage',label:'管理预设'},{value:'import',label:'导入预设'},{value:'export',label:'导出预设'}]}],confirmText:'继续'});
+        if(choice?.action==='manage')return managePresets();if(choice?.action==='import')return chooseImport();if(choice?.action==='export')return exportPresets();
     }
-    document.addEventListener('DOMContentLoaded',()=>searchModels($('api-model')));
+    function searchModels(select) {
+        if(!select||modelPickers.has(select))return;
+        select.hidden=true;
+        const trigger=button('选择模型',()=>openModelPicker(select));trigger.className='mio-model-trigger';trigger.setAttribute('aria-haspopup','dialog');
+        select.after(trigger);
+        const refresh=()=>{const text=select.selectedOptions[0]?.textContent||select.value||'选择模型';if(trigger.textContent!==text)trigger.textContent=text;trigger.disabled=select.disabled;};
+        select.addEventListener('change',refresh);modelPickers.set(select,{trigger,refresh});refresh();
+    }
+    async function openModelPicker(select) {
+        const promise=showAppFormDialog({title:'选择模型',fields:[{name:'query',label:'搜索名称或 ID',type:'search',placeholder:'输入部分关键词'},{name:'manual',label:'模型 ID',value:select.value,maxLength:512}],confirmText:'完成'});
+        const overlay=$('app-form-dialog');if(!overlay)return;overlay.classList.add('mio-model-dialog');
+        const form=overlay.querySelector('form'),query=form.querySelector('[name=query]'),manual=form.querySelector('[name=manual]');
+        const list=node('div',null,'mio-model-results');list.setAttribute('role','listbox');list.setAttribute('aria-label','模型');
+        const manualRow=manual.closest('label');manualRow.hidden=true;
+        const fallback=button('手动指定模型',()=>{manualRow.hidden=!manualRow.hidden;if(!manualRow.hidden)manual.focus();});fallback.className='mio-model-manual';
+        manualRow.before(list,fallback);
+        const render=()=>{
+            const filter=query.value.trim().toLocaleLowerCase();
+            const options=Array.from(select.options).filter(o=>o.value&&(`${o.value} ${o.textContent} ${modelNames.get(o.value)||''}`).toLocaleLowerCase().includes(filter));
+            list.replaceChildren();
+            if(!options.length){list.append(node('p','没有匹配的模型','api-field-tip'));return;}
+            for(const option of options){const item=button(modelNames.get(option.value)||option.textContent,()=>{setModel(select,option.value);select.dispatchEvent(new Event('change',{bubbles:true}));form.querySelector('.app-confirm-dialog-actions button[type=button]').click();});item.className='mio-model-option';item.setAttribute('role','option');item.setAttribute('aria-selected',String(select.value===option.value));if(item.textContent!==option.value)item.append(node('small',option.value));list.append(item);}
+        };
+        // The underlying select is never filtered, so searching cannot change the saved model.
+        query.oninput=render;render();
+        const observer=new MutationObserver(render);observer.observe(select,{childList:true,subtree:true});
+        const result=await promise;observer.disconnect();
+        if(result&&!manualRow.hidden&&result.manual.trim()){setModel(select,result.manual.trim());select.dispatchEvent(new Event('change',{bubbles:true}));}
+        modelPickers.get(select)?.refresh();
+    }
+    document.addEventListener('DOMContentLoaded',()=>{
+        let scheduled=false;
+        const refreshPickers=()=>{scheduled=false;document.querySelectorAll('select[id*="model"]').forEach(searchModels);for(const picker of modelPickers.values())picker.refresh();};
+        const observer=new MutationObserver(()=>{if(!scheduled){scheduled=true;requestAnimationFrame(refreshPickers);}});
+        observer.observe(document.body,{childList:true,subtree:true});document.addEventListener('change',refreshPickers);refreshPickers();
+        for(const strip of document.querySelectorAll('[id$="presets-control"]')){
+            const low=Array.from(strip.querySelectorAll('button')).filter(b=>/管理|导入|导出/.test(b.textContent));
+            if(!low.length)continue;low.forEach(b=>b.hidden=true);
+            strip.append(button('更多',async()=>{const choice=await showAppFormDialog({title:'预设操作',fields:[{name:'action',label:'操作',type:'select',options:low.map((b,i)=>({value:String(i),label:b.textContent.trim()}))}],confirmText:'继续'});if(choice)low[Number(choice.action)]?.click();}));
+        }
+    });
     function refresh(){for(const editor of editors.values())editor.refresh();}
-    global.FeatureApiSettings={mount,mountLegacy,mountRole,saveRole,saveRegistryFeature,persistRegistry,fetchModels,modelUrl,editors,managePresets,savePreset,importPresets,chooseImport,exportPresets,searchModels,refresh};
+    global.FeatureApiSettings={mount,mountLegacy,mountRole,saveRole,saveRegistryFeature,persistRegistry,fetchModels,modelUrl,editors,managePresets,savePreset,importPresets,chooseImport,exportPresets,searchModels,openModelPicker,refresh};
 })(window);

@@ -162,7 +162,7 @@
         for (const message of selected) {
             const hash = memoryFingerprint(message.text); characters += message.text.length;
             for (let start = 0; start < message.text.length;) {
-                if (units.length >= 100 || budget - used < 256) flush();
+                if (units.length >= 200 || budget - used < 256) flush();
                 const end = Math.min(message.text.length, start + budget - used - 128);
                 units.push({ id: message.id, hash, start, end, last: end === message.text.length });
                 used += end - start + 128; start = end;
@@ -365,6 +365,8 @@
                 const distance = Math.abs(nodeEventTimestamp(node) - nodeEventTimestamp(other));
                 const bothArchived = node?.source?.type === 'auto_archive' && other?.source?.type === 'auto_archive';
                 if (sameBatch || (bothArchived && distance < 24 * 60 * 60 * 1000)) add(node, other, 'temporal', sameBatch ? 0.5 : 0.3);
+                const historyEvidence = [node,other].every(n=>n?.source?.type==='history_archive' && n.source.startTimestamp>0);
+                if (historyEvidence && distance < 24*60*60*1000 && sharedEntities(node,other).length) add(node,other,'temporal',0.3);
                 if (sharedEntities(node, other).length) add(node, other, 'person', 0.6);
             });
         });

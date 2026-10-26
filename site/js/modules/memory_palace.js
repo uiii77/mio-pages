@@ -11,7 +11,7 @@
         let timer;
         return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('记忆处理超时，可稍后重试')), milliseconds); })]).finally(() => clearTimeout(timer));
     }
-    const ui = { characterId: '', room: 'all', query: '', editingId: '', linksId: '', eventBoxNodeId: '', eventBoxId: '', anticipationEditingId: '' };
+    const ui = { page:0,filterKey:'',characterId: '', room: 'all', query: '', editingId: '', linksId: '', eventBoxNodeId: '', eventBoxId: '', anticipationEditingId: '' };
 
     function ensureSettings(character) {
         if (!character) return;
@@ -117,13 +117,13 @@
             : `${String(config.url || config.baseUrl || '').replace(/\/$/, '')}/v1/chat/completions`;
         const headers = global.getApiConfigHeaders ? global.getApiConfigHeaders(config)
             : { 'Content-Type': 'application/json', ...(config.key ? { Authorization: `Bearer ${config.key}` } : {}) };
-        const response = await withTimeout(request(config, {
+        const response = await withTimeout(request(options.signal ? {...config,streamEnabled:false} : config, {
             model: config.model,
             messages: [{ role: 'user', content: buildExtractionPrompt(character, messages) + (options.existing?.length ? '\n[已有记忆，仅用于去重，不作为新事实来源]\n' + JSON.stringify(options.existing.map(n => ({id:n.id,content:n.content}))) + '\n仅当新事实与已有记忆含义完全一致时，返回该条事实及 mergeInto（已有记忆ID），补全来源；有新信息、变化或不同事件时必须独立保留。合并本批相同事实，避免碎片。' : '') }],
             temperature: Number.isFinite(Number(config.temperature)) ? Number(config.temperature) : 0.2,
             ...(options.signal ? {max_tokens:Math.min(2048,Math.max(256,Math.floor((Number(config.contextWindow || config.contextLength)||8192)/4)))} : {}),
             stream: false,
-        }, headers, endpoint, false, options.signal ? {signal:options.signal} : null), options.timeout || 45000);
+        }, headers, endpoint, false, options.signal ? {signal:options.signal,onUsage:options.onUsage,beforeRequest:options.onRequest} : null), options.timeout || 45000);
         return parseExtractionReply(response);
     }
 
@@ -156,7 +156,8 @@
         if (!job) return;
         const p = historyProgress(job), active = historyRuns.has(character.id);
         const labels = {running:active?'正在整理':'已保存，等待继续',paused:'已暂停',failed:'本批失败',completed:'整理完成',cancelled:'已取消'};
-        target.textContent = `${labels[job.status] || '等待继续'} · 共 ${job.total} 条，已处理 ${p.processed} 条，剩余 ${p.remaining} 条 · 批次 ${Math.min(p.completed+1,p.totalBatches)}/${p.totalBatches}（成功 ${p.completed}，失败 ${job.batches.filter(b=>b.status==='failed').length}）${job.error?' · '+job.error:''}`;
+        const summary=document.getElementById('palace-progress-open');if(summary){summary.hidden=false;summary.textContent=`${labels[job.status]||'整理进度'} · ${p.processed}/${job.total} 条 ›`;}
+        target.textContent = `${labels[job.status] || '等待继续'} · 共 ${job.total} 条，已处理 ${p.processed} 条，剩余 ${p.remaining} 条 · 批次 ${Math.min(p.completed+1,p.totalBatches)}/${p.totalBatches}（成功 ${p.completed}，失败 ${job.batches.filter(b=>b.status==='failed').length}）${job.error?' · '+job.error:''}${job.linkError?' · '+job.linkError:''}`;
         actions.querySelector('[data-history-action="pause"]').hidden = !active;
         const resume = actions.querySelector('[data-history-action="resume"]');
         resume.hidden = active; resume.textContent = job.status === 'failed' ? '重试失败批次' : '继续整理';
@@ -168,37 +169,44 @@
         const config = featureConfig('memoryProcess',character);
         if (!config) throw Error('请先配置主 API；记忆宫殿会自动继承');
         const plan = Core.planHistoryArchive(historyEntries(character), selection, config);
-        const job = {id:Core.id('mph'),status:'paused',createdAt:Date.now(),selection,...plan,error:'',stored:0,merged:0};
+        const job = {id:Core.id('mph'),status:'paused',createdAt:Date.now(),selection,...plan,concurrency:selection.concurrency===2?2:1,error:'',stored:0,merged:0};
         await putHistoryJob(character.id,job);
         return job;
     }
-    async function commitHistoryBatch(character, job, index, candidates, mergeTargets) {
+    async function commitHistoryBatch(character, job, index, candidates, mergeTargets, cache) {
         const batch = job.batches[index], ids = [...new Set(batch.units.map(u=>u.id))];
-        const current = new Map(historyEntries(character).map(m=>[m.id,m]));
+        const selectedIds=new Set(ids);
+        const current = new Map((character.history||[]).filter(m=>selectedIds.has(String(m.id))).map(m=>originalMessageEntry(m,true)).filter(Boolean).map(m=>[m.id,m]));
         if (batch.units.some(u=>!current.has(u.id)||Core.memoryFingerprint(current.get(u.id).text)!==u.hash)) throw Error('本批原消息已变化，未保存结果；请重新选择范围');
         // Nodes and the success cursor commit together; an interrupted write cannot leave half a batch.
         await dexieDB.transaction('rw',dexieDB.memoryPalaceNodes,dexieDB.globalSettings,async()=>{
             const saved = await getHistoryJob(character.id);
             if (saved?.id !== job.id) throw Error('整理任务已变化，请重新打开');
             if (saved.batches[index]?.status === 'success') return;
-            const existing = await listNodes(character.id);
+            const existing = cache || await listNodes(character.id);
+            const changed=[];
             for (const candidate of candidates) {
                 const sources = candidate.sourceMessageIds.filter(id=>ids.includes(id));
                 if (!sources.length) sources.push(...ids);
                 const identical = existing.find(n => !n.archived && n.content.trim() === candidate.content.trim() && (n.subject || '') === (candidate.subject || '') && (n.layer !== 'episodes' || (n.source?.messageIds || []).some(id=>sources.includes(id))));
                 const proposed = mergeTargets.find(n=>n.id===candidate.mergeInto);
                 const semantic = proposed && existing.find(n=>n.id===proposed.id && n.content===proposed.content && !n.archived);
-                const match = identical || semantic;
+                const proposedMatch = identical || semantic;
+                const match=proposedMatch ? await dexieDB.memoryPalaceNodes.get(proposedMatch.id) : null;
+                if(match && match.content!==proposedMatch.content)throw Error('记忆已被编辑，整理结果已缓存，请重试保存');
                 if (match) {
                     // Keep existing wording, room, annotations and ID; only append evidence.
                     match.source = {...match.source,messageIds:[...new Set([...(match.source?.messageIds || []),...sources])]};
                     match.revision = (match.revision || 0)+1; match.updatedAt=Date.now();
-                    await dexieDB.memoryPalaceNodes.put(match); job.merged++; continue;
+                    await dexieDB.memoryPalaceNodes.put(match);changed.push(match.id);existing[existing.findIndex(n=>n.id===match.id)]=match; job.merged++; continue;
                 }
-                const node = Core.normalizeNode({...candidate,id:Core.id('mpn'),characterId:character.id,source:{type:'history_archive',jobId:job.id,batch:index,messageIds:sources},revision:1});
+                const times=sources.map(id=>current.get(id)?.timestamp).filter(t=>t>0);
+                const node = Core.normalizeNode({...candidate,id:Core.id('mpn'),characterId:character.id,source:{type:'history_archive',jobId:job.id,batch:index,messageIds:sources,startTimestamp:times.length?Math.min(...times):0,endTimestamp:times.length?Math.max(...times):0},revision:1});
                 await dexieDB.memoryPalaceNodes.put(node); existing.push(node); job.stored++;
+                changed.push(node.id);
             }
             batch.status='success'; batch.error=''; batch.finishedAt=Date.now(); job.error='';
+            batch.nodeIds=changed;delete batch.result;delete batch.mergeTargets;
             await putHistoryJob(character.id,job);
         });
         runtime.delete(character.id);
@@ -220,75 +228,93 @@
             return runHistoryJob(character,true);
         });
         if (archiveLocks.has(character.id)) throw Error('自动整理正在完成当前批，请稍后继续');
-        const control = {action:'',controller:null}; historyRuns.set(character.id,control); archiveLocks.add(character.id);
-        let job;
+        const control = {action:''}; historyRuns.set(character.id,control); archiveLocks.add(character.id);
+        let job, nodes;
         try {
             job=await getHistoryJob(character.id);
             if (!job || ['completed','cancelled'].includes(job.status)) return;
+            if(job.status==='running'&&job.batches.some(b=>b.status==='running')){
+                job.status='failed';job.error='上次请求中断，服务可能已计费；已返回的结果保留，请核对后再点重试';
+                job.batches.filter(b=>b.status==='running').forEach(b=>{b.status='failed';b.error=job.error;});await putHistoryJob(character.id,job);return job;
+            }
             job.status='running'; job.error=''; await putHistoryJob(character.id,job);
             const entries=historyEntries(character), byId=new Map(entries.map(m=>[m.id,m]));
             if (byId.size!==entries.length) throw Error('历史记录包含重复 ID，请先核对');
-            for (let index=0;index<job.batches.length;index++) {
-                const batch=job.batches[index]; if (batch.status==='success') continue;
-                if (control.action) break;
-                if (!character.memoryPalaceEnabled) {control.action='paused';break;}
-                const messages=batch.units.map(unit=>{
-                    const entry=byId.get(unit.id);
-                    if (!entry || Core.memoryFingerprint(entry.text)!==unit.hash) throw Error('所选消息已修改或缺失，请取消任务并重新选择范围；已保存记忆不受影响');
-                    return {...entry,text:entry.text.slice(unit.start,unit.end)};
-                });
-                batch.status='running'; await putHistoryJob(character.id,job); await renderHistoryProgress(character);
-                let result, existing=[];
-                for (let attempt=0;attempt<3;attempt++) {
-                    if (control.action) break;
-                    batch.attempts++; control.controller=new AbortController();
-                    const timer=setTimeout(()=>control.controller?.abort(),45000);
+            nodes=await listNodes(character.id);
+            let saveQueue=Promise.resolve();
+            const checkpoint=()=>{saveQueue=saveQueue.then(()=>putHistoryJob(character.id,job));return saveQueue;};
+            while(job.batches.some(b=>b.status!=='success')) {
+                if(control.action || !character.memoryPalaceEnabled) {control.action ||= 'paused';break;}
+                const pending=job.batches.filter(b=>b.status!=='success'&&b.status!=='ready').slice(0,job.concurrency===2?2:1);
+                await Promise.all(pending.map(async batch=>{
+                    const started=performance.now();
+                    batch.metrics ||= {apiMs:0,prepareMs:0,writeMs:0,requests:0,inputTokens:0,outputTokens:0,usageReported:false};
+                    const metrics=batch.metrics;
                     try {
-                        // Include a bounded relevant set for cross-batch semantic deduplication.
-                        const words=new Set(messages.flatMap(m=>m.text.toLocaleLowerCase().match(/[\p{L}\p{N}]{2,12}/gu)||[]));
-                        existing=(await listNodes(character.id)).filter(n=>!n.archived).map(n=>({n,score:[...words].reduce((sum,w)=>sum+Number(n.content.includes(w)),0)})).sort((a,b)=>b.score-a.score || b.n.updatedAt-a.n.updatedAt).slice(0,6).map(x=>x.n);
+                        const messages=batch.units.map(unit=>{const m=byId.get(unit.id);if(!m||Core.memoryFingerprint(m.text)!==unit.hash)throw Error('原消息已修改或缺失，请重新选择范围');return {...m,text:m.text.slice(unit.start,unit.end)};});
+                        const words=Core.tokenize(messages.map(m=>m.text).join(' '));
+                        const wordSet=new Set(words);
+                        let size=0;
                         const config=featureConfig('memoryProcess',character)||{};
-                        const memoryBudget=Math.min(1200,Math.floor((Number(config.contextWindow || config.contextLength)||8192)*0.15));
-                        let chars=0; existing=existing.filter(n=>(chars+=n.content.length)<=memoryBudget);
-                        result=await extractArchiveChunk(character,messages,{signal:control.controller.signal,existing});
-                        break;
-                    } catch(error) {
-                        if (control.action) break;
-                        const message=error.name==='AbortError'?'请求超时':error.message || String(error);
-                        batch.error=message; job.error=message;
-                        if (/context|token.*limit|too (?:long|large)|413|上下文|超时|timeout/i.test(message)) {
-                            const halves=splitHistoryBatch(batch);
-                            if (halves) {
-                                job.batches.splice(index,1,...halves.map(units=>({units,status:'pending',attempts:0})));
-                                await putHistoryJob(character.id,job); index--; result=null; break;
-                            }
+                        const budget=Math.min(1200,Math.floor((Number(config.contextWindow||config.contextLength)||8192)*0.15));
+                        const existing=nodes.filter(n=>!n.archived).map(n=>({n,score:Core.tokenize(n.content).reduce((sum,w)=>sum+Number(wordSet.has(w)),0)})).sort((a,b)=>b.score-a.score).slice(0,6).map(x=>x.n).filter(n=>(size+=n.content.length)<=budget);
+                        metrics.prepareMs+=performance.now()-started;
+                        batch.status='running';await checkpoint();
+                        for(let attempt=0;attempt<3;attempt++) {
+                            const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),45000),apiStart=performance.now();
+                            batch.attempts++;metrics.requests++;
+                            try {
+                                batch.result=await extractArchiveChunk(character,messages,{signal:controller.signal,existing,onRequest:()=>{metrics.transportRequests=(metrics.transportRequests||0)+1;},onUsage:usage=>{
+                                    if(!usage)return;metrics.usageReported=true;
+                                    metrics.inputTokens+=Number(usage.prompt_tokens??usage.input_tokens??usage.promptTokenCount)||0;
+                                    metrics.outputTokens+=Number(usage.completion_tokens??usage.output_tokens??usage.candidatesTokenCount)||0;
+                                }});
+                                batch.mergeTargets=existing.map(n=>({id:n.id,content:n.content}));batch.status='ready';batch.error='';
+                                break;
+                            }catch(error){
+                                // A timed-out request may already be billed. Do not silently resubmit it.
+                                if(/429|rate.limit|限流/i.test(error.message)&&attempt<2){job.concurrency=1;await new Promise(r=>setTimeout(r,1000*2**attempt));continue;}
+                                throw error;
+                            }finally{clearTimeout(timer);metrics.apiMs+=performance.now()-apiStart;}
                         }
-                        if (attempt===2 || !/429|50[0234]|rate|限流|timeout|超时|fetch|network/i.test(message)) throw error;
-                        await putHistoryJob(character.id,job); await renderHistoryProgress(character);
-                        await new Promise(resolve=>setTimeout(resolve,1000*2**attempt));
-                    } finally {clearTimeout(timer);control.controller=null;}
+                        metrics.messageCount=new Set(batch.units.map(u=>u.id)).size;
+                        metrics.estimatedInputTokens=Math.ceil(messages.reduce((n,m)=>n+m.text.length,0)/2)+800;
+                    }catch(error){batch.status='failed';batch.error=error.name==='AbortError'?'请求超时，服务可能已计费；请核对后重试':error.message||String(error);}
+                    metrics.elapsedMs=(metrics.elapsedMs||0)+performance.now()-started;
+                    await checkpoint();
+                }));
+                for(let index=0;index<job.batches.length;index++) {
+                    const batch=job.batches[index];if(batch.status==='success')continue;
+                    if(batch.status==='failed'){
+                        if(/context|token.*limit|too (?:long|large)|413|上下文/i.test(batch.error||'')){
+                            const halves=splitHistoryBatch(batch);
+                            if(halves){job.rejectedRequests=(job.rejectedRequests||0)+(batch.metrics?.requests||0);job.batches.splice(index,1,...halves.map(units=>({units,status:'pending',attempts:0})));await checkpoint();break;}
+                        }
+                        throw Error(batch.error);
+                    }
+                    if(batch.status!=='ready')break;
+                    const writeStart=performance.now();
+                    await commitHistoryBatch(character,job,index,batch.result,batch.mergeTargets||[],nodes);
+                    batch.metrics ||= {};batch.metrics.writeMs=(batch.metrics.writeMs||0)+performance.now()-writeStart;
+                    await checkpoint();
                 }
-                if (control.action) break;
-                if (result===null) continue;
-                await commitHistoryBatch(character,job,index,result,existing);
                 await renderHistoryProgress(character);
             }
-            job.status=control.action || 'completed';
-            for (const batch of job.batches) if(batch.status==='running')batch.status='pending';
-            await putHistoryJob(character.id,job);
+            job.status=control.action||'completed';await putHistoryJob(character.id,job);
         } catch(error) {
-            // Reload the last committed cursor after a rolled-back transaction.
             job=await getHistoryJob(character.id);
-            if(job){job.status=control.action||'failed';job.error=error.message || String(error);const batch=job.batches.find(b=>b.status!=='success');if(batch)batch.status='failed';await putHistoryJob(character.id,job);}
+            if(job){job.status=control.action||'failed';job.error=error.message||String(error);await putHistoryJob(character.id,job);}
         } finally {
+            // Rebuild evidenced links even after a pause/failure. A later resume retries link maintenance, not model extraction.
+            if(job){try{const changed=job.batches.flatMap(b=>b.nodeIds||[]);if(changed.length)await refreshAutomaticLinks(character.id,[...new Set(changed)]);job.linkError='';}catch(error){job.linkError='关联更新失败：'+error.message;}await putHistoryJob(character.id,job);}
             historyRuns.delete(character.id);archiveLocks.delete(character.id);
-            await renderHistoryProgress(character); if(character.id===ui.characterId)await render();
+            await renderHistoryProgress(character);if(character.id===ui.characterId)await render();
         }
         return job;
     }
     async function controlHistoryJob(character, action) {
         const running=historyRuns.get(character.id);
-        if(running){if(action==='paused'||action==='cancelled'){running.action=action;running.controller?.abort();}return;}
+        if(running){if(action==='paused'||action==='cancelled'){running.action=action;showToast('将在当前请求保存后停止，不重复发送');}return;}
         if (action==='resume') return runHistoryJob(character);
         const update=async()=>{const job=await getHistoryJob(character.id);if(job){job.status=action;await putHistoryJob(character.id,job);}await renderHistoryProgress(character);};
         if(global.navigator?.locks)return navigator.locks.request(`mio-memory-archive:${character.id}`,{ifAvailable:true},lock=>{if(!lock)throw Error('任务在其他页面运行，请在该页面暂停');return update();});
@@ -307,8 +333,8 @@
     }
     async function chooseHistoryRange(character) {
         const previous=await getHistoryJob(character.id);
-        if(previous&&!['completed','cancelled'].includes(previous.status)){await renderHistoryProgress(character);showToast('已有整理任务，请在进度下继续或取消');return;}
-        const chosen=await showAppFormDialog({title:'整理聊天记忆',message:'保留原聊天和已有记忆，整理文字及语音原文。自动整理设置不变。',fields:[{name:'mode',label:'整理范围',type:'select',value:'all',options:[{value:'all',label:'全部历史'},{value:'custom',label:'自选范围'},{value:'recent',label:'最近消息'}]}],confirmText:'下一步'});
+        if(previous&&!['completed','cancelled'].includes(previous.status)){await renderHistoryProgress(character);document.getElementById('palace-progress-modal').classList.add('visible');return;}
+        const chosen=await showAppFormDialog({title:'整理聊天记忆',message:'保留原聊天和已有记忆，整理文字及语音原文。自动整理设置不变。',fields:[{name:'mode',label:'整理范围',type:'select',value:'all',options:[{value:'all',label:'全部历史'},{value:'custom',label:'自选范围'},{value:'recent',label:'最近消息'}]},{name:'concurrency',label:'请求调度',type:'select',value:'1',options:[{value:'1',label:'稳妥 · 逐批整理'},{value:'2',label:'加速 · 最多同时 2 批'}]}],confirmText:'下一步'});
         if(!chosen)return;
         let selection=chosen;
         if(chosen.mode==='recent'){
@@ -330,12 +356,14 @@
                 if(selection.start>selection.end)throw Error('结束范围不能早于开始范围');
             }
         }
+        selection.concurrency=Number(chosen.concurrency)||1;
         const plan=Core.planHistoryArchive(historyEntries(character),selection,featureConfig('memoryProcess',character)||{});
         const confirmed=await showAppConfirmDialog({title:'开始整理？',message:`所选 ${plan.total} 条消息，预计 ${plan.batches.length} 次提取请求。输入与输出约 ${Math.ceil(plan.characters/4+plan.batches.length*500).toLocaleString()}–${Math.ceil(plan.characters+plan.batches.length*3000).toLocaleString()} Token（估算，重试或缩小批次会增加调用）。\n可暂停并在刷新后继续；保持此页面打开可连续完成。${previous?'重新整理仅追加或合并来源，不覆盖已有记忆。':''}`,confirmText:'开始整理',cancelText:'暂不开始'});
         if(confirmed!==true && confirmed!=='confirm')return;
         const create=async()=>createHistoryJob(character,selection);
         if(global.navigator?.locks)await navigator.locks.request(`mio-memory-archive:${character.id}`,{ifAvailable:true},lock=>{if(!lock)throw Error('此角色正在整理，请稍后继续');return create();});
         else await create();
+        document.getElementById('palace-progress-modal').classList.add('visible');
         void runHistoryJob(character).catch(error=>showToast(error.message));
     }
 
@@ -760,6 +788,12 @@
     async function refreshAutomaticLinks(characterId, nodeIds) {
         if (!dexieDB?.memoryPalaceLinks || !characterId || !Array.isArray(nodeIds) || !nodeIds.length) return [];
         const [nodes, links] = await Promise.all([listNodes(characterId), listLinks(characterId)]);
+        const owner=(db.characters||[]).find(c=>c.id===characterId);
+        const times=new Map((owner?.history||[]).map(m=>[String(m.id),Number(m.timestamp)||0]));
+        for(const node of nodes)if(node.source?.type==='history_archive'&&!node.source.startTimestamp){
+            const evidence=(node.source.messageIds||[]).map(id=>times.get(String(id))).filter(t=>t>0);
+            if(evidence.length)node.source={...node.source,startTimestamp:Math.min(...evidence),endTimestamp:Math.max(...evidence)};
+        }
         const changed = new Set(nodeIds);
         const affected = nodes.filter(node => changed.has(node.id));
         if (!affected.length) return [];
@@ -1136,13 +1170,6 @@
         let nodes = ui.room === 'all' ? allNodes.slice() : allNodes.filter(node => customRoom ? customRoom.nodeIds.includes(node.id) : node.room === ui.room);
         const layer = document.getElementById('palace-layer-filter')?.value || 'all';
         nodes = nodes.filter(node => layer === 'archived' ? node.archived : !node.archived && (layer === 'all' || node.layer === layer));
-        const [allLinks, eventBoxes] = await Promise.all([listLinks(character.id), listEventBoxes(character.id)]);
-        const eventBoxById = new Map(eventBoxes.map(box => [box.id, box]));
-        const linkCounts = new Map();
-        allLinks.forEach(link => {
-            linkCounts.set(link.sourceId, (linkCounts.get(link.sourceId) || 0) + 1);
-            linkCounts.set(link.targetId, (linkCounts.get(link.targetId) || 0) + 1);
-        });
         const query = String(document.getElementById('memory-palace-search')?.value || '').trim().toLocaleLowerCase();
         if (query) nodes = nodes.filter(node => `${node.content}\n${node.tags.join(' ')}\n${node.entities.join(' ')}`.toLocaleLowerCase().includes(query));
         if (summary) {
@@ -1157,14 +1184,17 @@
         }
         global.MemoryPalaceMaintenance?.updateStatus(character);
         await renderHistoryProgress(character);
-        container.innerHTML = nodes.length ? nodes.map(node => `<article class="memory-palace-card" data-id="${node.id}">
-            <div class="memory-palace-card-head"><span>${escapeHtml(roomLabels.get(node.room) || Core.ROOMS[node.room]?.label || node.room)}</span><span>重要性 ${node.importance}</span>${node.pinned ? '<span>📌</span>' : ''}${node.embedded ? '<span>向量已就绪</span>' : '<span class="is-warning">关键词检索</span>'}</div>
-            <div class="memory-palace-card-content">${escapeHtml(node.content)}</div>
-            <div class="memory-palace-source">${escapeHtml(global.MemoryGovernanceCore?.LAYERS[node.layer] || '')}${node.archived ? ` · ${escapeHtml(node.archiveReason)} <button class="btn btn-small btn-secondary" data-action="restore">恢复并核对</button>` : ''}</div>
-            <div class="memory-palace-tags">${node.tags.map(tag => `<span>${escapeHtml(tag)}</span>`).join('')}</div>
-            <div class="memory-palace-source">${escapeHtml(sourceSummary(node))}${node.eventBoxId && eventBoxById.has(node.eventBoxId) ? ` · 事件盒：${escapeHtml(eventBoxById.get(node.eventBoxId).name)}` : ''}</div>
-            <div class="memory-palace-actions"><button class="btn btn-small btn-secondary" data-action="rooms">整理到房间</button><button class="btn btn-small btn-secondary" data-action="links">关联 ${linkCounts.get(node.id) || 0}</button><button class="btn btn-small btn-secondary" data-action="event-box">事件盒</button><button class="btn btn-small btn-secondary" data-action="edit">编辑</button><button class="btn btn-small btn-secondary" data-action="embed">重嵌入</button><button class="btn btn-small btn-danger" data-action="delete">删除</button></div>
-        </article>`).join('') : '<div class="memory-palace-empty">这个房间还没有记忆</div>';
+        const filterKey=[character.id,ui.room,layer,query].join('|');if(ui.filterKey!==filterKey){ui.page=0;ui.filterKey=filterKey;}
+        nodes.sort((a,b)=>(b.source?.startTimestamp||b.createdAt)-(a.source?.startTimestamp||a.createdAt));
+        const pages=Math.max(1,Math.ceil(nodes.length/24));ui.page=Math.min(ui.page,pages-1);
+        container.innerHTML = nodes.length ? nodes.slice(ui.page*24,(ui.page+1)*24).map(node => `<article class="memory-palace-card" data-id="${escapeHtml(node.id)}">
+            <div class="memory-palace-card-head"><span>${escapeHtml(roomLabels.get(node.room)||node.room)}</span><time>${escapeHtml(new Date(node.source?.startTimestamp||node.createdAt).toLocaleDateString())}</time></div>
+            <div class="memory-palace-card-content palace-preview">${escapeHtml(node.content)}</div>
+            <div class="memory-palace-tags">${node.tags.slice(0,2).map(tag=>`<span>${escapeHtml(tag)}</span>`).join('')}</div>
+            <button class="palace-detail-link" data-action="detail">查看详情 ›</button>
+        </article>`).join('') : '<div class="memory-palace-empty">这个范围还没有记忆</div>';
+        const pagination=document.getElementById('palace-pages');if(pagination){pagination.innerHTML=`<button class="btn btn-small btn-secondary" data-page="-1" ${ui.page===0?'disabled':''}>上一页</button><span>${ui.page+1}/${pages} · ${nodes.length} 条</span><button class="btn btn-small btn-secondary" data-page="1" ${ui.page===pages-1?'disabled':''}>下一页</button>`;}
+
     }
 
     function openEditor(node) {
@@ -1571,7 +1601,8 @@
             finally { button.disabled = false; }
         });
         document.getElementById('memory-palace-room-filter')?.addEventListener('change', event => { ui.room = event.target.value; void render(); });
-        document.getElementById('memory-palace-search')?.addEventListener('input', () => void render());
+        let searchTimer;
+        document.getElementById('memory-palace-search')?.addEventListener('input',()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>void render(),180);});
         document.getElementById('memory-palace-api-open-btn')?.addEventListener('click', () => {
             const back = document.querySelector('#api-settings-screen .back-btn');
             if (back) back.dataset.target = 'memory-palace-screen';
@@ -1590,6 +1621,18 @@
             try { const count = await reembed(ui.characterId); showToast(`已重建 ${count} 条向量`); await render(); }
             catch (error) { showToast(error.message || '重建失败'); }
         });
+        document.getElementById('palace-manage-open').onclick=()=>document.getElementById('palace-manage-modal').classList.add('visible');
+        document.getElementById('palace-manage-modal').addEventListener('click',event=>{if(['memory-palace-relationship-btn','memory-palace-room-plates-btn','memory-palace-anticipations-btn','memory-palace-digest-reports-btn','memory-palace-api-open-btn'].includes(event.target.closest('button')?.id))document.getElementById('palace-manage-modal').classList.remove('visible');},true);
+        document.getElementById('palace-progress-open').onclick=()=>document.getElementById('palace-progress-modal').classList.add('visible');
+        document.querySelectorAll('[data-palace-close]').forEach(button=>button.onclick=()=>document.getElementById(button.dataset.palaceClose).classList.remove('visible'));
+        document.getElementById('palace-relink-btn').onclick=async event=>{const button=event.currentTarget;button.disabled=true;try{const nodes=await listNodes(ui.characterId);const links=await refreshAutomaticLinks(ui.characterId,nodes.map(n=>n.id));showToast(`已核对 ${nodes.length} 条记忆，生成 ${links.length} 条有依据的关联`);}catch(e){showToast(e.message);}finally{button.disabled=false;}};
+        document.getElementById('palace-pages').onclick=event=>{const button=event.target.closest('[data-page]');if(button){ui.page+=Number(button.dataset.page);void render().then(()=>document.getElementById('memory-palace-list').scrollIntoView({block:'start'}));}};
+        document.getElementById('palace-metrics-open').onclick=async()=>{
+            const box=document.getElementById('palace-history-metrics');box.hidden=!box.hidden;if(box.hidden)return;
+            const job=await getHistoryJob(ui.characterId);if(!job){box.textContent='暂无任务';return;}
+            const success=job.batches.filter(b=>b.status==='success').length;
+            box.innerHTML=`<p>成功 ${success}/${job.batches.length} 批 · ${Math.round(success/job.batches.length*100)}%</p>`+job.batches.map((b,i)=>{const m=b.metrics||{};return `<p>第 ${i+1} 批 · ${b.units.filter(u=>u.last).length} 条 · ${escapeHtml(b.status)}<br>请求 ${m.transportRequests||m.requests||b.attempts||0} 次 · 模型 ${((m.apiMs||0)/1000).toFixed(2)}s · 准备 ${Math.round(m.prepareMs||0)}ms · 写入 ${Math.round(m.writeMs||0)}ms<br>${m.usageReported?`Token：输入 ${m.inputTokens} / 输出 ${m.outputTokens}`:`服务未报告用量；输入估算 ${m.estimatedInputTokens||'—'} Token`}</p>`;}).join('');
+        };
         document.getElementById('memory-palace-archive-now-btn')?.addEventListener('click', () => {
             const character=currentCharacter();
             if(character)void chooseHistoryRange(character).catch(error=>showToast(error.message));
@@ -1599,10 +1642,16 @@
             const character=currentCharacter();
             if(action&&character)void controlHistoryJob(character,action==='pause'?'paused':action==='cancel'?'cancelled':action).catch(error=>showToast(error.message));
         });
-        document.getElementById('memory-palace-list')?.addEventListener('click', async event => {
+        const handleMemoryAction=async event => {
             const card = event.target.closest('.memory-palace-card'); const action = event.target.closest('[data-action]')?.dataset.action;
             if (!card || !action) return;
             const node = await getNode(card.dataset.id); if (!node) return;
+            if(action==='detail'){
+                const links=await linksForNode(node.characterId,node.id);
+                document.getElementById('palace-detail-body').innerHTML=`<article class="memory-palace-card" data-id="${escapeHtml(node.id)}"><p class="palace-detail-content">${escapeHtml(node.content)}</p><p class="memory-palace-source">${escapeHtml(sourceSummary(node))} · ${escapeHtml(new Date(node.source?.startTimestamp||node.createdAt).toLocaleString())}</p><p>${escapeHtml(node.entities.join(' · '))}</p><div class="memory-palace-actions">${[['rooms','整理到房间'],['links','关联 '+links.length],['event-box','事件与时间线'],['edit','编辑'],['embed','重嵌入'],...(node.archived?[['restore','恢复并核对']]:[]),['delete','删除']].map(([action,label])=>`<button class="btn btn-small ${action==='delete'?'btn-danger':'btn-secondary'}" data-action="${action}">${label}</button>`).join('')}</div></article>`;
+                document.getElementById('palace-detail-modal').classList.add('visible');return;
+            }
+            document.getElementById('palace-detail-modal').classList.remove('visible');
             if (action === 'restore') { await saveNode({ ...node, archived:false, archiveReason:'', conflictGroup:'', representativeId:'', validUntil:null, pinned:true }); await render(); openEditor(await getNode(node.id)); return; }
             if (action === 'rooms') { await organizeNodeRooms(node); return; }
             if (action === 'links') { await openLinks(node); return; }
@@ -1610,7 +1659,9 @@
             if (action === 'edit') openEditor(node);
             if (action === 'embed') { try { await reembed(node.characterId, [node.id]); showToast('向量已重建'); await render(); } catch (error) { showToast(error.message || '重建失败'); } }
             if (action === 'delete' && (await showAppConfirmDialog({ title: '确认删除', message: '确定删除这条记忆吗？', confirmText: '删除', dismissText: '' }) === 'confirm')) { await deleteNode(node.id); showToast('已删除'); await render(); }
-        });
+        };
+        document.getElementById('memory-palace-list')?.addEventListener('click',handleMemoryAction);
+        document.getElementById('palace-detail-body')?.addEventListener('click',handleMemoryAction);
         document.getElementById('memory-palace-editor-cancel')?.addEventListener('click', () => document.getElementById('memory-palace-editor-modal').classList.remove('visible'));
         document.getElementById('memory-palace-editor-save')?.addEventListener('click', async () => {
             const button = document.getElementById('memory-palace-editor-save'); button.disabled = true;

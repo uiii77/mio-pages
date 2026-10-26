@@ -58,7 +58,7 @@ async function fetchAiResponse(settings, requestBody, headers, endpoint, forceSt
     const isStreamResponse = streamEnabled || contentType.includes('text/event-stream');
 
     if (isStreamResponse) {
-        return await readStreamResponse(response, provider, tokenRecord);
+        return await readStreamResponse(response, provider, tokenRecord, requestOptions?.onUsage);
     } else {
         // 普通 JSON 响应 (带容错处理)
         const text = await response.text();
@@ -86,11 +86,12 @@ async function fetchAiResponse(settings, requestBody, headers, endpoint, forceSt
         }
 
         if (tokenRecord && typeof captureChatTokenUsage === 'function') captureChatTokenUsage(null, data, tokenRecord);
+        requestOptions?.onUsage?.(data.usage || data.usageMetadata || null);
         return extractAiProviderResponse(data, provider).content;
     }
 }
 
-async function readStreamResponse(response, provider, tokenRecord = null) {
+async function readStreamResponse(response, provider, tokenRecord = null, onUsage = null) {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let fullResponse = "";
@@ -111,6 +112,7 @@ async function readStreamResponse(response, provider, tokenRecord = null) {
                     if (data.trim() !== "[DONE]") {
                         try {
                             const json = JSON.parse(data);
+                            if (json.usage || json.usageMetadata) onUsage?.(json.usage || json.usageMetadata);
                             if (tokenRecord && typeof captureChatTokenUsage === 'function') captureChatTokenUsage(null, json, tokenRecord);
                             fullResponse += extractAiProviderResponse(json, provider, true).content;
                         } catch (e) {}
