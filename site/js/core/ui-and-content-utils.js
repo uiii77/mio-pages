@@ -1332,6 +1332,11 @@ function applyApiNodeRouteParameterMode(config, route) {
 }
 
 function getApiConfigForFeature(feature, legacyConfig, ownerContext) {
+    const dedicatedKey={summary:'summaryApiSettings',memorySummary:'summaryApiSettings',journal:'summaryApiSettings',background:'backgroundApiSettings',followUp:'backgroundApiSettings',peek:'peekApiSettings',supplementPersona:'supplementPersonaApiSettings'}[feature];
+    const dedicated=dedicatedKey&&typeof db!=='undefined'?db[dedicatedKey]:null;
+    if(dedicated?.enabled!==false&&isApiConfigReady(dedicated))legacyConfig=dedicated;
+    if (!['embedding','rerank','stt','tts','imageGeneration','vector','lifeSource'].includes(feature)
+        && !legacyConfig?._bindingError && (!isApiConfigReady(legacyConfig) || legacyConfig.enabled === false)) legacyConfig = typeof db !== 'undefined' ? db.apiSettings : legacyConfig;
     if (ownerContext && typeof window !== 'undefined' && window.RoleApiBindings) {
         const bound = window.RoleApiBindings.resolve(feature, legacyConfig, ownerContext);
         if (bound) return bound;

@@ -171,10 +171,11 @@
                 onClose: node => { if (node) setChatNode(node.id); $('role-api-modal').classList.add('visible'); render(); }
             });
         }));
-        const presets = selectOptions([['', '从主 API 预设创建配置'], ...(db.apiPresets || []).map((preset, index) => [String(index), preset.name])], '');
+        const sharedPresets = window.FeatureApiRegistry.listPresets(db).map(p=>({name:p.name,data:{...p.config,apiUrl:p.config.url,apiKey:p.config.key}}));
+        const presets = selectOptions([['', '从共享预设选择配置'], ...sharedPresets.map((preset, index) => [String(index), preset.name])], '');
         presets.addEventListener('change', async () => {
             if (presets.value === '') return;
-            const preset = db.apiPresets[Number(presets.value)];
+            const preset = sharedPresets[Number(presets.value)];
             try {
                 const data = preset.data || {};
                 const params = normalizeApiGenerationParams(data.generationParams, false, data.temperature);

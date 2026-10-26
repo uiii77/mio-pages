@@ -27,6 +27,19 @@
         'provider', 'protocol', 'model', 'url', 'baseUrl', 'endpoint', 'dimensions', 'topN',
         'temperature', 'stream', 'streamEnabled', 'timeoutMs'
     ]);
+    const PRESET_STORES = ['apiPresets','summaryApiPresets','backgroundApiPresets','supplementPersonaApiPresets','peekApiPresets','imageRecognitionApiPresets','stickerRecognitionApiPresets'];
+    function stateFor(options = {}) { return options.state || (typeof db !== 'undefined' ? db : {}); }
+    function ready(config) {
+        return !!(config && config.enabled !== false && config.url && config.model
+            && (config.key || config.apiKey || config.authMode === 'none' || config.authMode === 'custom' || config.provider === 'openai-noauth'));
+    }
+    function listPresets(state = stateFor()) {
+        return PRESET_STORES.flatMap(store => (Array.isArray(state?.[store])?state[store]:[]).filter(p=>p?.name && p.data && (!p.data.service||p.data.service==='llm')).map(p => ({
+            ref:store+':'+(p.id||p.name), name:p.name, store,
+            config:{...clone(p.data),provider:p.data.provider||'newapi',url:p.data.apiUrl||p.data.url||'',key:p.data.apiKey||p.data.key||'',model:p.data.model||''}
+        })));
+    }
+    function presetConfig(ref, state) { return listPresets(state).find(p=>p.ref===ref)?.config || null; }
 
     function definitions() {
         const legacy = typeof API_NODE_FEATURES === 'object' && API_NODE_FEATURES
@@ -68,6 +81,7 @@
             configId: normalizeId(source.configId || source.primaryConfigId),
             fallbackMode: FALLBACK_MODES.has(source.fallbackMode) ? source.fallbackMode : 'none'
         };
+        if (typeof source.presetRef === 'string') result.presetRef = source.presetRef;
         if (source.parameterOverrides && typeof source.parameterOverrides === 'object') {
             result.parameterOverrides = clone(source.parameterOverrides);
         }
@@ -90,6 +104,7 @@
             configId: normalizeId(value.configId || value.primaryConfigId),
             fallbackMode: FALLBACK_MODES.has(value.fallbackMode) ? value.fallbackMode : 'none',
             parameterOverrides: normalizeOverrides(value.parameterOverrides),
+            presetRef: typeof value.presetRef === 'string' ? value.presetRef : '',
             source, ownerId: ownerId || ''
         };
     }
@@ -163,17 +178,35 @@
     function resolveIndependent(feature, options = {}) {
         const definition = INDEPENDENT_DEFINITIONS[feature];
         if (!definition) return unavailable(feature, 'unknown-feature');
-        const registry = normalizeRegistry(options.registry || options.state || (typeof db !== 'undefined' ? db : null));
+        const state = stateFor(options);
+        const registry = readRegistry(options.registry || state);
         const binding = pickBinding(options.context, feature);
+        if (definition.kind === 'llm') {
+            const main = options.fallbackConfig || state.apiSettings;
+            const fromRoute = (route, source) => {
+                if (!route || route.enabled === false) return null;
+                const config = route.presetRef ? presetConfig(route.presetRef, state) : registry.configs[route.configId];
+                if (!config || !['llm',undefined].includes(config.service) || !ready(config)) return null;
+                return {feature,kind:'llm',enabled:true,configured:true,source,configId:route.configId||'',presetRef:route.presetRef||'',fallback:false,config:applyOverrides(config,route.parameterOverrides)};
+            };
+            const specific = fromRoute(binding, binding?.source || 'character');
+            if (specific) return specific;
+            // Existing role node bindings remain the owner of character chat overrides.
+            if (!binding && options.context && typeof window.RoleApiBindings?.resolve === 'function') {
+                const owner = window.RoleApiBindings.resolve(feature, main, options.context);
+                if (owner?._bindingError) return unavailable(feature,'role-config-invalid','character',{message:owner._bindingError});
+                if (ready(owner)) return {feature,kind:'llm',enabled:true,configured:true,source:'character',config:owner,fallback:false};
+            }
+            const globalRoute = fromRoute(registry.routes[feature], 'global');
+            if (globalRoute) return globalRoute;
+            if (ready(main)) return {feature,kind:'llm',enabled:true,configured:true,source:'main-fallback',config:clone(main),fallback:true,configId:''};
+            return unavailable(feature,'main-config-missing');
+        }
         const route = binding || registry.routes[feature] || null;
         if (route && route.enabled === false) return unavailable(feature, 'disabled', binding ? binding.source : 'global');
         if (!route) return unavailable(feature, 'not-configured');
         const config = registry.configs[route.configId];
         if (!config || config.enabled === false) {
-            if (route.fallbackMode === 'main' && options.fallbackConfig) {
-                return { feature, kind: definition.kind, enabled: true, configured: true, source: 'main-fallback',
-                    config: clone(options.fallbackConfig), fallback: true, configId: '' };
-            }
             return unavailable(feature, config ? 'config-disabled' : 'config-missing', route.source || 'global', {
                 configId: route.configId || ''
             });
@@ -188,7 +221,7 @@
 
     function resolve(feature, options = {}) {
         if (isIndependent(feature)) return resolveIndependent(feature, options);
-        const fallback = options.fallbackConfig;
+        const fallback = options.fallbackConfig || stateFor(options).apiSettings;
         let config = null;
         if (typeof getApiConfigForFeature === 'function') {
             config = getApiConfigForFeature(feature, fallback, options.context);
@@ -235,10 +268,18 @@
             reason: result?.reason || ''
         };
     }
+    function sourceLabel(result) {
+        if(INDEPENDENT_DEFINITIONS[result?.feature]?.kind!=='llm'&&isIndependent(result?.feature)&&!result?.configured)return '独立接口'+(result?.reason==='disabled'?'已关闭':'未配置');
+        if (!result?.configured) return result?.reason === 'role-config-invalid' ? result.message||'角色专属配置不完整' : '请配置主 API';
+        if (result.source === 'main-fallback') return '继承主 API';
+        if (['character','member'].includes(result.source) || result.config?._roleBinding) return '角色专属';
+        if (result.presetRef) return '使用预设';
+        return '功能专属配置';
+    }
 
     window.FeatureApiRegistry = {
         VERSION, definitions, independentDefinitions: () => clone(INDEPENDENT_DEFINITIONS), isIndependent,
         emptyRegistry, normalizeRegistry, normalizeConfig, normalizeRoute, normalizeBinding, readRegistry,
-        resolve, resolveIndependent, setRoute, upsertConfig, removeConfig, describe, clone
+        resolve, resolveIndependent, setRoute, upsertConfig, removeConfig, describe, clone, listPresets, presetConfig, ready, sourceLabel
     };
 })();

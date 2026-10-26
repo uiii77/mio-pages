@@ -16,28 +16,16 @@
     }
 
     async function save() {
-        let registry = global.FeatureApiRegistry.readRegistry(global.db);
-        const config = {
-            id: ID, name: '角色情绪', feature: 'emotion', service: 'llm', provider: 'newapi',
-            url: $('emotion-api-url').value.trim(), key: $('emotion-api-key').value.trim(),
-            model: $('emotion-api-model').value.trim(), enabled: true,
-        };
-        if (config.url || config.key || config.model) registry = global.FeatureApiRegistry.upsertConfig(registry, config, ID);
-        registry = global.FeatureApiRegistry.setRoute(registry, 'emotion', {
-            enabled: $('emotion-api-enabled').checked,
-            configId: ID,
-            fallbackMode: $('emotion-api-fallback').checked ? 'main' : 'none',
-        });
-        global.db.apiFeatureRegistry = registry;
-        await global.saveGlobalSettings(['apiFeatureRegistry']);
-        if ($('emotion-api-status')) $('emotion-api-status').textContent = '角色情绪 API 设置已保存；未配置时不会调用。';
-        global.showToast?.('角色情绪 API 设置已保存');
+        const next=global.FeatureApiSettings.saveRegistryFeature(global.FeatureApiRegistry.readRegistry(db),'emotion','emotion-api',ID);
+        await global.FeatureApiSettings.persistRegistry(next);
+        $('emotion-api-status').textContent='设置已保存；关闭专属配置时继承主 API';
     }
 
     function setup() {
         if (!$('emotion-api-save-btn')) return;
         load();
-        $('emotion-api-save-btn').addEventListener('click', () => void save());
+        global.FeatureApiSettings.mount('emotion','emotion-api',ID);
+        $('emotion-api-save-btn').addEventListener('click', () => void save().catch(error=>{ $('emotion-api-status').textContent=error.message; }));
     }
     global.setupEmotionApiSettings = setup;
 })(typeof window !== 'undefined' ? window : globalThis);

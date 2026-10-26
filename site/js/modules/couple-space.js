@@ -32,12 +32,13 @@
     }
 
     function resolveApi() {
-        return global.FeatureApiRegistry?.resolve('coupleSpace', { registry: global.db?.apiFeatureRegistry }) || { enabled: false, configured: false, reason: 'registry-unavailable' };
+        return global.FeatureApiRegistry?.resolve('coupleSpace', { context:role(), registry: global.db?.apiFeatureRegistry }) || { enabled: false, configured: false, reason: 'registry-unavailable' };
     }
 
     function apiConfigId() { return 'couple-space-global'; }
 
     function apiStatus(result) {
+        if(global.FeatureApiRegistry?.sourceLabel)return global.FeatureApiRegistry.sourceLabel(result);
         if (result?.configured) return result.enabled ? `已配置 · ${result.config?.model || '默认模型'}` : '已关闭';
         if (result?.reason === 'disabled') return '已关闭';
         return '未配置；当前版本不会自动调用';
@@ -67,6 +68,7 @@
         if (model) model.value = config.model || '';
         const status = byId('couple-space-api-status');
         if (status) status.textContent = apiStatus(result);
+        global.FeatureApiSettings?.mount('coupleSpace','couple-space-api',apiConfigId());
     }
 
     function renderSpace() {
@@ -262,15 +264,8 @@
     }
 
     async function saveApiSettings() {
-        const enabled = byId('couple-space-api-enabled')?.checked === true;
-        const configId = apiConfigId();
-        const config = { id: configId, name: '情侣空间', feature: 'coupleSpace', service: 'llm', provider: 'newapi', url: byId('couple-space-api-url')?.value.trim() || '', key: byId('couple-space-api-key')?.value.trim() || '', model: byId('couple-space-api-model')?.value.trim() || '', enabled: true };
-        let registry = binding();
-        if (config.url || config.key || config.model) registry = global.FeatureApiRegistry.upsertConfig(registry, config, configId);
-        registry = global.FeatureApiRegistry.setRoute(registry, 'coupleSpace', { enabled, configId, fallbackMode: 'none' });
-        global.db.apiFeatureRegistry = registry;
-        const saved = typeof global.saveGlobalSettings === 'function' ? await global.saveGlobalSettings(['apiFeatureRegistry']) : false;
-        if (saved === false) return notify('情侣空间 API 设置保存失败');
+        const next=global.FeatureApiSettings.saveRegistryFeature(binding(),'coupleSpace','couple-space-api',apiConfigId());
+        await global.FeatureApiSettings.persistRegistry(next);
         renderApi();
         notify('情侣空间 API 设置已保存；当前版本不会自动调用');
     }

@@ -44,6 +44,7 @@
     }
 
     function apiStateText(result) {
+        if (global.FeatureApiRegistry?.sourceLabel) return global.FeatureApiRegistry.sourceLabel(result);
         if (result?.configured) return result.enabled ? `已配置 · ${result.config?.model || '默认模型'}` : '已关闭';
         if (result?.reason === 'disabled') return '已关闭';
         if (result?.reason === 'config-missing') return '已启用，但配置档不存在';
@@ -269,31 +270,13 @@
         if (byId('collaboration-api-model')) byId('collaboration-api-model').value = config.model || '';
         if (byId('collaboration-api-stream')) byId('collaboration-api-stream').checked = config.streamEnabled === true;
         if (byId('collaboration-api-status')) byId('collaboration-api-status').textContent = apiStateText(result);
+        global.FeatureApiSettings?.mountRole('collaboration','collaboration-api',character);
     }
 
     async function saveApiSettings() {
         const character = characterFor(state.characterId);
         if (!character) return;
-        const configId = featureBinding(character)?.configId || apiConfigId(character.id);
-        const config = {
-            id: configId, name: `协同工作 · ${character.name || character.charName || '角色'}`,
-            feature: 'collaboration', service: 'llm', provider: 'newapi',
-            url: byId('collaboration-api-url')?.value.trim() || '',
-            key: byId('collaboration-api-key')?.value.trim() || '',
-            model: byId('collaboration-api-model')?.value.trim() || '',
-            streamEnabled: byId('collaboration-api-stream')?.checked === true,
-            enabled: true,
-        };
-        let registry = global.FeatureApiRegistry?.readRegistry(global.db) || { configs: {}, routes: {} };
-        if (config.url || config.key || config.model) registry = global.FeatureApiRegistry.upsertConfig(registry, config, configId);
-        global.db.apiFeatureRegistry = registry;
-        await persistGlobal(['apiFeatureRegistry']);
-        character.featureApiBindings = { ...(character.featureApiBindings || {}), collaboration: {
-            enabled: byId('collaboration-api-enabled')?.checked === true,
-            configId,
-            fallbackMode: 'none',
-        } };
-        if (typeof global.saveCharacter === 'function') await global.saveCharacter(character.id);
+        await global.FeatureApiSettings.saveRole('collaboration','collaboration-api',character,apiConfigId(character.id));
         renderApiSettings(character);
         notify('协同 API 设置已保存');
     }

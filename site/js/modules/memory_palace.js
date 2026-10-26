@@ -140,7 +140,7 @@
             });
         }
         ensureSettings(character);
-        if (!character.memoryPalaceEnabled || !character.autoArchiveEnabled) return { skipped: true, reason: 'disabled' };
+        if (!character.memoryPalaceEnabled || (!character.autoArchiveEnabled && !options.force)) return { skipped: true, reason: 'disabled' };
         if (!featureConfig('memoryProcess', character)) return { skipped: true, reason: 'api-unavailable' };
         if (archiveLocks.has(character.id)) return { skipped: true, reason: 'lock' };
         archiveLocks.add(character.id);
@@ -154,7 +154,11 @@
                 const chunks = [];
                 for (let index = 0; index < windowResult.selected.length; index += 120) chunks.push(windowResult.selected.slice(index, index + 120));
                 const extracted = [];
-                for (const chunk of chunks) extracted.push(...await extractArchiveChunk(character, chunk));
+                for (const [index,chunk] of chunks.entries()) {
+                    options.onProgress?.({completed:index,total:chunks.length});
+                    extracted.push(...await extractArchiveChunk(character, chunk));
+                    options.onProgress?.({completed:index+1,total:chunks.length});
+                }
                 if (!extracted.length) {
                     const end = windowResult.selected.at(-1);
                     await persistArchiveState(character, { ...state, watermarkMessageId:end.id, watermarkTimestamp:end.timestamp, processedMessages:state.processedMessages + windowResult.selected.length, lastRunAt:Date.now(), lastSuccessAt:Date.now(), lastError:'', batches:[...state.batches,{id:Core.id('mpb'),at:Date.now(),startMessageId:windowResult.selected[0].id,endMessageId:end.id,processed:windowResult.selected.length,stored:0,extracted:0,duplicates:0}] });
@@ -1363,14 +1367,18 @@
             if (!character) return;
             const button = event.currentTarget;
             button.disabled = true;
+            const status=document.getElementById('palace-process-status');
+            if(status)status.textContent='正在检查待整理的聊天记录…';
             try {
-                const result = await runAutoArchive(character, { force: true });
+                const result = await runAutoArchive(character, { force: true,onProgress:({completed,total})=>{if(status)status.textContent=`正在整理 ${completed}/${total} 批…`;} });
                 if (result.error) showToast(`整理失败：${result.error}`);
                 else if (result.reason === 'disabled') showToast('请先在宫殿设置开启记忆宫殿和自动整理');
-                else if (result.reason === 'api-unavailable') showToast('尚未配置并启用记忆处理 API');
+                else if (result.reason === 'api-unavailable') showToast(global.FeatureApiRegistry.sourceLabel(global.FeatureApiRegistry.resolve('memoryProcess',{context:character})));
                 else if (result.skipped) showToast(result.reason === 'hot_zone' ? '当前消息仍在近期热区内' : result.reason === 'lock' ? '记忆正在整理中' : result.reason === 'empty' ? '本段没有长期记忆，整理进度已保存' : '当前没有达到可整理范围');
                 else showToast(`已处理 ${result.processed} 条消息，新增 ${result.stored} 条记忆${result.duplicates ? `，跳过 ${result.duplicates} 条重复` : ''}`);
                 await render();
+                if(status)status.textContent=result.error?'整理失败：'+result.error:result.reason==='api-unavailable'?global.FeatureApiRegistry.sourceLabel(global.FeatureApiRegistry.resolve('memoryProcess',{context:character})):result.reason==='disabled'?'请先启用记忆宫殿':result.reason==='lock'?'记忆正在整理，请稍候':result.processed?`已处理 ${result.processed} 条消息，新增 ${result.stored||0} 条记忆${result.duplicates?`，跳过 ${result.duplicates} 条重复`:''}`:'目前没有可整理的旧消息，近期原文继续保留';
+            } catch(error) {if(status)status.textContent='整理失败：'+error.message;showToast(error.message);
             } finally { button.disabled = false; }
         });
         document.getElementById('memory-palace-list')?.addEventListener('click', async event => {

@@ -1,4 +1,4 @@
-const saveMainApiSettings = () => saveGlobalSettings(['apiSettings', 'gptImageSettings', 'imageRecognitionEnabled', 'weatherApiSettings']);
+const saveMainApiSettings = async () => {const saved=await saveGlobalSettings(['apiSettings', 'gptImageSettings', 'imageRecognitionEnabled', 'weatherApiSettings']);if(saved!==false)window.FeatureApiSettings?.refresh();return saved;};
 
 function apiProviderToGenerationProtocol(provider) {
     if (provider === 'claude') return 'anthropic';
@@ -178,7 +178,7 @@ function setupApiSettingsApp() {
         const modelSelect = a;
         const fetchBtn = t;
 
-        if (!apiUrl || !apiKey) {
+        if (!apiUrl || (!apiKey && provider !== 'openai-noauth')) {
             if (showToastFlag) showToast('请先填写API地址和密钥！');
             return;
         }
@@ -190,9 +190,6 @@ function setupApiSettingsApp() {
 
         if (apiUrl.endsWith('/')) apiUrl = apiUrl.slice(0, -1);
         
-        const endpoint = provider === 'gemini' 
-            ? `${apiUrl}/v1beta/models?key=${getRandomValue(apiKey)}` 
-            : `${apiUrl}/v1/models`;
 
         if (fetchBtn) {
             fetchBtn.classList.add('loading');
@@ -200,23 +197,7 @@ function setupApiSettingsApp() {
         }
 
         try {
-            const headers = provider === 'gemini' ? {} : { Authorization: `Bearer ${apiKey}` };
-            const response = await fetch(endpoint, { method: 'GET', headers });
-            
-            if (!response.ok) {
-                const error = new Error(`网络响应错误: ${response.status}`);
-                error.response = response;
-                throw error;
-            }
-
-            const data = await response.json();
-            let models = [];
-            
-            if (provider !== 'gemini' && data.data) {
-                models = data.data.map(e => e.id);
-            } else if (provider === 'gemini' && data.models) {
-                models = data.models.map(e => e.name.replace('models/', ''));
-            }
+            const models = await window.FeatureApiSettings.fetchModels({provider,url:apiUrl,key:apiKey});
 
             // 保留当前选中的值（如果仍在列表中）
             const currentVal = modelSelect.value;
@@ -246,7 +227,7 @@ function setupApiSettingsApp() {
             console.error(err);
             if (showToastFlag) {
                 showApiError(err);
-                modelSelect.innerHTML = '<option value="">拉取失败</option>';
+                // Keep the previous model when the service is temporarily unavailable.
             }
         } finally {
             if (fetchBtn) {
@@ -709,6 +690,7 @@ async function fetchApiNodeModels(readDraft, setStatus) {
 }
 
 async function requestApiNodeModels(node) {
+    if (!node.modelEndpoint && !Object.keys(node.customHeaders||{}).length && ['openai','openai-compatible','anthropic','gemini'].includes(node.protocol)) return window.FeatureApiSettings.fetchModels({...node,provider:node.protocol==='anthropic'?'claude':node.protocol==='gemini'?'gemini':'newapi'});
     let endpoint = node.modelEndpoint || `${node.url}/v1/models`;
     endpoint = endpoint.replace(/\{model\}/g, encodeURIComponent(node.model || '')).replace(/\{key\}/g, encodeURIComponent(getRandomValue(node.key || '')));
     if (node.protocol === 'gemini' && !node.modelEndpoint) endpoint = `${node.url}/v1beta/models?key=${encodeURIComponent(getRandomValue(node.key))}`;

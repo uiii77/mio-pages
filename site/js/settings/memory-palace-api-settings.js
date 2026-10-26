@@ -16,6 +16,7 @@
     }
 
     function saveFeature(registry, feature, prefix) {
+        if (['memoryProcess','lifeExpansion','rerank'].includes(feature)) return global.FeatureApiSettings.saveRegistryFeature(registry,feature,prefix,IDS[feature]);
         const enabled = $(`${prefix}-enabled`).checked;
         const config = { id: IDS[feature], name: feature === 'rerank' ? '记忆 Rerank' : (feature === 'lifeExpansion' ? '生活资料整理' : (feature === 'lifeSource' ? '生活资料来源核验' : '记忆处理')), feature, service: feature === 'rerank' ? 'rerank' : (feature === 'lifeSource' ? 'source' : 'llm'), provider: 'newapi', url: $(`${prefix}-url`).value.trim(), key: $(`${prefix}-key`).value.trim(), model: $(`${prefix}-model`).value.trim(), enabled: true };
         if (feature === 'lifeSource') config.allowNetwork = $(`${prefix}-network`)?.checked === true;
@@ -30,16 +31,20 @@
         loadFeature('rerank', 'memory-rerank-api');
         loadFeature('lifeExpansion', 'life-expansion-api');
         loadFeature('lifeSource', 'life-source-api');
+        global.FeatureApiSettings.mount('memoryProcess','memory-process-api',IDS.memoryProcess);
+        global.FeatureApiSettings.mount('lifeExpansion','life-expansion-api',IDS.lifeExpansion);
+        global.FeatureApiSettings.mount('rerank','memory-rerank-api',IDS.rerank);
         $('memory-palace-api-save-btn').addEventListener('click', async () => {
+            try {
             let registry = global.FeatureApiRegistry.readRegistry(db);
             registry = saveFeature(registry, 'memoryProcess', 'memory-process-api');
             registry = saveFeature(registry, 'rerank', 'memory-rerank-api');
             registry = saveFeature(registry, 'lifeExpansion', 'life-expansion-api');
             registry = saveFeature(registry, 'lifeSource', 'life-source-api');
-            db.apiFeatureRegistry = registry;
-            await saveGlobalSettings(['apiFeatureRegistry']);
+            await global.FeatureApiSettings.persistRegistry(registry);
             $('memory-palace-api-status').textContent = '记忆处理、Rerank、资料整理与来源核验路由已保存';
             showToast('记忆 API 设置已保存');
+            } catch(error) {$('memory-palace-api-status').textContent=error.message;showToast(error.message);}
         });
     }
     global.setupMemoryPalaceApiSettings = setup;

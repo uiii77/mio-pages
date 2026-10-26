@@ -17,17 +17,17 @@ function _saveApiPresets(arr) {
 function populateApiSelect() {
     const sel = document.getElementById('api-preset-select');
     if (!sel) return;
-    const presets = _getApiPresets();
+    const presets = window.FeatureApiRegistry ? window.FeatureApiRegistry.listPresets(db) : _getApiPresets();
     sel.innerHTML = '<option value="">— 选择 API 预设 —</option>';
     presets.forEach(p => {
     const opt = document.createElement('option');
-    opt.value = p.name;
+    opt.value = p.ref || p.name;
     opt.textContent = p.name;
     sel.appendChild(opt);
     });
 }
 
-function saveCurrentApiAsPreset() {
+async function saveCurrentApiAsPreset() {
     const apiKeyEl = document.querySelector('#api-key');
     const apiUrlEl = document.querySelector('#api-url');
     const providerEl = document.querySelector('#api-provider');
@@ -50,20 +50,13 @@ function saveCurrentApiAsPreset() {
         }
     };
     
-    let name = prompt('为该 API 预设填写名称（会覆盖同名预设）：');
-    if (!name) return;
-    const presets = _getApiPresets();
-    const idx = presets.findIndex(p => p.name === name);
-    const preset = {name: name, data: data};
-    if (idx >= 0) presets[idx] = preset; else presets.push(preset);
-    _saveApiPresets(presets);
-    populateApiSelect();
-    showToast('API 预设已保存');
+    return window.FeatureApiSettings.savePreset({...data,url:data.apiUrl,key:data.apiKey}).catch(error=>showToast(error.message));
 }
 
 async function applyApiPreset(name) {
     const presets = _getApiPresets();
-    const p = presets.find(x => x.name === name);
+    const shared = window.FeatureApiRegistry?.presetConfig(name,db);
+    const p = shared ? {data:{...shared,apiUrl:shared.url,apiKey:shared.key}} : presets.find(x => x.name === name);
     if (!p) return showToast('未找到该预设');
     try {
         const apiKeyEl = document.querySelector('#api-key');
@@ -76,7 +69,7 @@ async function applyApiPreset(name) {
         if (providerEl && p.data && typeof p.data.provider !== 'undefined') providerEl.value = p.data.provider;
         if (providerEl && typeof window.updateMainApiGenerationProtocol === 'function') window.updateMainApiGenerationProtocol(providerEl.value);
         if (modelEl && p.data && typeof p.data.model !== 'undefined') {
-            modelEl.innerHTML = `<option value="${p.data.model}">${p.data.model}</option>`;
+                modelEl.replaceChildren(new Option(p.data.model,p.data.model));
             modelEl.value = p.data.model;
         }
         if (p.data?.generationParams && typeof window.setMainApiGenerationParams === 'function') {
@@ -99,88 +92,14 @@ async function applyApiPreset(name) {
     }
 }
 
-function openApiManageModal() {
-    const modal = document.getElementById('api-presets-modal');
-    const list = document.getElementById('api-presets-list');
-    if (!modal || !list) return;
-    list.innerHTML = '';
-    const presets = _getApiPresets();
-    if (!presets.length) {
-        list.innerHTML = '<p style="color:#888;margin:6px 0;">暂无预设</p>';
-    }
-    presets.forEach((p, idx) => {
-        const row = document.createElement('div');
-        row.style.display = 'flex';
-        row.style.justifyContent = 'space-between';
-        row.style.alignItems = 'center';
-        row.style.padding = '8px 6px';
-        row.style.borderBottom = '1px solid #f6f6f6';
-
-        const left = document.createElement('div');
-        left.style.flex = '1';
-        left.style.minWidth = '0';
-        left.innerHTML = '<div style="font-weight:600;">'+p.name+'</div><div style="font-size:12px;color:#666;margin-top:4px;">' + (p.data && p.data.provider ? ('提供者：'+p.data.provider) : '') + '</div>';
-
-        const btns = document.createElement('div');
-        btns.style.display = 'flex';
-        btns.style.gap = '6px';
-
-        const applyBtn = document.createElement('button');
-        applyBtn.className = 'btn';
-        applyBtn.textContent = '应用';
-        applyBtn.onclick = function(){ applyApiPreset(p.name); modal.style.display='none'; };
-
-        const renameBtn = document.createElement('button');
-        renameBtn.className = 'btn';
-        renameBtn.textContent = '重命名';
-        renameBtn.onclick = function(){
-            const newName = prompt('输入新名称：', p.name);
-            if (!newName) return;
-            const all = _getApiPresets();
-            all[idx].name = newName;
-            _saveApiPresets(all);
-            openApiManageModal();
-            populateApiSelect();
-        };
-
-        const delBtn = document.createElement('button');
-        delBtn.className = 'btn';
-        delBtn.textContent = '删除';
-        delBtn.onclick = function(){ if(!confirm('确定删除 "'+p.name+'" ?')) return; const all=_getApiPresets(); all.splice(idx,1); _saveApiPresets(all); openApiManageModal(); populateApiSelect(); };
-
-        btns.appendChild(applyBtn); btns.appendChild(renameBtn); btns.appendChild(delBtn);
-
-        row.appendChild(left); row.appendChild(btns);
-        list.appendChild(row);
-    });
-    modal.style.display = 'flex';
-}
-
-function exportApiPresets() {
-    const presets = _getApiPresets();
-    const blob = new Blob([JSON.stringify(presets, null, 2)], {type: 'application/json'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = 'api_presets.json'; document.body.appendChild(a); a.click(); a.remove();
-    URL.revokeObjectURL(url);
-}
-function importApiPresets() {
-    const inp = document.createElement('input');
-    inp.type = 'file';
-    inp.accept = 'application/json';
-    inp.onchange = function(e){
-        const f = e.target.files[0];
-        if (!f) return;
-        const r = new FileReader();
-        r.onload = function(){ try { const data = JSON.parse(r.result); if (Array.isArray(data)) { _saveApiPresets(data); populateApiSelect(); openApiManageModal(); } else alert('文件格式不正确'); } catch(e){ alert('导入失败：'+e.message); } };
-        r.readAsText(f);
-    };
-    inp.click();
-}
+function openApiManageModal() { return window.FeatureApiSettings.managePresets().catch(error=>showToast(error.message)); }
+function exportApiPresets() { return window.FeatureApiSettings.exportPresets(); }
+function importApiPresets() { return window.FeatureApiSettings.chooseImport(); }
 
     // === 副API通用设置函数 ===
     var subApiDisplayNames = { summary: '总结', background: '后台活动', vector: '向量记忆', supplementPersona: '补齐人设', peek: '偷看手机', imageRecognition: '自动识图', stickerRecognition: '表情包识图' };
 function setupSubApiSettings(prefix, dbKey, presetsKey) {
+    if (['summary','background','supplementPersona','peek'].includes(prefix)) return window.FeatureApiSettings.mountLegacy(prefix,dbKey);
     const displayName = subApiDisplayNames[prefix] || prefix;
     const providerEl = document.getElementById(`${prefix}-api-provider`);
     const urlEl = document.getElementById(`${prefix}-api-url`);
@@ -282,25 +201,20 @@ function setupSubApiSettings(prefix, dbKey, presetsKey) {
         fetchBtn.disabled = true;
         
         try {
-            const headers = provider === 'gemini' || keyOptional ? {} : { Authorization: `Bearer ${apiKey}` };
-            const response = await fetch(endpoint, { method: 'GET', headers });
-            
-            if (!response.ok) {
-                throw new Error(`网络响应错误: ${response.status}`);
+            let models;
+            if(prefix !== 'vector') models=await window.FeatureApiSettings.fetchModels({provider,url:apiUrl,key:apiKey});
+            else {
+                const headers=provider==='gemini'||keyOptional?{}:{Authorization:'Bearer '+apiKey};
+                const response=await fetch(endpoint,{method:'GET',headers});
+                if(!response.ok)throw Error('模型拉取失败（HTTP '+response.status+'）');
+                const data=await response.json();
+                models=provider==='ollama'&&Array.isArray(data.models)?data.models.map(item=>item.name||item.model).filter(Boolean)
+                    :provider==='gemini'?(data.models||[]).filter(item=>!item.supportedGenerationMethods||item.supportedGenerationMethods.includes('embedContent')).map(item=>item.name.replace(/^models\//,''))
+                    :(data.data||[]).map(item=>item.id);
             }
-            
-            const data = await response.json();
-            let models = [];
-            
-            if (provider === 'ollama' && Array.isArray(data.models)) {
-                models = data.models.map(item => item.name || item.model).filter(Boolean);
-            } else if (provider !== 'gemini' && data.data) {
-                models = data.data.map(e => e.id);
-            } else if (provider === 'gemini' && data.models) {
-                models = data.models
-                    .filter(item => !Array.isArray(item.supportedGenerationMethods) || item.supportedGenerationMethods.includes('embedContent'))
-                    .map(e => e.name.replace('models/', ''));
-            }
+            if(!models.length)throw Error('未找到可用模型，已保留原选择');
+            const selected=modelEl.value;
+            if(selected&&!models.includes(selected))models.unshift(selected);
             
             modelEl.innerHTML = '';
             if (models.length > 0) {
@@ -320,7 +234,7 @@ function setupSubApiSettings(prefix, dbKey, presetsKey) {
         } catch (err) {
             console.error(err);
             showApiError(err);
-            modelEl.innerHTML = '<option value="">拉取失败</option>';
+            // Temporary network errors must not erase a configured model.
         } finally {
             fetchBtn.classList.remove('loading');
             fetchBtn.disabled = false;

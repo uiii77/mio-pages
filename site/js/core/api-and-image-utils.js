@@ -807,10 +807,12 @@ function prepareAiProviderRequest(settings = {}, originalBody = {}, originalHead
         originalEndpoint = getApiConfigEndpoint(settings, forceStream);
         originalHeaders = getApiConfigHeaders(settings);
     }
-    const protocol = settings.apiProtocol || (settings.provider === 'gemini' ? 'gemini' : 'openai_chat');
+    const protocol = settings.apiProtocol || settings.protocol || (settings.provider === 'claude' ? 'anthropic' : settings.provider === 'gemini' ? 'gemini' : 'openai_chat');
     const provider = protocol === 'anthropic' ? 'anthropic' : protocol === 'gemini' ? 'gemini' : protocol === 'deepseek' ? 'deepseek' : (settings.provider || 'newapi');
     let body = JSON.parse(JSON.stringify(originalBody || {}));
     let endpoint = settings.chatEndpoint || originalEndpoint;
+    const legacyBase=String(settings.url||'').replace(/\/+$/,'');
+    if(!settings.chatEndpoint&&[legacyBase+'/v1/chat/completions',legacyBase+'/v1/messages'].includes(originalEndpoint))endpoint=getApiConfigEndpoint(settings,forceStream);
     let headers = { ...(originalHeaders || {}), ...(settings.customHeaders || {}) };
     const thinking = body.__ovoThinking; delete body.__ovoThinking;
     const messages = applyConfiguredImageMode(Array.isArray(body.messages) ? body.messages : [], settings.imageMode || '');
@@ -903,14 +905,17 @@ function extractAiProviderResponse(data, provider, delta = false) {
 function getApiConfigEndpoint(settings, stream = false) {
     if (settings.chatEndpoint) return settings.chatEndpoint;
     const url = String(settings.url || '').replace(/\/$/, '');
-    if (settings.apiProtocol === 'anthropic') return `${url}/v1/messages`;
-    if (settings.apiProtocol === 'gemini' || settings.provider === 'gemini') return `${url}/v1beta/models/${encodeURIComponent(settings.model || '')}:${stream ? 'streamGenerateContent' : 'generateContent'}?key=${encodeURIComponent(getRandomValue(settings.key || ''))}`;
-    return `${url}/v1/chat/completions`;
+    const protocol=settings.apiProtocol||settings.protocol||(settings.provider==='claude'?'anthropic':settings.provider);
+    if (protocol === 'gemini') return `${url.replace(/\/v1(?:beta)?$/,'')}/v1beta/models/${encodeURIComponent(settings.model || '')}:${stream ? 'streamGenerateContent' : 'generateContent'}?key=${encodeURIComponent(getRandomValue(settings.key || ''))}`;
+    if (/\/(chat\/completions|messages|responses)(?:\?|$)/.test(url)) return url;
+    const base=/\/v\d+(?:beta)?$/.test(url)?url:url+'/v1';
+    return base+(protocol==='anthropic'?'/messages':'/chat/completions');
 }
 
 function getApiConfigHeaders(settings) {
     if (settings.apiProtocol === 'gemini' || settings.provider === 'gemini') return { 'Content-Type': 'application/json' };
-    return { 'Content-Type': 'application/json', Authorization: `Bearer ${getRandomValue(settings.key || '')}` };
+    if (settings.apiProtocol==='anthropic'||settings.protocol==='anthropic'||settings.provider==='claude') return {'Content-Type':'application/json','x-api-key':getRandomValue(settings.key||''),'anthropic-version':'2023-06-01'};
+    return { 'Content-Type': 'application/json', ...(settings.authMode==='none'||settings.provider==='openai-noauth'?{}:{Authorization: `Bearer ${getRandomValue(settings.key || '')}`}) };
 }
 
 function _nai_resolveBase64Image(b64) {

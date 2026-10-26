@@ -124,6 +124,7 @@
     }
 
     function apiStateText(result) {
+        if (global.FeatureApiRegistry?.sourceLabel) return global.FeatureApiRegistry.sourceLabel(result);
         if (result?.configured) return result.enabled ? `已配置 · ${result.config?.model || '默认模型'}` : '已关闭';
         if (result?.reason === 'disabled') return '已关闭';
         if (result?.reason === 'config-missing') return '已启用，但配置档不存在';
@@ -150,27 +151,13 @@
         const key = documentRef('reading-api-key'); if (key) key.value = config.key || config.apiKey || '';
         const model = documentRef('reading-api-model'); if (model) model.value = config.model || '';
         const status = documentRef('reading-api-status'); if (status) status.textContent = apiStateText(result);
+        global.FeatureApiSettings?.mountRole('reading','reading-api',character);
     }
 
     async function saveApiSettings() {
         const character = currentCharacter();
         if (!character) throw new Error('当前角色不存在');
-        const configId = featureBinding(character)?.configId || apiConfigId(character.id);
-        const config = {
-            id: configId, name: `角色共读 · ${character.name || character.charName || '角色'}`,
-            feature: 'reading', service: 'llm', provider: 'newapi',
-            url: documentRef('reading-api-url')?.value.trim() || '',
-            key: documentRef('reading-api-key')?.value.trim() || '',
-            model: documentRef('reading-api-model')?.value.trim() || '', enabled: true,
-        };
-        let registry = global.FeatureApiRegistry?.readRegistry(global.db) || { configs: {}, routes: {} };
-        if (config.url || config.key || config.model) registry = global.FeatureApiRegistry.upsertConfig(registry, config, configId);
-        global.db.apiFeatureRegistry = registry;
-        await persistGlobal(['apiFeatureRegistry']);
-        character.featureApiBindings = { ...(character.featureApiBindings || {}), reading: {
-            enabled: documentRef('reading-api-enabled')?.checked === true, configId, fallbackMode: 'none',
-        } };
-        if (typeof global.saveCharacter === 'function') await global.saveCharacter(character.id);
+        await global.FeatureApiSettings.saveRole('reading','reading-api',character,apiConfigId(character.id));
         renderApiSettings();
         notify('角色共读 API 设置已保存');
     }

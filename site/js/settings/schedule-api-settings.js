@@ -16,28 +16,16 @@
     }
 
     async function save() {
-        let registry = global.FeatureApiRegistry.readRegistry(db);
-        const config = {
-            id: ID, name: '角色日程', feature: 'schedule', service: 'llm', provider: 'newapi',
-            url: $('schedule-api-url').value.trim(), key: $('schedule-api-key').value.trim(),
-            model: $('schedule-api-model').value.trim(), enabled: true,
-        };
-        if (config.url || config.key || config.model) registry = global.FeatureApiRegistry.upsertConfig(registry, config, ID);
-        registry = global.FeatureApiRegistry.setRoute(registry, 'schedule', {
-            enabled: $('schedule-api-enabled').checked,
-            configId: ID,
-            fallbackMode: $('schedule-api-fallback').checked ? 'main' : 'none',
-        });
-        db.apiFeatureRegistry = registry;
-        await saveGlobalSettings(['apiFeatureRegistry']);
-        if ($('schedule-api-status')) $('schedule-api-status').textContent = '角色日程 API 设置已保存；未配置时不会调用。';
-        global.showToast?.('角色日程 API 设置已保存');
+        const next=global.FeatureApiSettings.saveRegistryFeature(global.FeatureApiRegistry.readRegistry(db),'schedule','schedule-api',ID);
+        await global.FeatureApiSettings.persistRegistry(next);
+        $('schedule-api-status').textContent='设置已保存；关闭专属配置时继承主 API';
     }
 
     function setup() {
         if (!$('schedule-api-save-btn')) return;
         load();
-        $('schedule-api-save-btn').addEventListener('click', () => void save());
+        global.FeatureApiSettings.mount('schedule','schedule-api',ID);
+        $('schedule-api-save-btn').addEventListener('click', () => void save().catch(error=>{ $('schedule-api-status').textContent=error.message; }));
     }
     global.setupScheduleApiSettings = setup;
 })(typeof window !== 'undefined' ? window : globalThis);

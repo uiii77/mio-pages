@@ -3298,3 +3298,19 @@ body.night-mode-active .storage-console-tab { background: #292929; color: #ddd; 
 .bilingual-scope-grid input:focus-visible { outline: 2px solid var(--primary-color, #d47c9d); outline-offset: 2px; }
 .bilingual-display-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 12px; font-size: 11px; }
 .bilingual-display-row select { min-width: 0; max-width: 50%; border: 0; background: transparent; color: inherit; font: inherit; }
+.mio-api-advanced {grid-column:1/-1;min-width:0;border-top:1px solid #f3efec;padding:4px 0 10px;}
+.mio-api-advanced[hidden],#api-settings-screen [hidden] {display:none!important;}
+.mio-api-advanced [hidden] {display:none!important;}
+.mio-api-advanced .kkt-item {gap:12px;}
+.mio-api-advanced .kkt-item-control {flex:1;min-width:0;justify-content:flex-end;}
+.mio-api-advanced input,.mio-api-advanced select,.mio-api-model-search {min-width:0;max-width:100%;font:inherit;font-size:14px;box-sizing:border-box;}
+.mio-api-advanced input:not([type=checkbox]),.mio-api-advanced select {width:100%;padding:8px;border:1px solid #eee7e2;border-radius:9px;background:#faf9f7;}
+.mio-api-advanced>label {display:flex;flex-direction:column;gap:6px;padding:10px 14px;font-size:13px;}
+.mio-api-model-tools {display:flex;gap:8px;padding:10px 14px;align-items:center;}
+.mio-api-model-tools input {flex:1;width:0!important;}
+.mio-api-model-tools .btn {flex:0 0 auto;}
+.mio-api-presets {display:flex;flex-wrap:wrap;gap:8px;padding:10px 14px;}
+.mio-api-presets select {flex-basis:100%;}
+.mio-api-source {font-size:13px;color:#776961;overflow-wrap:anywhere;}
+.mio-api-state {grid-column:1/-1;gap:12px;}
+.mio-api-advanced .api-field-tip {padding:8px 14px;margin:0;overflow-wrap:anywhere;}

@@ -56,7 +56,7 @@
         const apiTarget = document.getElementById('memory-palace-api-state');
         if (autoTarget) autoTarget.textContent = autoStatus;
         if (recallTarget) recallTarget.textContent = recallStatus;
-        if (apiTarget) apiTarget.textContent = `${config ? '记忆处理已配置' : '记忆处理未配置'} · ${embedding ? 'Embedding 已配置' : 'Embedding 未配置，使用本地检索'}${rerank ? ' · Rerank 已配置' : ''}`;
+        if (apiTarget) apiTarget.textContent = `${global.FeatureApiRegistry?.sourceLabel(global.FeatureApiRegistry.resolve('memoryProcess',{context:c}))||'请配置主 API'} · ${embedding ? 'Embedding 已配置' : '使用本地检索'}${rerank ? ' · Rerank 已配置' : ''}`;
         const lastError = state.lastError || c.memoryPalaceGovernanceError || '';
         const nightStatus = !enabled ? '夜间整理未启用' : !c.memoryPalaceNightEnabled ? '夜间整理已关闭' : !config ? '夜间整理等待记忆处理 API' : c.memoryPalaceLastGovernanceDay === clock(c).day ? '今日夜间整理已完成' : `夜间整理等待角色当地 ${String(c.memoryPalaceNightHour ?? 3).padStart(2, '0')}:00`;
         target.textContent = `${config ? '记忆处理 API 可用' : '记忆处理 API 未配置'} · 待整理 ${selection.bufferCount} 条 / 触发 ${selection.waterline.bufferThreshold} 条 · ${nightStatus}${lastError ? ` · 最近状态：${lastError}` : ''}`;

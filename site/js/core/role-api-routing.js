@@ -2,13 +2,14 @@
 (function () {
     const clone = value => value == null ? value : JSON.parse(JSON.stringify(value));
     const extraFeatures = { followUp: '追加回复' };
-    const features = () => ({ ...API_NODE_FEATURES, ...extraFeatures });
+    const features = () => ({ ...API_NODE_FEATURES, ...extraFeatures, ...Object.fromEntries(Object.entries(window.FeatureApiRegistry?.independentDefinitions()||{}).filter(([,def])=>def.kind==='llm').map(([id,def])=>[id,def.label])) });
     const groups = () => [
         ['聊天', ['chat', 'groupChat']],
         ['对话扩展', ['background', 'followUp', 'call']],
         ['记忆', ['summary', 'memorySummary', 'journal']],
         ['内容与互动', ['moments', 'forum', 'theater', 'peek', 'shop', 'pomodoro', 'battery']],
-        ['理解与搜索', ['imageChat', 'stickerVision', 'avatarVision', 'callVision', 'webSearch']]
+        ['理解与搜索', ['imageChat', 'stickerVision', 'avatarVision', 'callVision', 'webSearch']],
+        ['独立功能', ['memoryProcess','lifeExpansion','schedule','emotion','exchangeDiary','trpg','coupleSpace','collaboration','reading','watchTogether']]
     ];
     function owners(context) {
         if (!context) return {};
