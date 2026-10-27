@@ -12,7 +12,7 @@ async function fetchAiResponse(settings, requestBody, headers, endpoint, forceSt
                 settings._lastRoleApiUsed = window.RoleApiBindings.describe(candidate);
                 settings._lastRoleApiUsed.fallback ||= index > 0;
                 return response;
-            } catch (error) { lastError = error; if (requestOptions?.signal?.aborted || requestOptions?.isAllowed && !requestOptions.isAllowed()) throw error; }
+            } catch (error) { lastError = error; if (error.retryable === false) throw error; if (requestOptions?.signal?.aborted || requestOptions?.isAllowed && !requestOptions.isAllowed()) throw error; }
         }
         throw lastError;
     }
@@ -47,7 +47,7 @@ async function fetchAiResponse(settings, requestBody, headers, endpoint, forceSt
     if (tokenRecord) tokenRecord.status = response.ok ? 'responded' : 'failed';
     if (!response.ok) {
         const errorText = await response.text();
-        const error = new Error(`API Error: ${response.status} ${errorText}`);
+        const error = createAiApiError(response.status, errorText);
         error.response = response;
         throw error;
     }
@@ -104,18 +104,19 @@ async function readStreamResponse(response, provider, tokenRecord = null, onUsag
 
         if (provider !== 'gemini') {
             // OpenAI / Standard SSE logic
-            const parts = accumulatedChunk.split("\n\n");
+            const parts = accumulatedChunk.split(/\r?\n\r?\n/);
             accumulatedChunk = parts.pop();
             for (const part of parts) {
-                if (part.startsWith("data: ")) {
-                    const data = part.substring(6);
+                const dataLine = part.split(/\r?\n/).find(line => line.startsWith("data:"));
+                if (dataLine) {
+                    const data = dataLine.slice(5).trimStart();
                     if (data.trim() !== "[DONE]") {
                         try {
                             const json = JSON.parse(data);
                             if (json.usage || json.usageMetadata) onUsage?.(json.usage || json.usageMetadata);
                             if (tokenRecord && typeof captureChatTokenUsage === 'function') captureChatTokenUsage(null, json, tokenRecord);
                             fullResponse += extractAiProviderResponse(json, provider, true).content;
-                        } catch (e) {}
+                        } catch (e) { if (e.response) throw e; }
                     }
                 }
             }
@@ -124,14 +125,15 @@ async function readStreamResponse(response, provider, tokenRecord = null, onUsag
 
     // Handle remaining chunk for OpenAI
     if (provider !== 'gemini' && accumulatedChunk && accumulatedChunk.trim().length > 0) {
-         if (accumulatedChunk.startsWith("data: ")) {
-             const data = accumulatedChunk.substring(6);
+         const dataLine = accumulatedChunk.split(/\r?\n/).find(line => line.startsWith("data:"));
+         if (dataLine) {
+             const data = dataLine.slice(5).trimStart();
              if (data.trim() !== "[DONE]") {
                  try {
                      const json = JSON.parse(data);
                             if (tokenRecord && typeof captureChatTokenUsage === 'function') captureChatTokenUsage(null, json, tokenRecord);
                      fullResponse += extractAiProviderResponse(json, provider, true).content;
-                 } catch (e) {}
+                 } catch (e) { if (e.response) throw e; }
              }
          }
     }
@@ -656,7 +658,7 @@ function protectLatestConversationTurn(messages, latestTurnIds) {
 
 function validateAndStripLatestTurnProtection(body, protocol, latestTurnIds) {
     const expected = new Set((latestTurnIds || []).filter(Boolean));
-    const entries = protocol === 'gemini' ? (body && body.contents || []) : (body && body.messages || []);
+    const entries = protocol === 'gemini' ? (body && body.contents || []) : (body && (body.messages || body.input) || []);
     const positions = [];
     entries.forEach((entry, index) => {
         const ids = entry && (entry.__ovoMessageIds || (entry.__ovoMessageId ? [entry.__ovoMessageId] : []));
@@ -787,6 +789,69 @@ function applyApiGenerationParams(body, settings, protocol) {
     return body;
 }
 
+// Search intent belongs to the chat; wire-format capability belongs to the endpoint.
+// A custom search payload is an explicit opt-in, but never makes Responses tools
+// valid on Chat Completions. No capability is inferred from a model name.
+function getAiRequestProtocol(settings = {}, endpoint = '') {
+    const target = settings.chatEndpoint || endpoint || settings.url || '';
+    if (/\/responses(?:[?#]|$)/.test(target)) return 'openai_responses';
+    if (/\/chat\/completions(?:[?#]|$)/.test(target)) return (settings.apiProtocol || settings.protocol) === 'deepseek' ? 'deepseek' : 'openai_chat';
+    const protocol = settings.apiProtocol || settings.protocol;
+    return protocol === 'responses' ? 'openai_responses' : protocol || (settings.provider === 'claude' ? 'anthropic' : settings.provider === 'gemini' ? 'gemini' : 'openai_chat');
+}
+
+function applyAiSearchTools(body, intent, protocol, endpoint) {
+    const enabled = intent?.enabled === true;
+    let payload = null;
+    if (enabled && intent.payload?.trim()) {
+        try { payload = JSON.parse(intent.payload); } catch (_) { /* Invalid optional search must not block chat. */ }
+        if (!payload || Array.isArray(payload) || typeof payload !== 'object') payload = null;
+    }
+    if (payload) {
+        const { tools, ...extras } = payload;
+        Object.assign(body, extras);
+        if (Array.isArray(tools)) body.tools = [...(body.tools || []), ...tools];
+    }
+    const isSearch = tool => ['web_search', 'web_search_preview'].includes(tool?.type);
+    let officialResponses = false;
+    try { officialResponses = new URL(endpoint).origin === 'https://api.openai.com'; } catch (_) {}
+    const allowSearch = enabled && protocol === 'openai_responses' && (officialResponses || payload?.tools?.some(isSearch));
+    if (Array.isArray(body.tools)) {
+        body.tools = body.tools.filter(tool => !isSearch(tool) || allowSearch);
+        if (!body.tools.length) { delete body.tools; delete body.tool_choice; }
+        else if (!allowSearch && isSearch(body.tool_choice)) delete body.tool_choice;
+    }
+    if (allowSearch && !body.tools?.some(isSearch)) body.tools = [...(body.tools || []), { type: 'web_search' }];
+    if (enabled && protocol === 'gemini' && !payload) body.tools = [...(body.tools || []), { googleSearch: {} }];
+    if (!enabled || protocol === 'openai_responses') delete body.web_search_options;
+}
+
+function createAiApiError(status, payload) {
+    const text = typeof payload === 'string' ? payload : JSON.stringify(payload || {});
+    const incompatible = /(?:tools?\b|web_search|function_call)/i.test(text) && /unsupported|not supported|not support|invalid|native payload|convert_request_failed/i.test(text);
+    const error = new Error(incompatible
+        ? '当前 API 不支持本次工具格式。请关闭联网搜索，或按服务商文档检查自定义工具参数；本轮已停止，不会自动重试或切换模型。'
+        : `API Error: ${status} ${text}`);
+    error.response = { status };
+    if (incompatible) { error.code = 'tool_format_incompatible'; error.retryable = false; }
+    return error;
+}
+
+function throwAiResponseError(data) {
+    if (data?.error || data?.type === 'response.failed' || data?.type === 'error') throw createAiApiError(500, data.error || data.response?.error || data);
+}
+
+function toResponsesInput(messages) {
+    return messages.flatMap(message => {
+        if (message.role === 'tool') return [{ type: 'function_call_output', call_id: message.tool_call_id, output: message.content || '' }];
+        const calls = (message.tool_calls || []).map(call => ({ type: 'function_call', call_id: call.id, name: call.function.name, arguments: call.function.arguments }));
+        const content = Array.isArray(message.content) ? message.content.map(part => part.type === 'image_url'
+            ? { type: 'input_image', image_url: part.image_url.url, ...(part.image_url.detail ? { detail: part.image_url.detail } : {}) }
+            : { type: message.role === 'assistant' ? 'output_text' : 'input_text', text: part.text || '' }) : message.content;
+        return [...(content ? [{ ...message, content, tool_calls: undefined }] : []), ...calls];
+    });
+}
+
 function prepareAiProviderRequest(settings = {}, originalBody = {}, originalHeaders = {}, originalEndpoint = '', forceStream = false) {
     if (settings._roleBinding) {
         if (settings._bindingError) throw new Error(settings._bindingError);
@@ -809,14 +874,15 @@ function prepareAiProviderRequest(settings = {}, originalBody = {}, originalHead
         originalEndpoint = getApiConfigEndpoint(settings, forceStream);
         originalHeaders = getApiConfigHeaders(settings);
     }
-    const protocol = settings.apiProtocol || settings.protocol || (settings.provider === 'claude' ? 'anthropic' : settings.provider === 'gemini' ? 'gemini' : 'openai_chat');
-    const provider = protocol === 'anthropic' ? 'anthropic' : protocol === 'gemini' ? 'gemini' : protocol === 'deepseek' ? 'deepseek' : (settings.provider || 'newapi');
+    const protocol = getAiRequestProtocol(settings, settings.chatEndpoint || getApiConfigEndpoint(settings, forceStream));
+    const provider = protocol === 'openai_responses' ? 'openai_responses' : protocol === 'anthropic' ? 'anthropic' : protocol === 'gemini' ? 'gemini' : protocol === 'deepseek' ? 'deepseek' : (settings.provider || 'newapi');
     let body = JSON.parse(JSON.stringify(originalBody || {}));
-    let endpoint = settings.chatEndpoint || originalEndpoint;
+    let endpoint = settings.chatEndpoint || originalEndpoint || getApiConfigEndpoint(settings, forceStream);
     const legacyBase=String(settings.url||'').replace(/\/+$/,'');
     if(!settings.chatEndpoint&&[legacyBase+'/v1/chat/completions',legacyBase+'/v1/messages'].includes(originalEndpoint))endpoint=getApiConfigEndpoint(settings,forceStream);
     let headers = { ...(originalHeaders || {}), ...(settings.customHeaders || {}) };
     const thinking = body.__ovoThinking; delete body.__ovoThinking;
+    const searchIntent = body.__ovoWebSearch; delete body.__ovoWebSearch;
     const messages = applyConfiguredImageMode(Array.isArray(body.messages) ? body.messages : [], settings.imageMode || '');
     if (protocol === 'anthropic') {
         const converted = toAnthropicMessages(messages);
@@ -871,10 +937,24 @@ function prepareAiProviderRequest(settings = {}, originalBody = {}, originalHead
     }
     applyApiGenerationParams(body, settings, protocol);
     applyNativeThinkingConfig(body, protocol, settings.model, thinking);
+    applyAiSearchTools(body, searchIntent, protocol, endpoint);
+    delete body.__ovoWebSearch;
+    if (protocol === 'openai_responses') {
+        body.input = body.input || toResponsesInput(body.messages || []);
+        delete body.messages;
+        if (body.tool_choice?.type === 'function' && body.tool_choice.function) body.tool_choice = { type: 'function', name: body.tool_choice.function.name };
+        if (body.max_tokens !== undefined) { body.max_output_tokens = body.max_tokens; delete body.max_tokens; }
+        if (body.tools) body.tools = body.tools.map(tool => tool.type === 'function' && tool.function ? { type: 'function', ...tool.function } : tool);
+    }
     return { body, headers, endpoint, provider, protocol };
 }
 
 function extractAiProviderResponse(data, provider, delta = false) {
+    throwAiResponseError(data);
+    if (provider === 'openai_responses') {
+        return { content: delta ? (data?.type === 'response.output_text.delta' ? data.delta || '' : '')
+            : data?.output_text || (data?.output || []).flatMap(item => item.content || []).filter(part => part.type === 'output_text').map(part => part.text || '').join(''), reasoning: '' };
+    }
     if (provider === 'gemini') {
         const parts = data?.candidates?.[0]?.content?.parts || [];
         return {
@@ -911,7 +991,7 @@ function getApiConfigEndpoint(settings, stream = false) {
     if (protocol === 'gemini') return `${url.replace(/\/v1(?:beta)?$/,'')}/v1beta/models/${encodeURIComponent(settings.model || '')}:${stream ? 'streamGenerateContent' : 'generateContent'}?key=${encodeURIComponent(getRandomValue(settings.key || ''))}`;
     if (/\/(chat\/completions|messages|responses)(?:\?|$)/.test(url)) return url;
     const base=/\/v\d+(?:beta)?$/.test(url)?url:url+'/v1';
-    return base+(protocol==='anthropic'?'/messages':'/chat/completions');
+    return base+(protocol==='anthropic'?'/messages':['responses','openai_responses'].includes(protocol)?'/responses':'/chat/completions');
 }
 
 function getApiConfigHeaders(settings) {

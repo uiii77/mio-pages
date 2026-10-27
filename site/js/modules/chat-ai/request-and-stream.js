@@ -778,22 +778,6 @@ async function getAiReply(chatId, chatType, isBackground = false, isSummary = fa
                 }
             };
             
-            // --- Gemini 联网搜索支持 ---
-            if (!isBackground && !isSummary && chatType === 'private' && chat.webSearchEnabled) {
-                let customPayload = null;
-                if (chat.webSearchPayload && chat.webSearchPayload.trim()) {
-                    try {
-                        customPayload = JSON.parse(chat.webSearchPayload.trim());
-                    } catch (e) {
-                        console.error("解析自定义联网参数 JSON 失败:", e);
-                    }
-                }
-                if (customPayload && typeof customPayload === 'object') {
-                    Object.assign(requestBody, customPayload);
-                } else {
-                    requestBody.tools = [{ googleSearch: {} }];
-                }
-            }
         } else {
             let messages = [{role: 'system', content: systemPrompt}];
             
@@ -930,30 +914,11 @@ async function getAiReply(chatId, chatType, isBackground = false, isSummary = fa
         };
         if (activeCotRuntime?.nativeThinking) requestBody.__ovoThinking = activeCotRuntime.nativeThinking;
         
-        // --- 联网搜索支持 (仅为主聊天 API 请求启用) ---
-        if (!isBackground && !isSummary && chatType === 'private' && chat.webSearchEnabled) {
-            let customPayload = null;
-            if (chat.webSearchPayload && chat.webSearchPayload.trim()) {
-                try {
-                    customPayload = JSON.parse(chat.webSearchPayload.trim());
-                } catch (e) {
-                    console.error("解析自定义联网参数 JSON 失败:", e);
-                }
-            }
-
-            if (customPayload && typeof customPayload === 'object') {
-                // 如果用户提供了自定义参数，将其合并进 requestBody
-                Object.assign(requestBody, customPayload);
-            } else {
-                // 如果没有自定义参数，使用原生兼容方案
-                if (provider === 'gemini') {
-                    requestBody.tools = [{ googleSearch: {} }];
-                } else {
-                    requestBody.tools = [{ type: 'web_search' }];
-                }
-            }
         }
-        }
+        requestBody.__ovoWebSearch = {
+            enabled: !isBackground && !isSummary && chatType === 'private' && chat.webSearchEnabled === true,
+            payload: chat.webSearchPayload || ''
+        };
         if (provider === 'gemini' && db.cotSettings?.modePolicies) {
             let geminiCotMode = 'chat';
             if (chatType === 'private' && chat.activeNodeId && chat.nodes) {
@@ -1047,18 +1012,27 @@ async function getAiReply(chatId, chatType, isBackground = false, isSummary = fa
                         };
                         toolEndpoint = `${url}/v1/chat/completions`;
                     }
+                    // MCP rounds are non-streaming. Keep the existing Anthropic-compatible
+                    // Chat Completions route; native Anthropic tool conversion is outside this fix.
+                    const legacyMcpRoute = getAiRequestProtocol(apiConfig) === 'anthropic';
+                    const toolConfig = legacyMcpRoute ? { ...apiConfig, apiProtocol: 'openai_chat', provider: 'newapi', streamEnabled: false } : { ...apiConfig, streamEnabled: false };
+                    const toolPrepared = prepareAiProviderRequest(toolConfig, toolRequestBody, getApiConfigHeaders(toolConfig), legacyMcpRoute ? toolEndpoint : getApiConfigEndpoint(toolConfig, false), false);
+                    toolRequestBody = toolPrepared.body;
+                    if (toolPrepared.provider !== 'gemini') toolRequestBody.stream = false;
+                    toolEndpoint = toolPrepared.endpoint;
                     const toolTokenRecord = typeof recordChatTokenRequest === 'function' ? recordChatTokenRequest(chat, chatType, toolRequestBody, apiConfig, { history: historySlice, systemPrompt, scope: 'tools', roundId: replyTask?.id || '' }) : null;
                     let toolResponse;
                     try { toolResponse = await fetch(toolEndpoint, {
                         method: 'POST',
-                        headers: provider === 'gemini' ? { 'Content-Type': 'application/json' } : { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+                        headers: toolPrepared.headers,
                         body: JSON.stringify(toolRequestBody),
                         signal
                     }); } catch (error) { if (toolTokenRecord) toolTokenRecord.status = 'failed'; throw error; }
                     if (toolTokenRecord) toolTokenRecord.status = toolResponse.ok ? 'responded' : 'failed';
                     touchReplyProgress();
-                    if (!toolResponse.ok) throw new Error(`MCP 工具回合 API 错误：${toolResponse.status} ${(await toolResponse.text()).slice(0, 300)}`);
+                    if (!toolResponse.ok) throw createAiApiError(toolResponse.status, await toolResponse.text());
                     const payload = await toolResponse.json();
+                    throwAiResponseError(payload);
                     if (toolTokenRecord && typeof captureChatTokenUsage === 'function') captureChatTokenUsage(chat, payload, toolTokenRecord);
                     touchReplyProgress();
                     if (provider === 'gemini') {
@@ -1070,7 +1044,10 @@ async function getAiReply(chatId, chatType, isBackground = false, isSummary = fa
                             toolCalls: parts.filter(part => part && part.functionCall).map((part, index) => ({ id: `gemini_${Date.now()}_${index}`, name: part.functionCall.name, arguments: part.functionCall.args || {} }))
                         };
                     }
-                    const assistantMessage = payload.choices?.[0]?.message || {};
+                    const assistantMessage = toolPrepared.provider === 'openai_responses' ? {
+                        role: 'assistant', content: extractAiProviderResponse(payload, toolPrepared.provider).content,
+                        tool_calls: (payload.output || []).filter(item => item.type === 'function_call').map(item => ({ id: item.call_id, type: 'function', function: { name: item.name, arguments: item.arguments } }))
+                    } : payload.choices?.[0]?.message || {};
                     return {
                         text: typeof assistantMessage.content === 'string' ? assistantMessage.content : '',
                         assistantMessage,
@@ -1111,6 +1088,10 @@ async function getAiReply(chatId, chatType, isBackground = false, isSummary = fa
                 });
                 if (tokenRecord) { tokenRecord.status = preparedResponse.ok ? 'responded' : 'failed'; preparedResponse._ovoTokenRecord = tokenRecord; }
                 touchReplyProgress();
+                if (!preparedResponse.ok) {
+                    const error = createAiApiError(preparedResponse.status, await preparedResponse.clone().text());
+                    if (error.retryable === false) throw error;
+                }
                 return preparedResponse;
             } catch (error) { if (tokenRecord) tokenRecord.status = 'failed'; throw error; }
         };
@@ -1118,7 +1099,7 @@ async function getAiReply(chatId, chatType, isBackground = false, isSummary = fa
         const triedRoleFallbacks = new Set();
         try { response = await sendPrepared(endpoint, headers, requestBody); }
         catch (error) {
-            if (!apiConfig._roleBinding || requestAbortController?.signal.aborted) throw error;
+            if (error.retryable === false || !apiConfig._roleBinding || requestAbortController?.signal.aborted) throw error;
             let lastError = error;
             for (const fallbackConfig of getApiFallbackConfigsForFeature(apiFeature, apiConfig._nodeId || '', apiConfig)) {
                 triedRoleFallbacks.add(fallbackConfig._nodeId || 'system');
@@ -1127,7 +1108,7 @@ async function getAiReply(chatId, chatType, isBackground = false, isSummary = fa
                     const next = prepareAiProviderRequest(fallbackConfig, unpreparedRequestBody, getApiConfigHeaders(fallbackConfig), getApiConfigEndpoint(fallbackConfig, fallbackStream), fallbackStream);
                     response = await sendPrepared(next.endpoint, next.headers, next.body, fallbackConfig);
                     if (response.ok) { streamEnabled = fallbackStream; provider = next.provider; apiConfig = { ...fallbackConfig, _roleBinding: { ...fallbackConfig._roleBinding, usedFallback: true } }; break; }
-                } catch (fallbackError) { lastError = fallbackError; if (requestAbortController?.signal.aborted) throw fallbackError; }
+                } catch (fallbackError) { lastError = fallbackError; if (fallbackError.retryable === false || requestAbortController?.signal.aborted) throw fallbackError; }
             }
             if (!response) throw lastError;
         }
@@ -1157,12 +1138,12 @@ async function getAiReply(chatId, chatType, isBackground = false, isSummary = fa
                         const fallbackPrepared = prepareAiProviderRequest(fallbackConfig, unpreparedRequestBody, fallbackHeaders, fallbackEndpoint, fallbackStream);
                         response = await sendPrepared(fallbackPrepared.endpoint, fallbackPrepared.headers, fallbackPrepared.body, fallbackConfig);
                         if (response.ok) { streamEnabled = fallbackStream; provider = fallbackPrepared.provider; apiConfig = { ...fallbackConfig, _roleBinding: fallbackConfig._roleBinding ? { ...fallbackConfig._roleBinding, usedFallback: true } : undefined }; break; }
-                    } catch (fallbackError) { if (!apiConfig._roleBinding || requestAbortController?.signal.aborted) throw fallbackError; }
+                    } catch (fallbackError) { if (fallbackError.retryable === false || !apiConfig._roleBinding || requestAbortController?.signal.aborted) throw fallbackError; }
                 }
             }
             if (!response.ok) {
                 const errorText = response.bodyUsed ? firstErrorText : await response.text();
-                const error = new Error(`API Error: ${response.status} ${errorText}`);
+                const error = createAiApiError(response.status, errorText);
                 error.response = response;
                 throw error;
             }
@@ -1289,6 +1270,7 @@ async function processStream(response, chat, apiType, targetChatId, targetChatTy
             fullResponse += extracted.content;
             fullReasoning += extracted.reasoning || '';
         } catch (error) {
+            if (error.response) throw error;
             console.warn('[ReplyStream] ignored malformed SSE event:', error);
         }
         return false;

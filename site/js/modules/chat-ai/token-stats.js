@@ -158,7 +158,7 @@ const ChatTokenStats = (() => {
             body = { model:settings.model, messages };
         }
         if (db.cotSettings?.modePolicies?.[isOffline(shadow) ? 'offline' : 'chat']?.runMode) pending.push('CoT 规则将在实际发送时确定');
-        if (shadow.webSearchEnabled) { try { if (shadow.webSearchPayload?.trim()) Object.assign(body,JSON.parse(shadow.webSearchPayload)); else body.tools = settings.provider === 'gemini' ? [{ googleSearch:{} }] : [{ type:'web_search' }]; } catch (_) { pending.push('联网参数无法解析'); } }
+        body.__ovoWebSearch = { enabled: type === 'private' && shadow.webSearchEnabled === true, payload: shadow.webSearchPayload || '' };
         if (typeof prepareAiProviderRequest === 'function' && settings.url) { try { prepared = prepareAiProviderRequest(settings,body,typeof getApiConfigHeaders === 'function' ? getApiConfigHeaders(settings) : {},typeof getApiConfigEndpoint === 'function' ? getApiConfigEndpoint(settings) : '',false); body = prepared.body; } catch (e) { pending.push('接口参数需在发送时确认：' + e.message); } }
         if (window.WeatherService) pending.push('天气在发送时准备'); if (shadow.memoryMode === 'vector') pending.push('发送时可能更新检索记忆'); if (window.Moments?.prepareForChat) pending.push('动态在发送时准备');
         const candidates = sources(shadow,type,prompt), data = analyze(body,settings,candidates,{ history:selected,pending,historyTexts:historyTexts(shadow,type,selected,settings) });

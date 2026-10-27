@@ -246,7 +246,7 @@
     async function fail(task, error, cancelled) {
         if (!task) return;
         const status = error && error.response && Number(error.response.status);
-        const permanentClientError = status >= 400 && status < 500 && status !== 408 && status !== 429;
+        const permanentClientError = error?.retryable === false || status >= 400 && status < 500 && status !== 408 && status !== 429;
         task.state = cancelled ? 'cancelled' : permanentClientError ? 'failed' : 'interrupted';
         task.error = error ? { name: error.name || 'Error', message: String(error.message || error).slice(0, 500) } : null;
         await flush(task);
