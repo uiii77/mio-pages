@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <script src="release.js"></script>
-    <meta name="mio-release" content="46b17848c8ca0da4d9a5e362f0ec9c09becb2d3e">
+    <meta name="mio-release" content="f66292144e35ab9dcdbe0c0ff408a586fdfbdd15">
     <script src="js/core/site-context.js"></script>
     <title>Mio</title>
     <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
@@ -167,6 +167,7 @@
     <script src="js/core/feature-api-registry.js"></script> <!-- 独立 AI 功能 API 注册表 -->
     <script src="js/core/bilingual-content.js"></script> <!-- 非聊天场景的双语阅读 -->
     <script src="js/core/message-content-parser.js"></script> <!-- 消息外壳、翻译和 Audio Tags 统一解析 -->
+    <script src="js/core/chat-repetition-core.js"></script>
     <script src="js/core/message-reference.js"></script> <!-- 收藏、搜索与聊天消息稳定定位 -->
     <script src="js/core/memory-palace-core.js"></script> <!-- 记忆宫殿七房间与混合检索纯领域层 -->
     <script src="js/core/memory-governance-core.js"></script>
@@ -236,6 +237,7 @@
     <script src="js/modules/mcp/protocol.js"></script>
     <script src="js/modules/mcp/manager.js"></script>
     <script src="js/modules/chat-ai/mcp-orchestrator.js"></script>
+    <script src="js/core/chat-request-gate.js"></script>
     <script src="js/modules/chat-ai/reply-resilience.js"></script>
     <script src="js/modules/chat-ai/request-and-stream.js"></script>
     <script src="js/modules/chat-ai/response-and-control.js"></script>

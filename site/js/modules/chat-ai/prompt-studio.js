@@ -80,7 +80,7 @@
             item('format.bilingual', '双语模式', 'format', '{{双语规则}}', 'bilingual'),
             item('format.reply-count', '回复条数', 'format', '{{回复条数规则}}', 'always'),
             item('format.special-messages', '特殊消息使用原则', 'format', '请把语音、撤回、转账、商城互动、更新状态、引用、定位等特殊格式视为增强互动的调味剂，自然、主动且多样地使用，不要频繁重复。'),
-            item('format.anti-repeat', '防复读', 'format', '在本轮回复中必须区别于过往聊天记录，变换句式和词汇，不要重复或模仿历史记录的文本结构。'),
+            item('format.anti-repeat', '防复读', 'format', window.ChatRepetitionCore?.baseline || ''),
             item('format.keep-chatting', '保持对话', 'format', '不要主动终止聊天进程，除非我明确提出。保持你的人设，自然地进行对话。'),
             item('capability.auto-favorite', '角色自主收藏', 'capability', '{{自主收藏规则}}', 'autoFavorite'),
             item('memory.user-favorites', '用户收藏内容', 'memory', '{{用户收藏内容}}', 'userFavorites')

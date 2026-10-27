@@ -3052,3 +3052,24 @@
 #delete-chunk-modal .modal-window {overflow-y:auto;max-height:85dvh!important;}
 #chat-list-screen .action-btn-group,#contacts-screen .action-btn-group {gap:10px;}
 @media(max-width:360px){#chat-list-screen .action-btn-group,#contacts-screen .action-btn-group{gap:6px;}#chat-list-screen .action-btn,#contacts-screen .action-btn{width:30px;min-width:30px;}}
+.chat-task-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 14px;
+    font-size: 12px;
+    color: var(--text-secondary, #777);
+    flex-wrap: wrap;
+}
+.chat-task-status[hidden] { display: none; }
+.chat-task-status > span { flex: 1 1 120px; min-width: 0; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.chat-task-status button {
+    border: 0;
+    background: transparent;
+    color: var(--text-color, #65515f);
+    font: inherit;
+    padding: 7px 4px;
+    border-radius: 8px;
+    cursor: pointer;
+}
+.chat-task-status button:focus-visible { outline: 2px solid currentColor; }

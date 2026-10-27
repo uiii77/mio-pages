@@ -94,22 +94,25 @@
         const candidates = eligible(group);
         const prompt = `根据群聊最近公开记录选择接下来发言的成员并排序，最多 ${settings.maxParticipants} 人。只返回 JSON 数组，元素必须是给定成员 ID。成员：${JSON.stringify(candidates.map(member => ({ id: member.id, name: name(member) })))}。记录：${JSON.stringify(group.history.filter(message => !String(message.content || '').startsWith('[Private')).slice(-8).map(message => message.content))}`;
         const prepared = prepareAiProviderRequest(config, { model: config.model, messages: [{ role: 'user', content: prompt }], stream: false }, getApiConfigHeaders(config), getApiConfigEndpoint(config));
+        const release = await window.ChatRequestGate?.acquire(config, controller.signal);
+        try {
         const response = await fetch(prepared.endpoint, { method: 'POST', headers: prepared.headers, body: JSON.stringify(prepared.body), signal: controller.signal });
         if (!response.ok) throw new Error(`调度 API 返回 ${response.status}`);
         const content = extractAiProviderResponse(await response.json(), prepared.provider).content;
         const ids = JSON.parse(content.slice(content.indexOf('['), content.lastIndexOf(']') + 1));
         if (!Array.isArray(ids) || ids.some(id => !candidates.some(member => member.id === id))) throw new Error('调度返回了无效成员');
         return [...new Set(ids)].slice(0, settings.maxParticipants).map(id => candidates.find(member => member.id === id));
+        } finally { release?.(); }
     }
     async function commit(group, member, result, task, active, background) {
-        if (!result || active.controller.signal.aborted || active.stopped.has(member.id)) return false;
+        if (!result || active.shouldStop() || active.stopped.has(member.id)) return false;
         if (!group.members.some(item => item.id === member.id)) throw new Error('成员已退出群聊');
         if (result.replyTask && group.history.some(message => message.replyRequestId === result.replyTask.id)) return true;
-        const before = new Set(group.history.map(message => message.id));
+        const messages = [];
         const responseChat = { ...group, _cotTagStart: result.runtimeChat._cotTagStart, _cotTagEnd: result.runtimeChat._cotTagEnd, _cotDisplayMode: result.runtimeChat._cotDisplayMode, history: group.history };
-        await handleAiReplyContent(result.fullResponse, responseChat, group.id, 'group', background, false, { memberId: member.id, suppressAutoTasks: true, shouldStop: () => active.controller.signal.aborted || active.stopped.has(member.id) });
+        await handleAiReplyContent(result.fullResponse, responseChat, group.id, 'group', background, false, { memberId: member.id, inputMessageId: active.userMessageId, replyRequestId: result.replyTask?.id, onMessage: message => messages.push(message), suppressAutoTasks: true, shouldStop: () => active.shouldStop() || active.stopped.has(member.id) });
         group.history = responseChat.history;
-        const messages = group.history.filter(message => !before.has(message.id));
+        if (active.shouldStop()) return false;
         if (!messages.length) throw new Error('成员未返回可用发言，请重试');
         messages.forEach(message => {
             message.senderId = member.id; message.memberApiRoundId = active.id;
@@ -117,20 +120,31 @@
             if (result.replyTask) message.replyRequestId = result.replyTask.id;
         });
         task.apiUsage = result.apiUsage; task.tokenUsage = result.runtimeChat._lastTokenUsage;
+        if (result.repetitionReceipt) {
+            const target = messages.find(message => message.role === 'assistant' && !message.isThinking);
+            if (target) target.repetitionHint = window.ChatRepetitionCore.createReceipt(result.repetitionReceipt, target);
+        }
         if (await saveGroup(group.id) === false) throw new Error('群消息保存失败，已显示的消息不会重新生成');
         if (result.replyTask) await window.ReplyResilience.complete(result.replyTask);
         return true;
     }
     async function reply(group, background = false, options = {}) {
-        if (runs.has(group.id) || (!background && isGenerating)) return false;
+        if (window.ReplyResilience?.enqueue && !options.queueBypass) return getAiReply(group.id, 'group', background, false, false, false, options);
+        if (runs.has(group.id) || (!background && isGenerating && !options.queueBypass)) return false;
         if (background && typeof isInQuietHours === 'function' && isInQuietHours(group.id)) return false;
         const settings = { participants: 'natural', execution: 'sequential', maxParticipants: 3, followUpRounds: 0, onError: 'continue', ...clone(group.memberApiSettings || {}) };
         settings.maxParticipants = Math.max(1, Math.min(50, Number(settings.maxParticipants) || 3));
         const active = { id: `member_round_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, controller: new AbortController(), controllers: new Map(), stopped: new Set() };
+        const scope = String(group.chatArchiveScopeId || '');
+        active.shouldStop = () => active.controller.signal.aborted || String(db.groups.find(item => item.id === group.id)?.chatArchiveScopeId || '') !== scope;
+        const abort = () => active.controller.abort();
+        if (options.signal?.aborted) abort();
+        else options.signal?.addEventListener('abort', abort, { once: true });
         runs.set(group.id, active);
-        if (!background) { isGenerating = true; getReplyBtn.disabled = true; regenerateBtn.disabled = true; currentReplyAbortController = active.controller; typingIndicator.textContent = '群成员正在回复…'; typingIndicator.style.display = 'block'; }
+        if (!background && currentChatId === group.id && currentChatType === 'group') { isGenerating = true; getReplyBtn.disabled = !options.queueBypass; regenerateBtn.disabled = true; currentReplyAbortController = active.controller; typingIndicator.textContent = '群成员正在回复…'; typingIndicator.style.display = 'block'; }
         const previous = options.retry ? group.memberApiRun : null;
-        const userMessageId = lastUser(group);
+        const userMessageId = options.inputMessageId ?? lastUser(group);
+        active.userMessageId = userMessageId;
         group.memberApiRun = { id: active.id, userMessageId, tasks: previous?.userMessageId === userMessageId ? previous.tasks.filter(task => !options.memberIds?.includes(task.memberId)) : [] };
         draw(group);
         try {
@@ -149,13 +163,17 @@
                     stickerBound: !!window.RoleApiBindings.selection(context, 'stickerVision')
                 }];
             }));
-            const baseHistory = clone(group.history);
+            const inputIndex = group.history.findIndex(message => message.id === userMessageId);
+            const inputIds = new Set(group.history.slice(0, inputIndex + 1).filter(message => message.role === 'user').map(message => message.id));
+            const excluded = new Set(options.regenerate?.targetMessageIds || []);
+            const roundHistory = () => group.history.filter(message => !excluded.has(message.id) && (message.role !== 'user' || inputIds.has(message.id)));
+            const baseHistory = clone(roundHistory());
             const rounds = options.retry ? 1 : 1 + Math.max(0, Math.min(3, Number(settings.followUpRounds) || 0));
-            for (let round = 0; round < rounds && !active.controller.signal.aborted; round++) {
+            for (let round = 0; round < rounds && !active.shouldStop(); round++) {
                 const tasks = members.map(member => ({ memberId: member.id, name: name(member), state: 'waiting', round }));
                 group.memberApiRun.tasks.push(...tasks); draw(group);
                 const generate = async (member, task, history) => {
-                    if (active.controller.signal.aborted || active.stopped.has(member.id)) { task.state = 'stopped'; return null; }
+                    if (active.shouldStop() || active.stopped.has(member.id)) { task.state = 'stopped'; return null; }
                     const controller = new AbortController(); active.controllers.set(member.id, controller);
                     const relay = () => controller.abort(); active.controller.signal.addEventListener('abort', relay, { once: true });
                     let result = null; task.state = 'generating'; draw(group);
@@ -163,7 +181,8 @@
                     try {
                         await getAiReply(group.id, 'group', background, false, false, false, {
                             memberTask: true, member, workingChat: work, apiConfigSnapshot: snapshots.get(member.id).main, featureConfigSnapshots: snapshots.get(member.id), signal: controller.signal,
-                            recoveryTaskId: options.recoveryTaskId || '',
+                            recoveryTaskId: options.queueTaskId ? '' : options.recoveryTaskId || '',
+                            inputMessageId: userMessageId, shouldStop: active.shouldStop,
                             onResult: value => { result = value; }, onError: error => { task.error = error.message; }
                         });
                         task.state = controller.signal.aborted ? 'stopped' : result ? 'ready' : 'failed';
@@ -186,15 +205,20 @@
                     draw(group);
                 };
                 if (settings.execution === 'parallel') {
-                    const history = round === 0 ? baseHistory : clone(group.history);
+                    const history = round === 0 ? baseHistory : clone(roundHistory());
                     for (let index = 0; index < members.length; index += 2) {
                         const batch = members.slice(index, index + 2);
                         const results = await Promise.all(batch.map((member, offset) => generate(member, tasks[index + offset], history)));
                         for (let offset = 0; offset < batch.length; offset++) await finish(batch[offset], tasks[index + offset], results[offset]);
                     }
                 } else {
-                    for (let index = 0; index < members.length; index++) await finish(members[index], tasks[index], await generate(members[index], tasks[index], group.history));
+                    for (let index = 0; index < members.length; index++) await finish(members[index], tasks[index], await generate(members[index], tasks[index], roundHistory()));
                 }
+            }
+            if (options.regenerate && !active.shouldStop()) {
+                const done = new Set(group.memberApiRun.tasks.filter(task => task.state === 'completed').map(task => task.memberId));
+                group.history = group.history.filter(message => !excluded.has(message.id) || !done.has(message.senderId));
+                await saveGroup(group.id);
             }
             if (typeof checkAndTriggerAutoJournal === 'function') checkAndTriggerAutoJournal(group);
             if (typeof checkAndTriggerAutoTableUpdate === 'function') checkAndTriggerAutoTableUpdate(group);
@@ -203,7 +227,9 @@
         } catch (error) { if (error.name !== 'AbortError') showToast(error.message); return false; }
         finally {
             group.memberApiRun.tasks.forEach(task => { if (['waiting', 'generating', 'ready'].includes(task.state)) task.state = 'stopped'; });
-            runs.delete(group.id); await saveGroup(group.id);
+            options.signal?.removeEventListener('abort', abort);
+            runs.delete(group.id);
+            if (!active.shouldStop()) await saveGroup(group.id);
             if (!background && currentReplyAbortController === active.controller) { currentReplyAbortController = null; isGenerating = false; getReplyBtn.disabled = false; regenerateBtn.disabled = false; typingIndicator.style.display = 'none'; }
             draw(group);
         }
@@ -217,15 +243,13 @@
             if (!memberId) return;
         }
         const latestUserIndex = group.history.findLastIndex(message => message.role === 'user');
-        const existing = group.history.slice(latestUserIndex + 1).filter(message => message.senderId === memberId && !message.isThinking);
+        const existing = group.history.slice(latestUserIndex + 1).filter(message => message.senderId === memberId && !message.isThinking && (message.replyUserMessageId == null || message.replyUserMessageId === group.history[latestUserIndex]?.id));
         const beforeIds = new Set(group.history.map(message => message.id));
-        const snapshot = group.history;
-        group.history = group.history.filter(message => !existing.some(item => item.id === message.id));
-        const successful = await reply(group, false, { memberIds: [memberId], retry: true });
-        const replacements = group.history.filter(message => !beforeIds.has(message.id));
-        if (!successful || !replacements.length) { group.history = snapshot; await saveGroup(group.id); }
-        else {
-            const user = group.history.find(message => message.id === lastUser(group));
+        const anchorId = group.history[latestUserIndex]?.id;
+        const successful = await reply(group, false, { memberIds: [memberId], retry: true, regenerate: { targetMessageIds: existing.map(message => message.id), anchorId } });
+        const replacements = group.history.filter(message => !beforeIds.has(message.id) && message.role !== 'user' && message.senderId === memberId);
+        if (successful && replacements.length) {
+            const user = group.history.find(message => message.id === anchorId);
             if (user && existing.length) { user._memberRegenVersions ||= []; user._memberRegenVersions.push({ memberId, at: Date.now(), messages: clone(existing) }); }
             await saveGroup(group.id);
         }

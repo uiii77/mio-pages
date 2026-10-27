@@ -5,14 +5,156 @@
     const DIAGNOSTIC_KEY = 'ovo_reply_lifecycle_log_v1';
     const RUNNING_STATES = new Set(['preparing', 'requesting', 'streaming', 'recovering', 'finalizing']);
     const RECOVERABLE_STATES = new Set(['stalled', 'interrupted']);
-    const PENDING_STATES = new Set([...RUNNING_STATES, ...RECOVERABLE_STATES]);
-    const AUTO_RECOVER_MAX_AGE = 30 * 60 * 1000;
-    const MAX_AUTO_ATTEMPTS = 2;
+    const PENDING_STATES = new Set(['queued', ...RUNNING_STATES, ...RECOVERABLE_STATES]);
     const CHECKPOINT_DELAY = 450;
     const ownerId = `reply_owner_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const pendingWrites = new Map();
     const activeTasks = new Map();
     const taskLockReleases = new Map();
+    const jobs = new Map();
+    const records = new Map();
+    const occupied = new Set();
+    const scopeOf = chat => String(chat?.chatArchiveScopeId || '');
+    const laneOf = task => JSON.stringify([task.chatType, task.chatId, task.archiveScope]);
+    function scopeMatches(task) { const chat = getChat(task.chatId, task.chatType); return !!chat && task.archiveScope === scopeOf(chat); }
+    function revision(message) {
+        if (!message) return '';
+        const text = JSON.stringify([message.content, message.parts, message.isContextDisabled, message.excludeFromContext]);
+        let hash = 2166136261;
+        for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 16777619);
+        return String(hash >>> 0);
+    }
+    function inputMatches(task) {
+        const chat = getChat(task.chatId, task.chatType);
+        return scopeMatches(task) && (task.userMessageId == null || task.userMessageId === '' || revision(chat.history?.find(message => message.id === task.userMessageId)) === task.inputRevision);
+    }
+
+    function renderQueue() {
+        if (typeof currentChatId === 'undefined' || typeof document === 'undefined' || !document.createElement) return;
+        const indicator = document.getElementById('typing-indicator');
+        if (!indicator) return;
+        let bar = document.getElementById('chat-task-status');
+        if (!bar) { bar = document.createElement('div'); bar.id = 'chat-task-status'; bar.className = 'chat-task-status'; bar.setAttribute('role', 'status'); indicator.after(bar); }
+        const relevant = [...records.values()].filter(task => task.chatId === currentChatId && task.chatType === currentChatType && scopeMatches(task) && !['completed', 'cancelled', 'abandoned'].includes(task.state));
+        bar.replaceChildren(); bar.hidden = !relevant.length;
+        const running = relevant.find(task => RUNNING_STATES.has(task.state));
+        const queued = relevant.find(task => task.state === 'queued');
+        const failed = relevant.find(task => ['interrupted', 'failed', 'stalled'].includes(task.state));
+        const text = document.createElement('span');
+        text.textContent = running ? `正在回复${queued ? ' · 新输入已排队' : ''}` : queued ? '等待回复' : '上次任务未完成';
+        if (failed && !running && !queued) { text.title = failed.error?.message || ''; text.textContent = `未完成：${failed.error?.message || '请重试'}`; }
+        bar.append(text);
+        const action = (label, work) => { const button = document.createElement('button'); button.type = 'button'; button.textContent = label; button.onclick = () => void work().catch(error => typeof showToast === 'function' && showToast(error.message)); bar.append(button); };
+        if (running) action('停止', () => cancelTask(running.id));
+        if (queued) action('取消排队', () => cancelTask(queued.id));
+        if (failed && !running && !queued) { action('重试', () => retryTask(failed.id)); action('取消', () => cancelTask(failed.id)); }
+        if (typeof getReplyBtn !== 'undefined') getReplyBtn.disabled = false;
+    }
+
+    async function enqueue(details, execute) {
+        const chat = getChat(details.chatId, details.chatType);
+        if (!chat) return false;
+        const archiveScope = scopeOf(chat), inputId = getLatestUserMessageId(chat);
+        const tipId = chat.history?.at(-1)?.id ?? '';
+        const kind = details.isSummary ? 'summary' : 'reply';
+        const operation = JSON.stringify([kind, details.isBackground, details.queueOptions?.regenerate || null, details.queueOptions?.backgroundReason || '', details.queueOptions?.followUpTaskId || '', details.queueOptions?.memberIds || [], details.queueOptions?.isCharBlockedMonologue, details.queueOptions?.isPhoneControlRevokeAttempt]);
+        const same = task => task.chatId === details.chatId && task.chatType === details.chatType && task.archiveScope === archiveScope && task.operation === operation;
+        if (!details.recoveryTaskId) {
+            const queued = [...jobs.values()].find(job => same(job.task) && job.task.state === 'queued');
+            if (queued) {
+                queued.task.userMessageId = inputId; queued.task.inputTipId = tipId;
+                queued.task.inputRevision = revision(chat.history?.find(message => message.id === inputId));
+                queued.execute = execute; queued.task.queueOptions = details.queueOptions || {};
+                await putTask(queued.task); renderQueue(); return queued.promise;
+            }
+            const existing = [...jobs.values()].find(job => same(job.task) && job.task.userMessageId === inputId && job.task.inputTipId === tipId);
+            if (existing) return existing.promise;
+        }
+        let task = details.recoveryTaskId ? await getTask(details.recoveryTaskId) : null;
+        if (task && !inputMatches(task)) throw new Error('原存档或输入已经变化，请重新点击回复');
+        task ||= { id: createId(), chatId: details.chatId, chatType: details.chatType, archiveScope, kind, operation, userMessageId: inputId, inputTipId: tipId, inputRevision: revision(chat.history?.find(message => message.id === inputId)), createdAt: Date.now(), attempt: 0 };
+        task.state = 'queued'; task.ownerId = ownerId; task.isBackground = !!details.isBackground;
+        task.queueVersion = 1; task.cancelRequestedAt = null; task.error = null;
+        task.queueOptions = details.queueOptions || task.queueOptions || {};
+        const job = { task, execute, controller: new AbortController() };
+        job.promise = new Promise(resolve => { job.resolve = resolve; });
+        jobs.set(task.id, job); records.set(task.id, task);
+        try { await putTask(task); } catch (error) { jobs.delete(task.id); records.delete(task.id); job.resolve(false); throw error; }
+        if (!details.recoveryTaskId) {
+            for (const previous of records.values()) {
+                if (previous.id !== task.id && same(previous) && ['failed', 'interrupted', 'stalled'].includes(previous.state)) {
+                    previous.state = 'abandoned'; await putTask(previous);
+                }
+            }
+        }
+        renderQueue(); pumpQueue();
+        return job.promise;
+    }
+
+    function pumpQueue() {
+        if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+        const waiting = [...jobs.values()].filter(job => job.task.state === 'queued').sort((a, b) => Number(a.task.isBackground) - Number(b.task.isBackground) || a.task.createdAt - b.task.createdAt);
+        for (const job of waiting) {
+            const lane = laneOf(job.task);
+            if (occupied.has(lane) || job.claiming) continue;
+            occupied.add(lane); job.claiming = true;
+            void runJob(job).finally(() => { occupied.delete(lane); jobs.delete(job.task.id); renderQueue(); pumpQueue(); });
+        }
+    }
+
+    async function runJob(job) {
+        const task = job.task;
+        const run = async () => {
+            if (job.controller.signal.aborted || !inputMatches(task)) throw new DOMException('任务已取消、输入已修改或存档已切换', 'AbortError');
+            // Another tab may have completed the same clicked input while we waited for the chat lock.
+            const rows = table() ? await table().where('chatId').equals(task.chatId).toArray() : [];
+            if (rows.some(row => row.id !== task.id && row.state === 'completed' && row.completedAt >= task.createdAt && row.archiveScope === task.archiveScope && row.chatType === task.chatType && row.operation === task.operation && row.inputTipId === task.inputTipId && row.userMessageId === task.userMessageId && row.inputRevision === task.inputRevision)) { await complete(task); return true; }
+            task.state = 'preparing'; await putTask(task); renderQueue();
+            const result = await job.execute(task, job.controller.signal);
+            if (!['completed', 'cancelled', 'failed', 'interrupted'].includes(task.state)) {
+                if (result === true) await complete(task);
+                else await fail(task, new Error('任务未完成，可重试'), job.controller.signal.aborted);
+            }
+            return result;
+        };
+        try {
+            const name = `mio-chat-${typeof dexieDB !== 'undefined' ? dexieDB.name : ''}-${laneOf(task)}`;
+            const result = navigator.locks?.request ? await navigator.locks.request(name, { signal: job.controller.signal }, run) : await run();
+            job.resolve(result);
+        } catch (error) { await fail(task, error, error.name === 'AbortError').catch(() => {}); job.resolve(false); }
+    }
+
+    async function cancelTask(id) {
+        const task = jobs.get(id)?.task || await getTask(id);
+        if (!task) return false;
+        task.cancelRequestedAt = Date.now();
+        const job = jobs.get(id); job?.controller.abort();
+        await fail(task, new DOMException('用户已停止任务', 'AbortError'), true);
+        if (job && !job.claiming) { jobs.delete(id); job.resolve(false); }
+        renderQueue(); return true;
+    }
+
+    async function retryTask(id) {
+        const task = await getTask(id);
+        if (!task || !scopeMatches(task) || task.archiveScope === undefined) throw new Error('无法确认原任务的存档，请在当前聊天重新点击回复');
+        if (getChat(task.chatId, task.chatType)?.history?.some(message => message.replyRequestId === task.id)) {
+            const saved = task.chatType === 'group' ? await saveGroup(task.chatId) : await saveCharacter(task.chatId);
+            if (saved === false) throw new Error('回复保存失败，请保留页面后重试');
+            await complete(task); renderQueue();
+            if (typeof showToast === 'function') showToast('此任务已有保存的回复，未重复调用；可继续发送或重新生成');
+            return false;
+        }
+        if (task.requestStartedAt && typeof showAppConfirmDialog === 'function') {
+            const decision = await showAppConfirmDialog({ title: '重新尝试回复', message: '上次请求可能已经计费。已保存的消息会保留；重试会重新请求模型。', confirmText: '重试', dismissText: '' });
+            if (decision !== 'confirm') return false;
+        }
+        return getAiReply(task.chatId, task.chatType, task.isBackground, task.kind === 'summary', !!task.queueOptions?.isCharBlockedMonologue, !!task.queueOptions?.isPhoneControlRevokeAttempt, { ...task.queueOptions, recoveryTaskId: task.id });
+    }
+
+    async function markRequested(task) {
+        if (!task) return;
+        task.requestStartedAt = Date.now(); task.state = 'requesting'; await flush(task);
+    }
     let sessionSaveTimer = null;
     let recoveryTimer = null;
     let initialized = false;
@@ -64,6 +206,7 @@
         const store = table();
         if (!store || !task) return task;
         task.updatedAt = Date.now();
+        records.set(task.id, task);
         if (task.ownerId === ownerId && RUNNING_STATES.has(task.state)) activeTasks.set(task.id, task);
         else activeTasks.delete(task.id);
         await store.put(cloneSafe(task));
@@ -98,10 +241,11 @@
 
     async function getTask(id) {
         if (!id) return null;
+        if (jobs.has(id)) return jobs.get(id).task;
         if (activeTasks.has(id)) return activeTasks.get(id);
         const store = table();
         const task = store ? await store.get(id) : null;
-        if (task) activeTasks.set(id, task);
+        if (task) records.set(id, task);
         return task || null;
     }
 
@@ -110,7 +254,7 @@
         if (!store) return null;
         const candidates = await store.where('chatId').equals(chatId).toArray();
         return candidates
-            .filter(task => task.chatType === chatType && !!task.isBackground === !!isBackground && PENDING_STATES.has(task.state)
+            .filter(task => task.chatType === chatType && scopeMatches(task) && !!task.isBackground === !!isBackground && PENDING_STATES.has(task.state)
                 && (task.memberId || '') === memberId
                 && (!userMessageId || !task.userMessageId || task.userMessageId === userMessageId))
             .sort((left, right) => (right.updatedAt || 0) - (left.updatedAt || 0))[0] || null;
@@ -119,7 +263,7 @@
     async function begin(details) {
         const chat = getChat(details.chatId, details.chatType);
         const userMessageId = details.userMessageId || getLatestUserMessageId(chat);
-        let task = details.recoveryTaskId ? await getTask(details.recoveryTaskId) : null;
+        let task = details.queueTaskId || details.recoveryTaskId ? await getTask(details.queueTaskId || details.recoveryTaskId) : null;
         if (!task && details.reuseExisting !== false) {
             task = await findRecoverable(details.chatId, details.chatType, userMessageId, details.isBackground, details.memberId || '');
         }
@@ -146,6 +290,7 @@
                 chatId: details.chatId,
                 chatType: details.chatType,
                 memberId: details.memberId || '',
+                archiveScope: scopeOf(chat),
                 userMessageId,
                 state: details.initialState || 'requesting',
                 provider: details.provider || '',
@@ -184,7 +329,7 @@
     }
 
     function checkpoint(task, content, reasoning, extra) {
-        if (!task) return;
+        if (!task || task.cancelRequestedAt || ['cancelled', 'completed'].includes(task.state)) return;
         const requestedState = extra && extra.state;
         if (content !== undefined) task.rawPartial = String(content || '');
         if (reasoning !== undefined) task.reasoningPartial = String(reasoning || '');
@@ -240,14 +385,14 @@
     }
 
     function canFinalize(task) {
-        return !!task && task.ownerId === ownerId && RUNNING_STATES.has(task.state) && !task.cancelRequestedAt;
+        return !!task && task.ownerId === ownerId && RUNNING_STATES.has(task.state) && !task.cancelRequestedAt && scopeMatches(task);
     }
 
     async function fail(task, error, cancelled) {
         if (!task) return;
         const status = error && error.response && Number(error.response.status);
         const permanentClientError = error?.retryable === false || status >= 400 && status < 500 && status !== 408 && status !== 429;
-        task.state = cancelled ? 'cancelled' : permanentClientError ? 'failed' : 'interrupted';
+        task.state = cancelled || task.cancelRequestedAt ? 'cancelled' : permanentClientError ? 'failed' : 'interrupted';
         task.error = error ? { name: error.name || 'Error', message: String(error.message || error).slice(0, 500) } : null;
         await flush(task);
         activeTasks.delete(task.id);
@@ -259,18 +404,22 @@
     }
 
     async function cancelForChat(chatId, chatType) {
+        let cancelledJob = false;
+        for (const job of [...jobs.values()]) {
+            if (job.task.chatId === chatId && job.task.chatType === chatType && scopeMatches(job.task)) cancelledJob = await cancelTask(job.task.id);
+        }
         const store = table();
         const storedTasks = store ? await store.where('chatId').equals(chatId).toArray() : [];
         const candidates = new Map();
         storedTasks.forEach(task => {
-            if (task.chatType === chatType && !task.isBackground && PENDING_STATES.has(task.state)) candidates.set(task.id, task);
+            if (task.chatType === chatType && !task.isBackground && PENDING_STATES.has(task.state) && scopeMatches(task)) candidates.set(task.id, task);
         });
         activeTasks.forEach(task => {
             if (task.chatId === chatId && task.chatType === chatType && !task.isBackground && PENDING_STATES.has(task.state)) {
                 candidates.set(task.id, task);
             }
         });
-        if (!candidates.size) return false;
+        if (!candidates.size) return cancelledJob;
         const now = Date.now();
         for (const task of candidates.values()) {
             task.cancelRequestedAt = now;
@@ -342,98 +491,31 @@
     async function recoverPending() {
         const store = table();
         if (!store || typeof getAiReply !== 'function') return;
-        const now = Date.now();
-        const tasks = (await store.toArray())
-            .filter(task => PENDING_STATES.has(task.state))
-            .sort((left, right) => (right.updatedAt || 0) - (left.updatedAt || 0));
-        for (const task of tasks) {
-            if (activeTasks.has(task.id) && task.ownerId === ownerId && RUNNING_STATES.has(task.state)) continue;
-            const ownerHeartbeatAge = now - (task.updatedAt || task.createdAt || 0);
-            if (task.ownerId && task.ownerId !== ownerId && ownerHeartbeatAge >= 0 && ownerHeartbeatAge < 6000) {
-                clearTimeout(recoveryTimer);
-                recoveryTimer = setTimeout(() => { void recoverPending(); }, Math.max(500, 6200 - ownerHeartbeatAge));
-                continue;
+        for (const task of await store.toArray()) {
+            if (!jobs.has(task.id)) records.set(task.id, task);
+            if (!PENDING_STATES.has(task.state) || jobs.has(task.id) || activeTasks.has(task.id) && task.ownerId === ownerId) continue;
+            if (navigator.locks?.query) {
+                const locks = await navigator.locks.query();
+                const lane = `mio-chat-${typeof dexieDB !== 'undefined' ? dexieDB.name : ''}-${laneOf(task)}`;
+                if (locks.held.some(lock => lock.name === taskLockName(task.id) || lock.name === lane)) continue;
+            }
+            if (task.ownerId !== ownerId && Date.now() - task.updatedAt < 6000) {
+                clearTimeout(recoveryTimer); recoveryTimer = setTimeout(() => void recoverPending(), 6500); continue;
             }
             const chat = getChat(task.chatId, task.chatType);
-            if (!chat) {
-                task.state = 'failed';
-                task.error = { name: 'MissingChat', message: '原聊天已不存在，无法恢复回复' };
-                await putTask(task);
-                continue;
+            if (task.archiveScope === undefined || !scopeMatches(task)) {
+                task.state = 'interrupted'; task.error = { message: '原存档无法确认或已切换，未自动重新调用' };
+                await putTask(task); continue;
             }
-            const alreadyAnswered = (chat.history || []).some(message => message && message.replyRequestId === task.id);
-            if (alreadyAnswered) {
-                await complete(task);
-                continue;
-            }
-            const userMessageIndex = (chat.history || []).findIndex(message => message && message.id === task.userMessageId);
-            const completedMessages = userMessageIndex >= 0
-                ? chat.history.slice(userMessageIndex + 1).filter(message => message && message.role === 'assistant' && !message.isThinking && (!task.memberId || message.senderId === task.memberId)
-                    && Number(message.timestamp || 0) >= Number(task.createdAt || 0))
-                : [];
-            if (completedMessages.length) {
-                completedMessages.forEach(message => { if (!message.replyRequestId) message.replyRequestId = task.id; });
-                if (task.chatType === 'group' && typeof saveGroup === 'function') await saveGroup(task.chatId);
-                else if (task.chatType === 'private' && typeof saveCharacter === 'function') await saveCharacter(task.chatId);
-                await complete(task);
-                continue;
-            }
-            if (now - (task.updatedAt || task.createdAt || now) > AUTO_RECOVER_MAX_AGE || (task.attempt || 1) >= MAX_AUTO_ATTEMPTS) {
-                task.state = 'abandoned';
-                if (!task.userNotifiedAt) {
-                    task.userNotifiedAt = now;
-                    if (!task.isBackground && typeof currentChatId !== 'undefined' && currentChatId === task.chatId) {
-                        const indicator = document.getElementById('typing-indicator');
-                        if (indicator) {
-                            indicator.textContent = '上次回复已中断，点击回复可重新恢复';
-                            indicator.style.display = 'block';
-                        }
-                        if (typeof showToast === 'function') showToast('检测到未完成回复，已保留恢复记录');
-                    }
-                }
-                await putTask(task);
-                continue;
-            }
-            if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-                if (!task.isBackground && typeof currentChatId !== 'undefined' && currentChatId === task.chatId) {
-                    const indicator = document.getElementById('typing-indicator');
-                    if (indicator) {
-                        indicator.textContent = '网络已断开，将在恢复联网后继续';
-                        indicator.style.display = 'block';
-                    }
-                }
-                continue;
-            }
-            // 恢复回复不改变用户所在页面。
-            const isCurrentChat = typeof currentChatId !== 'undefined' && currentChatId === task.chatId
-                && typeof currentChatType !== 'undefined' && currentChatType === task.chatType
-                && document.querySelector('.screen.active')?.id === 'chat-room-screen';
-            const indicator = task.isBackground || !isCurrentChat ? null : document.getElementById('typing-indicator');
-            if (indicator) {
-                const savedLength = String(task.rawPartial || task.previousPartial || '').length;
-                indicator.textContent = savedLength > 0
-                    ? `已保存 ${savedLength} 字回复进度，正在恢复…`
-                    : '检测到未完成回复，正在恢复…';
-                indicator.style.display = 'block';
-            }
-            const runRecovery = () => task.memberId && window.MemberApiRuntime
-                ? window.MemberApiRuntime.reply(chat, !!task.isBackground, { memberIds: [task.memberId], retry: true, recoveryTaskId: task.id })
-                : getAiReply(task.chatId, task.chatType, !!task.isBackground, false, false, false, { recoveryTaskId: task.id });
-            logEvent('recovery-attempt', task);
-            if (navigator.locks && typeof navigator.locks.request === 'function') {
-                let acquired = false;
-                await navigator.locks.request(taskLockName(task.id), { ifAvailable: true }, async lock => {
-                    if (lock) {
-                        acquired = true;
-                        await runRecovery();
-                    }
-                });
-                if (!acquired && indicator) indicator.textContent = '回复仍在另一页面处理中…';
+            if (chat?.history?.some(message => message.replyRequestId === task.id)) { await complete(task); continue; }
+            if (task.queueVersion === 1 && task.state === 'queued' && !task.requestStartedAt && !task.isBackground) {
+                void getAiReply(task.chatId, task.chatType, false, task.kind === 'summary', !!task.queueOptions?.isCharBlockedMonologue, !!task.queueOptions?.isPhoneControlRevokeAttempt, { ...task.queueOptions, recoveryTaskId: task.id }).catch(error => { task.state = 'interrupted'; task.error = { message: error.message }; void putTask(task); });
             } else {
-                await runRecovery();
+                task.state = 'interrupted'; task.error = { message: '上次任务已中断，已保留进度；请确认后重试' };
+                await putTask(task);
             }
-            break;
         }
+        renderQueue();
     }
 
     function bindLifecycle() {
@@ -454,7 +536,7 @@
             logEvent(event.persisted ? 'pageshow-bfcache' : 'pageshow');
             if (event.persisted || document.wasDiscarded) void recoverPending();
         });
-        window.addEventListener('online', () => { logEvent('online'); void recoverPending(); });
+        window.addEventListener('online', () => { logEvent('online'); pumpQueue(); void recoverPending(); });
         document.addEventListener('freeze', () => { saveSessionNow(); void flushAll(); });
         document.addEventListener('resume', () => { void recoverPending(); });
         document.addEventListener('input', event => {
@@ -497,6 +579,7 @@
         scheduleSessionSave,
         restoreSession,
         recoverPending,
+        enqueue, cancelTask, retryTask, renderQueue, markRequested,
         _test: { RUNNING_STATES, RECOVERABLE_STATES, PENDING_STATES, captureSession, readSession, createId }
     };
 })();

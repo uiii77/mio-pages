@@ -206,7 +206,15 @@ function extractThinkingBlocks(response) {
 }
 
 async function handleAiReplyContent(fullResponse, chat, targetChatId, targetChatType, isBackground = false, isCharBlockedMonologue = false, replyOptions = {}) {
-    const replyHistoryStart = Array.isArray(chat?.history) ? chat.history.length : 0;
+    const producedMessages = [];
+    const appendReplyMessage = message => {
+        if (replyOptions.shouldStop?.()) throw new DOMException('任务已停止或存档已切换', 'AbortError');
+        if (replyOptions.replyRequestId) message.replyRequestId = replyOptions.replyRequestId;
+        if (replyOptions.inputMessageId != null && replyOptions.inputMessageId !== '') message.replyUserMessageId = replyOptions.inputMessageId;
+        chat.history.push(message);
+        producedMessages.push(message);
+        replyOptions.onMessage?.(message);
+    };
     const forcedMember = targetChatType === 'group' && replyOptions.memberId ? chat.members.find(member => member.id === replyOptions.memberId) : null;
     if (replyOptions.memberId && !forcedMember) throw new Error('发言成员已不存在');
     if (replyOptions.shouldStop?.()) return;
@@ -287,7 +295,7 @@ async function handleAiReplyContent(fullResponse, chat, targetChatId, targetChat
             if (forcedMember) thinkingMsg.senderId = forcedMember.id;
             
             // 存入历史记录
-            chat.history.push(thinkingMsg);
+            appendReplyMessage(thinkingMsg);
 
             // 【新增】清理旧的思维链消息，仅保留最近 50 条
             const maxThinkingMsgs = 50;
@@ -435,7 +443,7 @@ async function handleAiReplyContent(fullResponse, chat, targetChatId, targetChat
                     content: item.content.trim(),
                     timestamp: Date.now()
                 };
-                chat.history.push(message);
+                appendReplyMessage(message);
                 addMessageBubble(message, targetChatId, targetChatType);
                 continue; // 跳过后续处理
             }
@@ -584,7 +592,7 @@ async function handleAiReplyContent(fullResponse, chat, targetChatId, targetChat
                     }
                 }
 
-                chat.history.push(message);
+                appendReplyMessage(message);
                 addMessageBubble(message, targetChatId, targetChatType);
                 
                 setTimeout(async () => {
@@ -644,7 +652,7 @@ async function handleAiReplyContent(fullResponse, chat, targetChatId, targetChat
                             }
                         };
                         if (isCharBlockedMonologue) message.sentWhileCharBlocked = true;
-                        chat.history.push(message);
+                        appendReplyMessage(message);
                         addMessageBubble(message, targetChatId, targetChatType);
                     } else {
                         let filteredReplyText2 = replyText;
@@ -663,7 +671,7 @@ async function handleAiReplyContent(fullResponse, chat, targetChatId, targetChat
                             statusSnapshot: item.statusSnapshot
                         };
                         if (isCharBlockedMonologue) message.sentWhileCharBlocked = true;
-                        chat.history.push(message);
+                        appendReplyMessage(message);
                         addMessageBubble(message, targetChatId, targetChatType);
                     }
                 } else {
@@ -734,7 +742,7 @@ async function handleAiReplyContent(fullResponse, chat, targetChatId, targetChat
 
                     if(window.WalletGrants)await WalletGrants.processMessage(character,message);
                     if(window.WalletChat)await WalletChat.processMessage(chat,'private',message,String(character.id));
-                    chat.history.push(message);
+                    appendReplyMessage(message);
                     addMessageBubble(message, targetChatId, targetChatType);
                 }
 
@@ -773,7 +781,7 @@ async function handleAiReplyContent(fullResponse, chat, targetChatId, targetChat
                         timestamp: Date.now(),
                         senderId: senderId
                     };
-                    group.history.push(message);
+                    appendReplyMessage(message);
                     addMessageBubble(message, targetChatId, targetChatType);
                     continue; // 私聊消息处理完毕，跳过后续普通消息匹配
                 }
@@ -796,7 +804,7 @@ async function handleAiReplyContent(fullResponse, chat, targetChatId, targetChat
                             isTransferAction: true
                         };
                         if(window.WalletChat)await WalletChat.processMessage(group,'group',message,String(sender.id));
-                        group.history.push(message);
+                        appendReplyMessage(message);
                         addMessageBubble(message, targetChatId, targetChatType);
                     }
                     continue;
@@ -822,7 +830,7 @@ async function handleAiReplyContent(fullResponse, chat, targetChatId, targetChat
                             transferStatus: 'pending'
                         };
                         if(window.WalletChat)await WalletChat.processMessage(group,'group',message,String(sender.id));
-                        group.history.push(message);
+                        appendReplyMessage(message);
                         addMessageBubble(message, targetChatId, targetChatType);
                     }
                 } else if (nameMatch || item.char) {
@@ -838,7 +846,7 @@ async function handleAiReplyContent(fullResponse, chat, targetChatId, targetChat
                             timestamp: Date.now(),
                             senderId: sender.id
                         };
-                        group.history.push(message);
+                        appendReplyMessage(message);
                         addMessageBubble(message, targetChatId, targetChatType);
                     }
                 }
@@ -853,14 +861,14 @@ async function handleAiReplyContent(fullResponse, chat, targetChatId, targetChat
                 content: extractedNodeSummary,
                 timestamp: Date.now()
             };
-            chat.history.push(summaryMsg);
+            appendReplyMessage(summaryMsg);
             addMessageBubble(summaryMsg, targetChatId, targetChatType);
         }
 
         // 将同一次回复中已经生成的原文/译文拆成兼容字段，正文仍保持原格式。
         // 这一步不调用翻译 API，也不会把译文重新送回模型。
         if (globalThis.MessageContentParser?.parse) {
-            chat.history.slice(replyHistoryStart).forEach(message => {
+            producedMessages.forEach(message => {
                 if (!message || message.role !== 'assistant' || typeof message.content !== 'string') return;
                 const parsed = globalThis.MessageContentParser.parse(message.content);
                 if (!parsed?.isWrapper) return;
@@ -965,6 +973,7 @@ async function handleRegenerate() {
             if (!userMsg._regenVersions) userMsg._regenVersions = [];
             const aiReplies = [];
             for (let i = lastUserMessageIndex + 1; i < chat.history.length; i++) {
+                if (chat.history[i].role === 'user' || chat.history[i].replyUserMessageId != null && chat.history[i].replyUserMessageId !== userMsg.id) continue;
                 aiReplies.push({
                     content: chat.history[i].content,
                     role: chat.history[i].role,
@@ -997,24 +1006,17 @@ async function handleRegenerate() {
 }
 
 async function _doRegenerate(chat, lastUserMessageIndex) {
-    const originalLength = chat.history.length;
-    chat.history.splice(lastUserMessageIndex + 1);
-
-    if (chat.history.length === originalLength) {
+    const anchorId = chat.history[lastUserMessageIndex]?.id;
+    const targets = chat.history.slice(lastUserMessageIndex + 1).filter(message => message.role !== 'user' && (message.replyUserMessageId == null || message.replyUserMessageId === anchorId));
+    if (!targets.length) {
         showToast('未找到AI的回复，无法重新生成。');
         return;
     }
-    
-    if (currentChatType === 'private') {
-        recalculateChatStatus(chat);
-    }
-
-    await saveCurrentChat();
-    
-    currentPage = 1; 
-    renderMessages(false, true); 
-
-    await getAiReply(currentChatId, currentChatType);
+    const chatType = db.groups.includes(chat) ? 'group' : 'private';
+    // Keep the visible reply until its replacement has actually been saved.
+    await getAiReply(chat.id, chatType, false, false, false, false, {
+        regenerate: { targetMessageIds: targets.map(message => message.id), anchorId: chat.history[lastUserMessageIndex].id }
+    });
 }
 
 /** 将偷看记录中的单条应用内容格式化为可读摘要，供系统提示使用 */

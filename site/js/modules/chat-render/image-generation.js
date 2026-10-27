@@ -8,10 +8,20 @@ function saveImageGenerationChat(chatId, chatType) {
 }
 
 window._scheduleBackgroundNaiGen = function(msgId, chatId, chatType, pvContent) {
+    if (window._naiGenAbortControllers[msgId]) return;
+    const findChat = () => (chatType === 'private' ? db.characters : db.groups).find(chat => chat.id === chatId);
+    const scope = String(findChat()?.chatArchiveScopeId || '');
+    const original = findChat()?.history?.find(message => message.id === msgId);
+    if (!original) return;
+    const content = original.content;
+    const validTarget = () => {
+        const chat = findChat();
+        return chat && String(chat.chatArchiveScopeId || '') === scope && chat.history?.some(message => message.id === msgId && message.content === content);
+    };
+    const controller = new AbortController();
+    window._naiGenAbortControllers[msgId] = controller;
     _naiAutoGenQueue.push(async () => {
         // 设置 AbortController 并支持可配置的超时时间
-        const controller = new AbortController();
-        window._naiGenAbortControllers[msgId] = controller;
         const timeoutMs = (db.imageGenTimeout ?? 120) * 1000; // 默认 120 秒，0代表不限制
         let timeoutId;
         if (timeoutMs > 0) {
@@ -24,13 +34,14 @@ window._scheduleBackgroundNaiGen = function(msgId, chatId, chatType, pvContent) 
         let errorReason = null;
 
         try {
+            if (controller.signal.aborted || !validTarget()) throw new DOMException('目标消息已变化或任务已取消', 'AbortError');
             const tagMatch = pvContent.match(/\{\{([\s\S]+?)\}\}/);
             const naiPrompt = tagMatch ? tagMatch[1].trim() : pvContent;
             
             console.log('[Image Auto Background] 为消息生图, prompt:', naiPrompt);
             const result = await generateImageDispatch(naiPrompt, controller.signal);
             
-            if (result && result.imageUrl) {
+            if (!controller.signal.aborted && validTarget() && result && result.imageUrl) {
                 finalImageUrl = result.imageUrl;
                 finalMetadata = {
                     provider: result.provider || db.activeImageProvider || '', model: result.model || '',
@@ -69,7 +80,7 @@ window._scheduleBackgroundNaiGen = function(msgId, chatId, chatType, pvContent) 
             
             // 重要：为了防止闭包里的 db 引用过期，在这里重新查找最新的消息对象！
             const currentChat = chatType === 'private' ? db.characters.find(c => c.id === chatId) : db.groups.find(g => g.id === chatId);
-            if (currentChat && currentChat.history) {
+            if (currentChat && currentChat.history && validTarget()) {
                 const currentMsg = currentChat.history.find(m => m.id === msgId);
                 if (currentMsg) {
                     if (isSuccess && finalImageUrl) {
@@ -98,7 +109,7 @@ window._scheduleBackgroundNaiGen = function(msgId, chatId, chatType, pvContent) 
             }
 
             // 数据落盘
-            saveImageGenerationChat(chatId, chatType);
+            if (validTarget()) await saveImageGenerationChat(chatId, chatType);
             
             // 如果用户还留在这个聊天界面，主动刷新气泡
             if (window.currentChatId === chatId && window.currentChatType === chatType) {

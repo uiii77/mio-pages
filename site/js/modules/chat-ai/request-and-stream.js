@@ -366,12 +366,32 @@ function collapseStickerPartsForAI(parts) {
     return result;
 }
 
+function getChatRepetitionContext(chat, chatType, history, member = null) {
+    if (!window.ChatRepetitionCore) return null;
+    const speakers = chatType === 'group' ? (member ? [member] : chat.members || []) : [null];
+    for (const speaker of speakers) {
+        const result = window.ChatRepetitionCore.inspect(history, { speakerId: speaker?.id, scope: String(chat.chatArchiveScopeId || '') });
+        if (!result) continue;
+        const name = speaker ? String(speaker.groupNickname || speaker.realName || '').replace(/[\r\n\[\]<>]/g, '').slice(0, 8) : '';
+        return { ...result, hint: `\n${name ? name + '：' : ''}${result.hint}\n` };
+    }
+    return null;
+}
+
 async function getAiReply(chatId, chatType, isBackground = false, isSummary = false, isCharBlockedMonologue = false, isPhoneControlRevokeAttempt = false, replyOptions = {}) {
+    if (window.ReplyResilience?.enqueue && !replyOptions.queueBypass && !replyOptions.memberTask) {
+        const queueOptions = Object.fromEntries(['backgroundReason', 'followUpTaskId', 'activeMessagePrompt', 'regenerate', 'memberIds', 'retry'].filter(key => replyOptions[key] !== undefined).map(key => [key, replyOptions[key]]));
+        Object.assign(queueOptions, { isCharBlockedMonologue, isPhoneControlRevokeAttempt });
+        return window.ReplyResilience.enqueue({ chatId, chatType, isBackground, isSummary, recoveryTaskId: replyOptions.recoveryTaskId, queueOptions },
+            (task, signal) => getAiReply(chatId, chatType, isBackground, isSummary, isCharBlockedMonologue, isPhoneControlRevokeAttempt,
+                { ...replyOptions, queueBypass: true, queueTaskId: task.id, inputMessageId: task.userMessageId, signal }))
+            .catch(error => { if (!isBackground) showToast(error.message || '任务保存失败，未调用模型'); return false; });
+    }
     if (window.StatusStorage?.isChatLocked(chatType, chatId)) {
         if (!isBackground) showToast('此会话正在整理状态栏数据，请在操作完成后再调用');
         return;
     }
-    if (isGenerating && !isBackground && !replyOptions.recoveryTaskId && !replyOptions.memberTask) return;
+    if (isGenerating && !isBackground && !replyOptions.queueBypass && !replyOptions.recoveryTaskId && !replyOptions.memberTask) return;
     if (chatType === 'group' && !isSummary && !replyOptions.memberTask && window.MemberApiRuntime) {
         const group = db.groups.find(item => item.id === chatId);
         if (window.MemberApiRuntime.isIndependent(group)) return window.MemberApiRuntime.reply(group, isBackground, replyOptions);
@@ -439,6 +459,16 @@ async function getAiReply(chatId, chatType, isBackground = false, isSummary = fa
 
     const chat = replyOptions.workingChat || ((chatType === 'private') ? db.characters.find(c => c.id === chatId) : db.groups.find(g => g.id === chatId));
     if (!chat) return;
+    const archiveScope = String(chat.chatArchiveScopeId || '');
+    const originalStop = replyOptions.shouldStop;
+    const input = chat.history?.find(message => message.id === replyOptions.inputMessageId);
+    const inputSnapshot = input ? JSON.stringify([input.content, input.isContextDisabled, input.excludeFromContext]) : '';
+    replyOptions = { ...replyOptions, shouldStop: () => {
+        const live = (chatType === 'private' ? db.characters : db.groups).find(item => item.id === chatId);
+        const anchor = live?.history?.find(message => message.id === replyOptions.inputMessageId);
+        return !!originalStop?.() || !!replyOptions.signal?.aborted || !live || String(live.chatArchiveScopeId || '') !== archiveScope
+            || !!inputSnapshot && (!anchor || JSON.stringify([anchor.content, anchor.isContextDisabled, anchor.excludeFromContext]) !== inputSnapshot);
+    } };
     const backgroundReason = replyOptions.backgroundReason || 'inactivity';
     const backgroundSpeaker = replyOptions.member ? (replyOptions.member.groupNickname || replyOptions.member.realName) : chat.realName;
     const backgroundInstruction = backgroundReason === 'followUp'
@@ -456,11 +486,20 @@ async function getAiReply(chatId, chatType, isBackground = false, isSummary = fa
         } catch (_) { /* diagnostics must not affect chat */ }
     };
     let replyTask = null;
-    const resilienceEnabled = !isSummary && window.ReplyResilience;
+    const resilienceEnabled = window.ReplyResilience;
     let requestAbortController = null;
     let replyIdleTimer = null;
     let replyTotalTimer = null;
     let replyWatchdogStarted = false;
+    let releaseNetwork = null, networkKey = '';
+    const acquireNetwork = async config => {
+        if (!window.ChatRequestGate) return;
+        const key = window.ChatRequestGate.key(config);
+        if (releaseNetwork && key === networkKey) return;
+        releaseNetwork?.(); releaseNetwork = null;
+        releaseNetwork = await window.ChatRequestGate.acquire(config, requestAbortController?.signal, isBackground);
+        networkKey = key;
+    };
     const abortForTimeout = message => {
         if (!requestAbortController || requestAbortController.signal.aborted) return;
         const timeoutError = new Error(message);
@@ -485,12 +524,18 @@ async function getAiReply(chatId, chatType, isBackground = false, isSummary = fa
         replyTotalTimer = null;
     };
     const persistTargetChat = async () => {
-        if (chatType === 'group' && typeof saveGroup === 'function') return saveGroup(chatId);
-        if (chatType === 'private' && typeof saveCharacter === 'function') return saveCharacter(chatId);
-        if (typeof saveCurrentChat === 'function' && currentChatId === chatId && currentChatType === chatType) return saveCurrentChat();
+        let result;
+        if (chatType === 'group' && typeof saveGroup === 'function') result = await saveGroup(chatId);
+        else if (chatType === 'private' && typeof saveCharacter === 'function') result = await saveCharacter(chatId);
+        else if (typeof saveCurrentChat === 'function' && currentChatId === chatId && currentChatType === chatType) result = await saveCurrentChat();
+        if (result === false) throw new Error('回复保存失败，请保留页面并重试保存');
     };
     let musicTicket = null;
+    let repetitionContext = null;
     const finalizeReply = async (fullResponse) => {
+        releaseNetwork?.(); releaseNetwork = null;
+        stopReplyWatchdog();
+        if (replyOptions.shouldStop()) throw new DOMException('输入已修改或存档已切换', 'AbortError');
         if (requestAbortController && requestAbortController.signal.aborted) {
             throw requestAbortController.signal.reason || new DOMException('The operation was aborted.', 'AbortError');
         }
@@ -520,15 +565,32 @@ async function getAiReply(chatId, chatType, isBackground = false, isSummary = fa
         }
         if (replyTask) await window.ReplyResilience.markFinalizing(replyTask, fullResponse);
         if (replyOptions.memberTask && replyOptions.onResult) {
-            await replyOptions.onResult({ fullResponse, replyTask, runtimeChat: chat, apiUsage: { ...window.RoleApiBindings.describe(apiConfig), elapsedMs: Date.now() - apiStartedAt } });
+            await replyOptions.onResult({ fullResponse, replyTask, runtimeChat: chat, repetitionReceipt: repetitionContext?.receipt, apiUsage: { ...window.RoleApiBindings.describe(apiConfig), elapsedMs: Date.now() - apiStartedAt } });
             return;
         }
-        const historyLengthBefore = Array.isArray(chat.history) ? chat.history.length : 0;
+        const producedMessages = [];
         const musicResult = musicTicket && window.MessageContentParser?.extractMusicSuggestion
             ? window.MessageContentParser.extractMusicSuggestion(fullResponse) : null;
         if (musicResult) fullResponse = musicResult.cleaned;
-        await handleAiReplyContent(fullResponse, chat, chatId, chatType, isBackground, isCharBlockedMonologue, replyOptions);
-        const producedMessages = Array.isArray(chat.history) ? chat.history.slice(historyLengthBefore) : [];
+        await handleAiReplyContent(fullResponse, chat, chatId, chatType, isBackground, isCharBlockedMonologue,
+            { ...replyOptions, replyRequestId: replyTask?.id, onMessage: message => producedMessages.push(message) });
+        if (replyOptions.shouldStop()) throw new DOMException('任务已停止', 'AbortError');
+        if (repetitionContext) {
+            const target = producedMessages.find(message => message.role === 'assistant' && !message.isThinking && (repetitionContext.receipt.speakerId == null || message.senderId === repetitionContext.receipt.speakerId));
+            if (target) target.repetitionHint = window.ChatRepetitionCore.createReceipt(repetitionContext.receipt, target);
+        }
+        if (producedMessages.length && replyOptions.regenerate?.targetMessageIds?.length) {
+            const oldIds = new Set(replyOptions.regenerate.targetMessageIds);
+            const previous = chat.history;
+            chat.history = chat.history.filter(message => !oldIds.has(message.id));
+            try { await persistTargetChat(); }
+            catch (error) {
+                const existing = new Set(previous.map(message => message.id));
+                chat.history = [...previous, ...chat.history.filter(message => !existing.has(message.id))];
+                throw error;
+            }
+            if (currentChatId === chatId && currentChatType === chatType) renderMessages(false, true);
+        }
         if (musicTicket && producedMessages.length && !requestAbortController?.signal.aborted && !replyOptions.shouldStop?.()
             && (!replyTask || window.ReplyResilience?.canFinalize(replyTask))) {
             try { window.MioMusic?.receiveSuggestion?.(musicTicket, musicResult?.suggestion); }
@@ -540,11 +602,11 @@ async function getAiReply(chatId, chatType, isBackground = false, isSummary = fa
         );
         if (linkedActivityTrace) producedMessages.forEach(message => { message.activityTrace = linkedActivityTrace; });
         if (apiConfig._roleBinding && Array.isArray(chat.history)) {
-            chat.history.slice(historyLengthBefore).forEach(message => { message.apiUsage = { ...window.RoleApiBindings.describe(apiConfig), elapsedMs: Date.now() - apiStartedAt }; });
+            producedMessages.forEach(message => { message.apiUsage = { ...window.RoleApiBindings.describe(apiConfig), elapsedMs: Date.now() - apiStartedAt }; });
             await persistTargetChat();
         }
         if (replyTask && Array.isArray(chat.history)) {
-            chat.history.slice(historyLengthBefore).forEach(message => {
+            producedMessages.forEach(message => {
                 if (message && !message.replyRequestId) message.replyRequestId = replyTask.id;
             });
             await persistTargetChat();
@@ -552,7 +614,7 @@ async function getAiReply(chatId, chatType, isBackground = false, isSummary = fa
         }
         if (!isBackground && !isSummary && chatType === 'private' && window.FollowUpReply) {
             try {
-                await window.FollowUpReply.scheduleAfterReply(chatId, chat.history.slice(historyLengthBefore));
+                await window.FollowUpReply.scheduleAfterReply(chatId, producedMessages);
             } catch (followUpScheduleError) {
                 // 追发任务属于附加能力，保存失败不能把已经成功展示的正常回复判为失败。
                 console.warn('[FollowUpReply] could not schedule follow-up:', followUpScheduleError);
@@ -571,19 +633,16 @@ async function getAiReply(chatId, chatType, isBackground = false, isSummary = fa
         if (!isBackground) showToast('此会话正在整理状态栏数据，请在操作完成后再调用');
         return;
     }
-    if (!isBackground && !replyOptions.memberTask) {
-        currentReplyAbortController = new AbortController();
-        requestAbortController = currentReplyAbortController;
+    requestAbortController = new AbortController();
+    if (!isBackground && !replyOptions.memberTask && currentChatId === chatId && currentChatType === chatType) {
+        currentReplyAbortController = requestAbortController;
         isGenerating = true;
-        getReplyBtn.disabled = true;
+        getReplyBtn.disabled = !replyOptions.queueBypass;
         regenerateBtn.disabled = true;
         const typingName = chatType === 'private' ? chat.remarkName : chat.name;
         typingIndicator.textContent = `“${typingName}”正在输入中...`;
         typingIndicator.style.display = 'block';
         messageArea.scrollTop = messageArea.scrollHeight;
-    } else {
-        // 后台请求使用独立 controller，避免前台中止或其他角色请求串线。
-        requestAbortController = new AbortController();
     }
     const abortMemberRequest = () => requestAbortController.abort(replyOptions.signal.reason);
     if (replyOptions.signal) {
@@ -591,8 +650,8 @@ async function getAiReply(chatId, chatType, isBackground = false, isSummary = fa
         else replyOptions.signal.addEventListener('abort', abortMemberRequest, { once: true });
     }
 
-    if (resilienceEnabled) {
-        try {
+    try {
+        if (resilienceEnabled) {
             const latestUserMessage = [...(chat.history || [])].reverse().find(message => message && message.role === 'user' && !message.excludeFromContext);
             replyTask = await window.ReplyResilience.begin({
                 chatId,
@@ -603,17 +662,19 @@ async function getAiReply(chatId, chatType, isBackground = false, isSummary = fa
                 streamEnabled,
                 isBackground: !!isBackground,
                 recoveryTaskId: replyOptions.recoveryTaskId || '',
+                queueTaskId: replyOptions.queueTaskId || '',
                 initialState: 'preparing',
+                reuseExisting: false,
                 memberId: replyOptions.member?.id || ''
             });
-        } catch (resilienceError) {
-            console.warn('[ReplyResilience] could not persist request start:', resilienceError);
         }
-    }
-
-    try {
         let requestBody;
         let historySlice = getChatRequestHistory(chat, chatType);
+        const requestedInput = replyOptions.inputMessageId;
+        const cutoff = requestedInput != null && requestedInput !== '' ? chat.history.findIndex(message => message.id === requestedInput) : -1;
+        const laterUsers = new Set(cutoff >= 0 ? chat.history.slice(cutoff + 1).filter(message => message.role === 'user').map(message => message.id) : []);
+        const excludedReplies = new Set(replyOptions.regenerate?.targetMessageIds || []);
+        historySlice = historySlice.filter(message => !laterUsers.has(message.id) && !excludedReplies.has(message.id));
         if (latestTurnProtectionEnabled) latestTurnIds = getLatestConversationTurnIds(historySlice);
 
         let weatherText = '';
@@ -677,6 +738,11 @@ async function getAiReply(chatId, chatType, isBackground = false, isSummary = fa
             } else {
                 systemPrompt = "Group chat system prompt not available.";
             }
+        }
+
+        if (!isSummary) {
+            repetitionContext = getChatRepetitionContext(chat, chatType, historySlice, replyOptions.member);
+            if (repetitionContext) systemPrompt += repetitionContext.hint;
         }
 
         // 检查是否开启了后台自动识图
@@ -964,9 +1030,11 @@ async function getAiReply(chatId, chatType, isBackground = false, isSummary = fa
             replyTask.streamEnabled = !!streamEnabled;
             await window.ReplyResilience.flush(replyTask);
         }
+        await acquireNetwork(apiConfig);
         startReplyWatchdog();
+        if (replyOptions.shouldStop()) throw new DOMException('任务已停止', 'AbortError');
         if (!isBackground && !isSummary && window.McpChatOrchestrator && window.mcpManager) {
-            const latestMcpUserMessage = [...(chat.history || [])].reverse().find(message => message && message.role === 'user' && !message.excludeFromContext);
+            const latestMcpUserMessage = [...historySlice].reverse().find(message => message && message.role === 'user' && !message.excludeFromContext);
             const mcpCatalog = window.McpChatOrchestrator.createCatalog(chat, latestMcpUserMessage);
             if (mcpCatalog.length) {
                 const signal = requestAbortController ? requestAbortController.signal : undefined;
@@ -1022,7 +1090,7 @@ async function getAiReply(chatId, chatType, isBackground = false, isSummary = fa
                     toolEndpoint = toolPrepared.endpoint;
                     const toolTokenRecord = typeof recordChatTokenRequest === 'function' ? recordChatTokenRequest(chat, chatType, toolRequestBody, apiConfig, { history: historySlice, systemPrompt, scope: 'tools', roundId: replyTask?.id || '' }) : null;
                     let toolResponse;
-                    try { toolResponse = await fetch(toolEndpoint, {
+                    try { await window.ReplyResilience?.markRequested?.(replyTask); toolResponse = await fetch(toolEndpoint, {
                         method: 'POST',
                         headers: toolPrepared.headers,
                         body: JSON.stringify(toolRequestBody),
@@ -1078,6 +1146,8 @@ async function getAiReply(chatId, chatType, isBackground = false, isSummary = fa
             if (!check.valid) throw new Error('最新轮次保护校验失败：最终请求未以本轮用户消息作为对话触发点');
         }
         const sendPrepared = async (targetEndpoint, targetHeaders, targetBody, tokenSettings = apiConfig) => {
+            await acquireNetwork(tokenSettings);
+            await window.ReplyResilience?.markRequested?.(replyTask);
             const tokenRecord = typeof recordChatTokenRequest === 'function' ? recordChatTokenRequest(chat, chatType, targetBody, tokenSettings, {
                 history: historySlice, systemPrompt, scope: isBackground ? 'background' : isSummary ? 'summary' : 'chat', memberId: replyOptions.member?.id || '', roundId: replyTask?.id || ''
             }) : null;
@@ -1233,12 +1303,13 @@ async function getAiReply(chatId, chatType, isBackground = false, isSummary = fa
         }
         return false;
     } finally {
+        releaseNetwork?.();
         if (replyOptions.signal) replyOptions.signal.removeEventListener('abort', abortMemberRequest);
         stopReplyWatchdog();
         if (replyTask && window.ReplyResilience) {
             try { await window.ReplyResilience.flush(replyTask); } catch (_) { /* best effort lifecycle checkpoint */ }
         }
-        if (!isBackground && !replyOptions.memberTask) {
+        if (!isBackground && !replyOptions.memberTask && currentChatId === chatId && currentChatType === chatType) {
             if (currentReplyAbortController === requestAbortController) currentReplyAbortController = null;
             isGenerating = false;
             getReplyBtn.disabled = false;
@@ -1248,6 +1319,7 @@ async function getAiReply(chatId, chatType, isBackground = false, isSummary = fa
                 typingIndicator.style.display = 'none';
             }
         }
+        window.ReplyResilience?.renderQueue?.();
     }
 }
 

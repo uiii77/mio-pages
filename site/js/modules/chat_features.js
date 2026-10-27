@@ -314,7 +314,6 @@ async function openChatCamera(fallbackInput, destination) {
 
 async function sendImageForRecognition(base64Data) {
     if (!base64Data) return false;
-    if (isGenerating) { showToast('请等待当前回复完成后再发送图片'); return false; }
     const chat = (currentChatType === 'private') ? db.characters.find(c => c.id === currentChatId) : db.groups.find(g => g.id === currentChatId);
     if (!chat) return false;
     if (!chat.history) chat.history = [];

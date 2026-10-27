@@ -87,7 +87,7 @@
         return recognition;
     }
 
-    async function transcribeCloud(blob, overrides = {}) {
+    async function transcribeCloud(blob, overrides = {}, signal) {
         const cfg = { ...config, ...overrides };
         if (!cloudConfigured(cfg)) throw new Error('云端 STT 未配置或未授权');
         const endpoint = new URL(cfg.cloudUrl);
@@ -97,10 +97,12 @@
         body.append('file', blob, `recording.${extension}`);
         body.append('model', cfg.cloudModel);
         if (cfg.language) body.append('language', cfg.language);
+        const release = await global.ChatRequestGate?.acquire(cfg, signal);
+        try {
         const response = await fetch(endpoint.href, {
             method: 'POST',
             headers: { Authorization: `Bearer ${cfg.cloudApiKey}` },
-            body
+            body, signal
         });
         if (!response.ok) {
             let detail = '';
@@ -111,9 +113,11 @@
         const text = String(data?.text ?? data?.transcript ?? data?.data?.text ?? '').trim();
         if (!text) throw new Error('云端 STT 未返回转写文本');
         return text;
+        } finally { release?.(); }
     }
 
     async function start(options = {}) {
+        const controller = new AbortController();
         if (!navigator.mediaDevices?.getUserMedia || !global.MediaRecorder) throw new Error('当前环境不支持麦克风录音，请使用 HTTPS 浏览器');
         const cfg = { ...config, ...(options.config || {}) };
         const mode = ['auto', 'browser', 'cloud'].includes(cfg.mode) ? cfg.mode : 'auto';
@@ -163,11 +167,12 @@
                 const shouldUseCloud = mode === 'cloud' || (mode === 'auto' && (!transcriptOriginal || state.browserError));
                 if (shouldUseCloud && cloudConfigured(cfg)) {
                     options.onState?.('transcribing-cloud');
-                    transcriptOriginal = await transcribeCloud(blob, cfg);
+                    transcriptOriginal = await transcribeCloud(blob, cfg, controller.signal);
                     sttSource = 'cloud';
                 } else if (mode === 'cloud') {
                     throw new Error('云端 STT 未配置或未授权');
                 }
+                if (controller.signal.aborted) throw new DOMException('录音已取消', 'AbortError');
                 session.result = {
                     blob,
                     dataUrl: await blobToDataUrl(blob),
@@ -182,6 +187,7 @@
                 return session.result;
             },
             cancel: () => {
+                controller.abort();
                 stopped = true;
                 clearTimeout(limitTimer);
                 try { recognition?.abort?.(); } catch (_) {}

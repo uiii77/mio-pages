@@ -458,7 +458,7 @@ function setupChatRoom() {
         }, 50);
     });
     messageInput.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter' && !isGenerating) sendMessage();
+        if (e.key === 'Enter' && !e.isComposing) sendMessage();
     });
 
     // 监听输入框聚焦事件：自动收起底部面板，避免与键盘冲突
@@ -480,7 +480,7 @@ function setupChatRoom() {
     const abortReplyBtn = document.getElementById('abort-reply-btn');
     if (abortReplyBtn) {
         abortReplyBtn.addEventListener('click', async () => {
-            const hadLiveController = typeof currentReplyAbortController !== 'undefined' && !!currentReplyAbortController;
+            const hadLiveController = !window.ReplyResilience && typeof currentReplyAbortController !== 'undefined' && !!currentReplyAbortController;
             if (hadLiveController) {
                 currentReplyAbortController.abort();
             }
@@ -842,7 +842,8 @@ function openChatRoom(chatId, type) {
         typingIndicator.style.display = 'none';
     }
     isGenerating = hasActiveReply;
-    getReplyBtn.disabled = hasActiveReply;
+    getReplyBtn.disabled = false;
+    window.ReplyResilience?.renderQueue?.();
     regenerateBtn.disabled = hasActiveReply;
     currentPage = 1;
     chatRoomScreen.className = chatRoomScreen.className.replace(/\bchat-active-[^ ]+\b/g, '');
@@ -967,7 +968,7 @@ function openChatRoom(chatId, type) {
 
 async function sendMessage() {
     const text = messageInput.value.trim();
-    if (!text || isGenerating) return;
+    if (!text) return;
     messageInput.value = '';
     const chat = (currentChatType === 'private') ? db.characters.find(c => c.id === currentChatId) : db.groups.find(g => g.id === currentChatId);
 
@@ -1022,7 +1023,7 @@ async function sendMessage() {
     }
 
     const message = {
-        id: `msg_${Date.now()}`,
+        id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         role: 'user',
         content: messageContent,
         parts: [{type: 'text', text: messageContent}],

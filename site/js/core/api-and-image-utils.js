@@ -32,6 +32,10 @@ async function fetchAiResponse(settings, requestBody, headers, endpoint, forceSt
         }
     }
 
+    const release = await window.ChatRequestGate?.acquire(settings, requestOptions?.signal, requestOptions?.background !== false);
+    try {
+    if (requestOptions?.signal?.aborted) throw requestOptions.signal.reason || new DOMException('任务已取消', 'AbortError');
+    if (requestOptions?.isAllowed && !requestOptions.isAllowed()) throw new DOMException('任务已停止', 'AbortError');
     if (requestOptions?.beforeRequest) await requestOptions.beforeRequest();
     // Token records are diagnostics only and do not change request parameters.
     const tokenRecord = typeof recordAuxiliaryTokenRequest === 'function' ? recordAuxiliaryTokenRequest(settings, requestBody) : null;
@@ -89,6 +93,7 @@ async function fetchAiResponse(settings, requestBody, headers, endpoint, forceSt
         requestOptions?.onUsage?.(data.usage || data.usageMetadata || null);
         return extractAiProviderResponse(data, provider).content;
     }
+    } finally { release?.(); }
 }
 
 async function readStreamResponse(response, provider, tokenRecord = null, onUsage = null) {
@@ -1193,11 +1198,15 @@ async function generateImageDispatch(prompt, signal = null) {
     };
     let provider = db.activeImageProvider;
     if (!enabled[provider]) provider = ['gpt', 'novelai', 'google', 'stability'].find(key => enabled[key]);
-    if (provider === 'gpt') return generateGptImage(prompt, {}, signal);
-    if (provider === 'novelai') return generateNovelAiImage(prompt, {}, signal);
-    if (provider === 'google') return generateGoogleImage(prompt, {}, signal);
-    if (provider === 'stability') return generateStabilityImage(prompt, {}, signal);
-    throw new Error('未开启任何生图引擎，请先在 API 设置中启用一个生图平台');
+    const config = { gpt: db.gptImageSettings, novelai: db.novelAiSettings, google: db.googleImageSettings, stability: db.stabilityImageSettings }[provider];
+    const release = await window.ChatRequestGate?.acquire({ url: config?.customUrlEnabled ? config.customUrl : config?.url || config?.baseUrl, provider }, signal);
+    try {
+        if (provider === 'gpt') return await generateGptImage(prompt, {}, signal);
+        if (provider === 'novelai') return await generateNovelAiImage(prompt, {}, signal);
+        if (provider === 'google') return await generateGoogleImage(prompt, {}, signal);
+        if (provider === 'stability') return await generateStabilityImage(prompt, {}, signal);
+        throw new Error('未开启任何生图引擎，请先在 API 设置中启用一个生图平台');
+    } finally { release?.(); }
 }
 
 /**

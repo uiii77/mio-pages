@@ -140,7 +140,8 @@ const ChatTokenStats = (() => {
         // Existing memory getters refresh nested caches. Give preview its own state so
         // opening statistics cannot replace the live retrieval/table state.
         for (const key of ['memoryTables','vectorMemory']) if (shadow[key]) shadow[key] = JSON.parse(JSON.stringify(shadow[key]));
-        const prompt = type === 'private' ? (typeof generatePrivateSystemPrompt === 'function' ? generatePrivateSystemPrompt(shadow,{ preview:true }) : '') : (typeof generateGroupSystemPrompt === 'function' ? generateGroupSystemPrompt(shadow,{ preview:true }) : '');
+        let prompt = type === 'private' ? (typeof generatePrivateSystemPrompt === 'function' ? generatePrivateSystemPrompt(shadow,{ preview:true }) : '') : (typeof generateGroupSystemPrompt === 'function' ? generateGroupSystemPrompt(shadow,{ preview:true }) : '');
+        if (typeof getChatRepetitionContext === 'function') prompt += getChatRepetitionContext(shadow, type, selected)?.hint || '';
         let body, prepared;
         if (settings.provider === 'gemini' && typeof serializeChatHistoryForGemini === 'function') {
             const contents = serializeChatHistoryForGemini(shadow,type,selected,settings); if (contents.at(-1)?.role === 'model') contents.push({ role:'user', parts:[{ text:'[继续对话。]' }] });

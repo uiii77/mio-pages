@@ -356,10 +356,12 @@ const TTSService = {
         const controller = new AbortController();
         this.requestControllers.add(controller);
         let timedOut = false;
-        const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, 60000);
+        let timeout, release;
         const generation = this.configGeneration;
 
         try {
+            release = await window.ChatRequestGate?.acquire({ url: provider === 'elevenlabs' ? this._elevenBaseUrl(cfg) : provider === 'volcengine' ? cfg.volcUrl : cfg.domain, provider }, controller.signal);
+            timeout = setTimeout(() => { timedOut = true; controller.abort(); }, 60000);
             let audioUrl;
             let audioBlob;
             
@@ -451,6 +453,7 @@ const TTSService = {
             if (err.name !== 'AbortError') console.error('[TTS] 合成失败:', err);
             throw err;
         } finally {
+            release?.();
             clearTimeout(timeout);
             this.requestControllers.delete(controller);
         }
