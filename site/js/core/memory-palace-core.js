@@ -156,7 +156,8 @@
         }
         // Unknown context sizes use a conservative 8K budget; reserve room for instructions and output.
         const context = Math.max(2048, Number(config.contextWindow || config.contextLength) || 8192);
-        const budget = Math.max(512, Math.min(24000, Math.floor(context * 0.5) - 1024));
+        // Reserve instructions, candidate memories and structured output; large contexts must not create huge extraction calls.
+        const budget = Math.max(512, Math.min(6000, Math.floor(context * 0.45) - 1200));
         const batches = []; let units = [], used = 0, characters = 0;
         const flush = () => { if (units.length) batches.push({ units, status: 'pending', attempts: 0 }); units = []; used = 0; };
         for (const message of selected) {

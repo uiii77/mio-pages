@@ -28,6 +28,7 @@ function loadUserVirtualClockSettings() {
     const instant = config.enabled === true && Number.isFinite(Number(config.anchorVirtualMs))
         ? clock.virtualInstantMs(config, Date.now()) : Date.now();
     anchorEl.value = clock.inputValue(instant, config.timeZone || '', true);
+    anchorEl.dataset.loadedValue=anchorEl.value;
     setUserVirtualClockOptionsVisibility();
 }
 
@@ -47,16 +48,13 @@ function readUserVirtualClockSettings() {
         return false;
     }
     const previous = db.userTimeline && typeof db.userTimeline === 'object' ? db.userTimeline : {};
-    db.userTimeline = {
+    db.userTimeline = clock.updateTimeline(previous, {
         enabled: enabledEl.checked,
         timeZone: timezone,
-        anchorRealMs: Date.now(),
-        anchorVirtualMs: anchorVirtualMs === null
-            ? (Number.isFinite(Number(previous.anchorVirtualMs)) ? Number(previous.anchorVirtualMs) : Date.now())
-            : anchorVirtualMs,
+        ...(anchorEl.value!==anchorEl.dataset.loadedValue || enabledEl.checked && previous.enabled!==true ? {anchorVirtualMs} : {}),
         rate: Math.min(100, Math.max(0.01, Number(rateEl.value) || 1)),
         paused: pausedEl.checked
-    };
+    });
     return true;
 }
 

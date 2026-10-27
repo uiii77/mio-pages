@@ -3391,3 +3391,13 @@ body.night-mode-active .storage-console-tab { background: #292929; color: #ddd; 
 .mio-model-dialog .mio-model-manual { width:auto; min-height:36px; box-shadow:none; }
 .mio-model-dialog input { border-color:var(--border-color,#eadfe5); color:var(--text-color,#443b42); background:var(--mio-surface,#fff); }
 #api-settings-screen #api-settings-search-input { text-align:left; min-width:0; }
+
+#role-time-settings { margin:12px 15px; padding:12px; border:1px solid var(--border-color,#eee); border-radius:12px; }
+#role-time-settings h3 { margin:0 0 8px; font-size:15px; color:var(--text-color,#333); }
+#role-time-settings .kkt-item { padding:10px 0; gap:10px; }
+#role-time-settings .time-zone-choice { border:0; background:transparent; color:var(--text-color,#333); text-align:right; font:inherit; max-width:60%; overflow-wrap:anywhere; padding:6px 0; }
+#role-time-settings :is(select,input:not([type=checkbox])) { box-sizing:border-box; max-width:100%; min-width:0; border:1px solid var(--border-color,#e5e5e5); border-radius:8px; padding:8px; background:var(--input-bg,#fff); color:var(--text-color,#333); font:inherit; }
+#role-time-settings .role-time-options { display:flex; flex-direction:column; gap:10px; font-size:13px; }
+#role-time-settings .role-time-options input:not([type=checkbox]) { display:block; width:100%; margin-top:6px; }
+#role-time-settings p { margin:8px 0 0; font-size:12px; line-height:1.6; color:var(--text-secondary,#666); overflow-wrap:anywhere; }
+#role-time-settings .role-time-preview { white-space:pre-line; color:var(--text-color,#333); padding:10px 0; border-top:1px solid var(--border-color,#eee); }

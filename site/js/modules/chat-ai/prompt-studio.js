@@ -282,23 +282,23 @@
     }
 
     function buildVariables(character, opts) {
-        const realNow = Date.now();
+        const realNow = opts?.realNow ?? Date.now();
         const clockApi = typeof VirtualClock !== 'undefined' ? VirtualClock : null;
         const charClock = clockApi ? clockApi.resolveCharacter(character) : null;
-        const userClock = clockApi ? clockApi.resolveUser(character, db && db.userTimeline) : null;
+        const userClock = clockApi ? clockApi.resolveUserReal(character, db && db.userTimeline) : null;
         const now = new Date(realNow);
         const linkedChar = character.source === 'forum' && character.linkedCharId ? (db.characters || []).find(entry => entry.id === character.linkedCharId) : null;
         const world = getActiveWorldBooksContents(character);
         const charAge = calculateAge(character.birthday, charClock, realNow);
-        const userAge = calculateAge(character.myBirthday, userClock, realNow);
+        const userAge = calculateAge(character.myBirthday, clockApi?clockApi.resolveUser(character,db.userTimeline):userClock, realNow);
         const charClockActive = clockApi ? clockApi.isActive(charClock) : (character.enableDynamicTimezone && character.charTimezone);
-        const userClockActive = clockApi ? clockApi.isActive(userClock) : (character.myEnableDynamicTimezone && character.myTimezone);
+        const userClockActive = clockApi ? true : (character.myEnableDynamicTimezone && character.myTimezone);
         const charLocalTime = charClockActive
-            ? (clockApi ? clockApi.format(charClock, realNow) : (getLocalTimeInTimezone(character.charTimezone) || '')) : '';
+            ? (clockApi ? clockApi.format(charClock, realNow,{includeWeekday:true}) : (getLocalTimeInTimezone(character.charTimezone) || '')) : '';
         const userLocalTime = userClockActive
-            ? (clockApi ? clockApi.format(userClock, realNow) : (getLocalTimeInTimezone(character.myTimezone) || '')) : '';
+            ? (clockApi ? clockApi.format(userClock, realNow,{includeWeekday:true}) : (getLocalTimeInTimezone(character.myTimezone) || '')) : '';
         const currentTime = clockApi
-            ? clockApi.format(charClock, realNow)
+            ? clockApi.format(charClock, realNow,{includeWeekday:true})
             : (charLocalTime || `${now.getFullYear()}年${pad(now.getMonth() + 1)}月${pad(now.getDate())}日 ${pad(now.getHours())}:${pad(now.getMinutes())}`);
         const currentDateParts = clockApi ? clockApi.getParts(charClock, realNow) : null;
         const charTimeZone = clockApi ? clockApi.getTimeZone(charClock) : character.charTimezone;
@@ -311,7 +311,7 @@
         if (typeof getPromptTimelineInstruction === 'function') charNotice.push(getPromptTimelineInstruction(character));
         const userNotice = [];
         if (character.myEnableDynamicAge && userAge.age) userNotice.push(`[系统提示] 与你对话的用户出生于${userAge.birthday}，${userAge.isBirthday ? `今天是其${userAge.age}岁生日` : `现在${userAge.age}岁`}。`);
-        if (userLocalTime) userNotice.push(`[系统提示] 用户当前所在地的当地时间是：${userLocalTime}${userTimeZone ? ` (${userTimeZone})` : ''}。`);
+        if (userLocalTime) userNotice.push(typeof getPromptUserTimeNotice==='function'?getPromptUserTimeNotice(character,realNow):`用户现实当地时间：${userLocalTime}${userTimeZone ? ` (${userTimeZone})` : ''}。`);
         const activeNode = character.activeNodeId && character.nodes ? character.nodes.find(node => node.id === character.activeNodeId) : null;
         const nodeText = activeNode ? `<node_directive>\n当前剧情节点：${activeNode.name}\n${activeNode.prompt || ''}\n</node_directive>` : '';
         const minReply = Number(character.replyCountMin) || 3;

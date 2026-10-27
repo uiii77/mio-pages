@@ -1780,8 +1780,8 @@ function loadCharacterVirtualClockSettings(character) {
     const config = character.virtualTimeline && typeof character.virtualTimeline === 'object'
         ? character.virtualTimeline : {};
     const timezoneEl = document.getElementById('setting-char-timezone');
-    const timezone = (character.charTimezone || config.timeZone || '').trim();
-    if (timezoneEl && !timezoneEl.value) timezoneEl.value = timezone;
+    const timezone = ((config.enabled ? config.timeZone || character.charTimezone : character.charTimezone || config.timeZone) || '').trim();
+    if (timezoneEl) timezoneEl.value = timezone;
     const enabledEl = document.getElementById('setting-char-virtual-clock-enabled');
     const anchorEl = document.getElementById('setting-char-virtual-clock-anchor');
     const rateEl = document.getElementById('setting-char-virtual-clock-rate');
@@ -1794,6 +1794,7 @@ function loadCharacterVirtualClockSettings(character) {
     const instant = enabled && Number.isFinite(Number(config.anchorVirtualMs))
         ? clock.virtualInstantMs(config, Date.now()) : Date.now();
     anchorEl.value = clock.inputValue(instant, timezone, true);
+    anchorEl.dataset.loadedValue=anchorEl.value;
     setVirtualClockOptionsVisibility('setting-char-virtual-clock-enabled', 'setting-char-virtual-clock-options');
 }
 
@@ -1814,17 +1815,49 @@ function readCharacterVirtualClockSettings(character) {
     const rate = Math.min(100, Math.max(0.01, Number(rateEl.value) || 1));
     const previous = character.virtualTimeline && typeof character.virtualTimeline === 'object'
         ? character.virtualTimeline : {};
-    character.virtualTimeline = {
+    character.virtualTimeline = clock.updateTimeline(previous, {
         enabled: enabledEl.checked,
         timeZone: timezone,
-        anchorRealMs: Date.now(),
-        anchorVirtualMs: anchorVirtualMs === null
-            ? (Number.isFinite(Number(previous.anchorVirtualMs)) ? Number(previous.anchorVirtualMs) : Date.now())
-            : anchorVirtualMs,
+        ...(anchorEl.value!==anchorEl.dataset.loadedValue || enabledEl.checked && previous.enabled!==true ? {anchorVirtualMs} : {}),
         rate,
         paused: pausedEl.checked
-    };
+    });
     return true;
+}
+
+function setupRoleTimeSettings(character) {
+    const clock=window.VirtualClock,el=id=>document.getElementById(id);
+    const mode=el('setting-char-time-mode'),enabled=el('setting-char-virtual-clock-enabled');
+    if(!clock||!mode)return;
+    mode.value=enabled.checked?'independent':'real';
+    const preview=()=>{
+        const now=Date.now(),anchor=el('setting-char-virtual-clock-anchor'),zone=el('setting-char-timezone').value;
+        const draft={...character,charTimezone:zone,enableDynamicTimezone:el('setting-char-enable-dynamic-timezone').checked};
+        draft.virtualTimeline=clock.updateTimeline(character.virtualTimeline,{enabled:enabled.checked,timeZone:zone,rate:Number(el('setting-char-virtual-clock-rate').value)||1,paused:el('setting-char-virtual-clock-paused').checked,...(anchor.value!==anchor.dataset.loadedValue?{anchorVirtualMs:clock.wallClockToTimestamp(anchor.value,zone)}:{})},now);
+        const user=clock.resolveUserReal({...character,myTimezone:el('setting-my-timezone').value},db.userTimeline);
+        el('setting-time-preview').textContent=`用户现实时间：${clock.format(user,now,{includeWeekday:true})}\n角色当地时间：${clock.format(clock.resolveCharacter(draft),now,{includeWeekday:true})}${draft.virtualTimeline.paused&&enabled.checked?'（已暂停）':''}`;
+        for(const who of ['char','my']){
+            const zone=el(`setting-${who}-timezone`).value;
+            const label=[...el(`setting-${who}-timezone-preset`).options].find(option=>option.value===zone&&zone)?.textContent.split(' (')[0]||zone||'跟随设备';
+            const button=el(`setting-${who}-timezone-pick`);button.textContent=(who==='char'&&!enabled.checked&&!draft.enableDynamicTimezone?'跟随设备':label)+' ›';button.title=zone||'跟随手机设备时区';
+        }
+    };
+    mode.onchange=()=>{enabled.checked=mode.value==='independent';enabled.onchange?.();preview();};
+    for(const suffix of ['anchor','rate','paused'])el('setting-char-virtual-clock-'+suffix).oninput=preview;
+    for(const who of ['char','my'])el(`setting-${who}-timezone-pick`).onclick=async()=>{
+        const input=el(`setting-${who}-timezone`),preset=el(`setting-${who}-timezone-preset`);
+        const names=new Map([...preset.options].filter(o=>o.value).map(o=>[o.value,o.textContent]));
+        const zones=[...new Set([...names.keys(),...(Intl.supportedValuesOf?.('timeZone')||[]),input.value].filter(Boolean))];
+        const options=[{value:'@device',label:'跟随手机设备时区'},...zones.map(value=>({value,label:`${names.get(value)||value.split('/').at(-1).replaceAll('_',' ')} · ${value}`}))];
+        const pending=showAppFormDialog({title:who==='char'?'角色所在时区':'用户现实所在时区',fields:[{name:'search',label:'搜索城市或时区',type:'search',placeholder:'例如：纽约 / New York'},{name:'zone',label:'选择时区',type:'select',value:input.value||'@device',options}],confirmText:'选择'});
+        const form=el('app-form-dialog'),search=form.querySelector('[name=search]'),select=form.querySelector('[name=zone]');
+        search.oninput=()=>{const query=search.value.trim().toLowerCase().replaceAll('_',' ');const rows=options.filter(o=>o.label.toLowerCase().replaceAll('_',' ').includes(query));select.replaceChildren(...rows.map(o=>new Option(o.label,o.value)));if(!rows.length){const empty=new Option('没有匹配的时区','');empty.disabled=true;select.add(empty);}form.querySelector('button[type=submit]').disabled=!rows.length;};
+        const result=await pending;if(!result)return;
+        input.value=result.zone==='@device'?'':result.zone;
+        el(`setting-${who}-enable-dynamic-timezone`).checked=!!input.value;
+        preview();
+    };
+    preview();
 }
 
 function loadSettingsToSidebar() {
@@ -1972,7 +2005,7 @@ function loadSettingsToSidebar() {
             if (myEnableDynamicTimezoneEl) myEnableDynamicTimezoneEl.checked = e.myEnableDynamicTimezone || false;
             const myTimezoneEl = document.getElementById('setting-my-timezone');
             const myTimezonePresetEl = document.getElementById('setting-my-timezone-preset');
-            if (myTimezoneEl) myTimezoneEl.value = e.myTimezone || '';
+            if (myTimezoneEl) myTimezoneEl.value = typeof e.myTimezone==='string'?e.myTimezone:(db.userTimeline?.timeZone||'');
             if (myTimezonePresetEl) {
                 myTimezonePresetEl.value = '';
                 myTimezonePresetEl.onchange = function() {
@@ -1980,6 +2013,7 @@ function loadSettingsToSidebar() {
                 };
             }
         }
+        setupRoleTimeSettings(e);
         const themeColorEl = document.getElementById('setting-theme-color');
         if (themeColorEl) themeColorEl.value = e.theme || 'white_pink';
         const maxMemoryEl = document.getElementById('setting-max-memory');

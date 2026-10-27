@@ -27,6 +27,7 @@
     const TIMEZONE_DATA_SOURCE = 'runtime-icu';
 
     function finiteNumber(value) {
+        if (value == null || typeof value === 'string' && !value.trim()) return null;
         const number = Number(value);
         return Number.isFinite(number) ? number : null;
     }
@@ -170,7 +171,8 @@
         const date = `${pad(parts.year, 4)}年${pad(parts.month)}月${pad(parts.day)}日`;
         const time = `${pad(parts.hour)}:${pad(parts.minute)}`;
         const seconds = opts.includeSeconds === true ? `:${pad(parts.second)}` : '';
-        return `${date} ${time}${seconds}`;
+        const weekday = opts.includeWeekday ? ` 星期${({Sun:'日',Mon:'一',Tue:'二',Wed:'三',Thu:'四',Fri:'五',Sat:'六'})[parts.weekday] || parts.weekday}` : '';
+        return `${date}${weekday} ${time}${seconds}`;
     }
 
     function dateKey(config, realNow) {
@@ -234,7 +236,7 @@
 
     function resolveCharacter(character) {
         const source = character && character.virtualTimeline;
-        if (source && source.enabled === true) return normalizeConfig(source);
+        if (source && source.enabled === true) return normalizeConfig({...source,timeZone:source.timeZone||character.charTimezone});
         if (character && character.enableDynamicTimezone && character.charTimezone) {
             return normalizeConfig({ timeZone: character.charTimezone });
         }
@@ -251,6 +253,23 @@
             return normalizeConfig({ timeZone: character.myTimezone });
         }
         return normalizeConfig({});
+    }
+
+    // Real device instant, explicitly separate from the user's optional fictional timeline.
+    function resolveUserReal(character, globalTimeline) {
+        const configured=typeof character?.myTimezone==='string'?character.myTimezone:globalTimeline?.timeZone;
+        return normalizeConfig({timeZone:configured || Intl.DateTimeFormat().resolvedOptions().timeZone});
+    }
+
+    function updateTimeline(config, changes, realNow) {
+        const previous=normalizeConfig(config),now=safeRealNow(realNow);
+        const next={...config,...previous,...changes};
+        const explicit=finiteNumber(changes.anchorVirtualMs);
+        if (explicit!==null || changes.enabled===true && !previous.enabled || next.rate!==previous.rate || next.paused!==previous.paused) {
+            next.anchorVirtualMs=explicit===null?virtualInstantMs(previous,now):explicit;
+            next.anchorRealMs=now;
+        }
+        return next;
     }
 
     function parseBirthday(value) {
@@ -314,7 +333,7 @@
             const local = new Date(0);
             local.setFullYear(year, month - 1, day);
             local.setHours(hour, minute, second, millisecond);
-            return local.getFullYear() === year && local.getMonth() === month - 1 && local.getDate() === day
+            return local.getFullYear() === year && local.getMonth() === month - 1 && local.getDate() === day && local.getHours() === hour && local.getMinutes() === minute
                 ? local.getTime() : null;
         }
 
@@ -336,7 +355,8 @@
             if (next === guess) return next;
             guess = next;
         }
-        return guess;
+        const check=getParts({timeZone:normalized},guess);
+        return check.year===year && check.month===month && check.day===day && check.hour===hour && check.minute===minute && check.second===second ? guess : null;
     }
 
     function inputValue(instantMs, timeZone, includeSeconds = true) {
@@ -364,6 +384,8 @@
         setPaused,
         resolveCharacter,
         resolveUser,
+        resolveUserReal,
+        updateTimeline,
         getAgeInfo,
         wallClockToTimestamp,
         inputValue

@@ -4,6 +4,7 @@
     const runtime = new Map();
     const archiveLocks = new Set();
     const historyRuns = new Map();
+    const cleanupEpoch = new Map();
     const roomPlateWriteQueues = new Map();
     const roomLayoutWriteQueues = new Map();
     const anticipationWriteQueues = new Map();
@@ -158,13 +159,22 @@
             ...options.existing.map((node, index) => `O${index} | id=${node.id} | ${String(node.content || '').replace(/\s+/g, ' ').trim()}`),
             '内容完全相同才填写 mergeInto:"O0"；同一具体事件但内容不同才填写 relatedTo:["O0"]。仅同人物、地点或主题不得关联。引用只能使用上面列出的 O 编号。',
         ].join('\n') : '';
-        const response = await withTimeout(request(options.signal ? {...config,streamEnabled:false} : config, {
+        const controller = new AbortController();
+        const abort = () => controller.abort();
+        options.signal?.addEventListener('abort', abort, {once:true});
+        if(options.signal?.aborted)abort();
+        let expired=false;
+        const timer=setTimeout(()=>{expired=true;controller.abort();},90000);
+        let response;
+        try { response = await request({...config,streamEnabled:false}, {
             model: config.model,
             messages: [{ role: 'user', content: buildExtractionPrompt(character, messages) + existingBlock }],
             temperature: Number.isFinite(Number(config.temperature)) ? Number(config.temperature) : 0.2,
-            ...(options.signal ? {max_tokens:Math.min(2048,Math.max(256,Math.floor((Number(config.contextWindow || config.contextLength)||8192)/4)))} : {}),
+            max_tokens:Math.min(4096,Math.max(512,Math.floor((Number(config.contextWindow || config.contextLength)||8192)/3))),
             stream: false,
-        }, headers, endpoint, false, options.signal ? {signal:options.signal,onUsage:options.onUsage,beforeRequest:options.onRequest} : null), options.timeout || 45000);
+        }, headers, endpoint, false, {signal:controller.signal,onUsage:options.onUsage,beforeRequest:options.onRequest});
+        } catch(error) { if(expired)throw Error('记忆处理超时（90秒，已取消请求）；继续时将缩小失败批次，服务可能已计费');throw error; }
+        finally { clearTimeout(timer);options.signal?.removeEventListener('abort',abort); }
         return resolveExtractionReferences(parseExtractionReply(response), options.existing || []);
     }
 
@@ -202,11 +212,13 @@
         const actions = document.getElementById('palace-history-actions');
         if (!target || !actions) return;
         target.hidden = !job; actions.hidden = !job || ['completed','cancelled'].includes(job.status);
-        if (!job) return;
+        if (!job) { const summary=document.getElementById('palace-progress-open');if(summary)summary.hidden=true;return; }
         const p = historyProgress(job), active = historyRuns.has(character.id);
         const labels = {running:active?'正在整理':'已保存，等待继续',paused:'已暂停',failed:'本批失败',completed:'整理完成',cancelled:'已取消'};
         const summary=document.getElementById('palace-progress-open');if(summary){summary.hidden=false;summary.textContent=`${labels[job.status]||'整理进度'} · ${p.processed}/${job.total} 条 ›`;}
         target.textContent = `${labels[job.status] || '等待继续'} · 共 ${job.total} 条，已处理 ${p.processed} 条，剩余 ${p.remaining} 条 · 批次 ${Math.min(p.completed+1,p.totalBatches)}/${p.totalBatches}（成功 ${p.completed}，失败 ${job.batches.filter(b=>b.status==='failed').length}）${job.error?' · '+job.error:''}${job.linkError?' · '+job.linkError:''}`;
+        const range=job.batches.filter(batch=>batch.status==='success'&&batch.completedRange).at(-1)?.completedRange;
+        if(range){const entries=historyEntries(character);const start=entries.findIndex(entry=>entry.id===range.start),end=entries.findIndex(entry=>entry.id===range.end);if(start>=0&&end>=0)target.textContent+=` · 最近完成：第 ${start+1}–${end+1} 条消息范围`;}
         actions.querySelector('[data-history-action="pause"]').hidden = !active;
         const resume = actions.querySelector('[data-history-action="resume"]');
         resume.hidden = active; resume.textContent = job.status === 'failed' ? '重试失败批次' : '继续整理';
@@ -333,7 +345,7 @@
                 resolved[candidateIndex]=node;
             }
             batch.status='success'; batch.error=''; batch.finishedAt=Date.now(); job.error='';
-            batch.nodeIds=changed;batch.processedMessages=historyBatchProcessed(batch);delete batch.units;delete batch.result;delete batch.mergeTargets;
+            batch.nodeIds=changed;batch.processedMessages=historyBatchProcessed(batch);batch.completedRange={start:ids[0],end:ids.at(-1)};delete batch.units;delete batch.result;delete batch.mergeTargets;
             await putHistoryJob(character.id,job);
         });
         runtime.delete(character.id);
@@ -360,6 +372,13 @@
         try {
             job=await getHistoryJob(character.id);
             if (!job || ['completed','cancelled'].includes(job.status)) return;
+            // Only an explicit resume retries a timed-out request; reduce its load first.
+            job.batches=job.batches.flatMap(batch=>{
+                if(batch.status!=='failed'||!/超时|JSON|上下文|context|token.*limit/i.test(batch.error||''))return [batch];
+                const halves=splitHistoryBatch(batch);
+                if(halves)job.rejectedRequests=(job.rejectedRequests||0)+(batch.metrics?.requests||0);
+                return halves?halves.map(units=>({units,status:'pending',attempts:0})): [batch];
+            });
             if(job.status==='running'&&job.batches.some(b=>b.status==='running')){
                 job.batches.filter(b=>b.status==='running').forEach(batch=>{
                     batch.status='pending';batch.error='';const metrics=ensureHistoryBatchMetrics(batch);
@@ -393,7 +412,7 @@
                         const existing=selectHistoryMergeContext(nodes,wordSet,budget,nodeTokenCache,job.id);
                         metrics.prepareMs+=performance.now()-started;
                         for(let attempt=0;attempt<3;attempt++) {
-                            const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),45000),apiStart=performance.now();
+                            const controller=new AbortController(),apiStart=performance.now();
                             batch.attempts++;metrics.requests++;
                             try {
                                 batch.result=await extractArchiveChunk(character,messages,{signal:controller.signal,existing,onRequest:()=>{metrics.transportRequests=(metrics.transportRequests||0)+1;},onUsage:usage=>{
@@ -407,7 +426,7 @@
                                 // A timed-out request may already be billed. Do not silently resubmit it.
                                 if(/429|rate.limit|限流/i.test(error.message)&&attempt<2){job.concurrency=1;await new Promise(r=>setTimeout(r,1000*2**attempt));continue;}
                                 throw error;
-                            }finally{clearTimeout(timer);metrics.apiMs+=performance.now()-apiStart;}
+                            }finally{metrics.apiMs+=performance.now()-apiStart;}
                         }
                         metrics.messageCount=new Set(batch.units.map(u=>u.id)).size;
                         metrics.estimatedInputTokens=Math.ceil(messages.reduce((n,m)=>n+m.text.length,0)/2)+800;
@@ -931,10 +950,12 @@
         if (!affected.length) return [];
         const retained = links.filter(link => link.origin === 'manual' || (!changed.has(link.sourceId) && !changed.has(link.targetId)));
         const automatic = Core.buildAutomaticLinks(affected, nodes.filter(node => !changed.has(node.id)), retained);
-        await dexieDB.transaction('rw', dexieDB.memoryPalaceLinks, async () => {
+        await dexieDB.transaction('rw', dexieDB.memoryPalaceLinks, dexieDB.memoryPalaceNodes, async () => {
             const stale = links.filter(link => link.origin !== 'manual' && (changed.has(link.sourceId) || changed.has(link.targetId)));
             if (stale.length) await dexieDB.memoryPalaceLinks.bulkDelete(stale.map(link => link.id));
-            if (automatic.length) await dexieDB.memoryPalaceLinks.bulkPut(automatic);
+            const referenced=[...new Set(automatic.flatMap(link=>[link.sourceId,link.targetId]))];
+            const alive=new Set((await dexieDB.memoryPalaceNodes.bulkGet(referenced)).filter(Boolean).map(node=>node.id));
+            if(automatic.length)await dexieDB.memoryPalaceLinks.bulkPut(automatic.filter(link=>alive.has(link.sourceId)&&alive.has(link.targetId)));
         });
         return automatic;
     }
@@ -966,6 +987,7 @@
     async function saveNode(payload, options = {}) {
         const character = (db.characters || []).find(item => item.id === (payload.characterId || ui.characterId));
         if (!character) throw new Error('未找到角色');
+        const epoch=cleanupEpoch.get(character.id)||0;
         const existing = payload.id ? await getNode(payload.id) : null;
         const scopedExisting = existing && nodeInArchiveScope(existing, character) ? existing : null;
         const safePayload = existing && !scopedExisting ? { ...payload, id: Core.id('mpn') } : payload;
@@ -993,6 +1015,7 @@
             embeddingError = error;
         }
         await dexieDB.transaction('rw', dexieDB.memoryPalaceNodes, dexieDB.memoryPalaceVectors, async () => {
+            if(epoch!==(cleanupEpoch.get(character.id)||0) || scopedExisting && !await getNode(scopedExisting.id))throw Error('记忆空间已清理，请重新操作');
             await dexieDB.memoryPalaceNodes.put(node);
             if (vectorRecord) await dexieDB.memoryPalaceVectors.put(vectorRecord);
             else if (contentChanged) await dexieDB.memoryPalaceVectors.delete(node.id);
@@ -1004,6 +1027,108 @@
         runtime.delete(character.id);
         if (embeddingError && !options.silentEmbeddingError) console.warn('[MemoryPalace] saved with lexical retrieval:', embeddingError);
         return { node, embedded: node.embedded === true, embeddingError };
+    }
+
+    async function planCleanup(characterId, filter={mode:'all'}) {
+        const character=characterForId(characterId);
+        if(!character)throw Error('角色不存在');
+        if(!['all','room','type','invalid'].includes(filter.mode))throw Error('清理范围无效');
+        if(['room','type'].includes(filter.mode)&&!filter.value)throw Error('请选择房间或类型');
+        const all=await dexieDB.memoryPalaceNodes.toArray();
+        const scoped=all.filter(node=>node.characterId===characterId&&nodeInArchiveScope(node,character));
+        const room=getRoomLayout(characterId).find(room=>room.id===filter.value);
+        const selected=scoped.filter(node=>filter.mode==='all'||filter.mode==='room'&&(room?.nodeIds?room.nodeIds.includes(node.id):node.room===filter.value)||filter.mode==='type'&&node.layer===filter.value);
+        const ids=new Set(selected.map(node=>node.id));
+        // Derived memories also contain the deleted evidence, including night-time summaries.
+        let growing=true;
+        while(growing){growing=false;for(const node of all)if(!ids.has(node.id)&&(node.sourceNodeIds||[]).some(id=>ids.has(id))){
+            if(node.characterId!==characterId||!nodeInArchiveScope(node,character))throw Error('存在跨角色或跨存档引用，无法安全清理；请先处理共享引用');
+            ids.add(node.id);growing=true;
+        }}
+        const boxes=await listEventBoxes(characterId),reports=await listDigestReports(characterId),plates=await listRoomPlates(characterId);
+        const foreignLinks=(await dexieDB.memoryPalaceLinks.toArray()).some(link=>link.characterId!==characterId&&(ids.has(link.sourceId)||ids.has(link.targetId)));
+        const foreignBoxes=(await dexieDB.memoryPalaceEventBoxes.toArray()).some(box=>box.characterId!==characterId&&(box.nodeIds||[]).some(id=>ids.has(id)));
+        if(foreignLinks||foreignBoxes)throw Error('存在其他角色的共享关联，已阻止清理');
+        for(const node of all)if(ids.has(node.id)&&node.owner&&node.owner!==characterId)throw Error('存在无法确认所有权的共享记忆，已阻止清理');
+        const byId=new Map(all.map(node=>[node.id,node]));
+        for(const box of boxes)if(box.nodeIds.some(id=>ids.has(id))&&box.nodeIds.some(id=>!byId.has(id)||byId.get(id).characterId!==characterId||!nodeInArchiveScope(byId.get(id),character)))throw Error('事件盒包含其他存档或未知归属的引用，已阻止清理');
+        const affectedRooms=new Set(all.filter(node=>ids.has(node.id)).map(node=>node.room));
+        const affectedPlates=plates.filter(plate=>affectedRooms.has(plate.room));
+        if(affectedPlates.some(plate=>archiveScope(character)&&plate.chatArchiveScopeId!==archiveScope(character)))throw Error('房间记事缺少当前存档归属，已阻止清理，避免误删共享内容');
+        if(affectedPlates.length&&all.some(node=>node.characterId===characterId&&affectedRooms.has(node.room)&&!nodeInArchiveScope(node,character)))throw Error('房间记事没有存档标记，无法安全区分共享内容，已阻止清理');
+        const affectedReports=reports.filter(report=>(report.governance?.changes||[]).some(change=>ids.has(change.after?.id)||ids.has(change.before?.id)));
+        if(affectedReports.some(report=>(report.governance?.changes||[]).some(change=>change.after&&!nodeInArchiveScope(change.after,character))))throw Error('整理记录包含跨存档内容，已阻止清理');
+        return {characterId,scope:archiveScope(character),filter:{...filter},ids:[...ids],all,boxes,reports:affectedReports,plates:affectedPlates,count:ids.size};
+    }
+
+    async function clearMemorySpace(characterId,filter,expectedScope,expectedIds) {
+        const character=characterForId(characterId);
+        if(!character||archiveScope(character)!==expectedScope)throw Error('存档已切换，请重新确认');
+        const execute=async()=>{
+            if(archiveLocks.has(characterId))throw Error('整理正在运行，请先暂停并等待当前批保存');
+            archiveLocks.add(characterId);
+            try {
+                const stores=['memoryPalaceNodes','memoryPalaceVectors','memoryPalaceLinks','memoryPalaceEventBoxes','memoryPalaceDigestReports','memoryPalaceRoomPlates','globalSettings','characters'].map(key=>dexieDB[key]).filter(Boolean);
+                let count=0,nextState,nextLayout;
+                await dexieDB.transaction('rw',...stores,async()=>{
+                    const plan=await planCleanup(characterId,filter),ids=new Set(plan.ids),known=new Map(plan.all.map(node=>[node.id,node]));
+                    if(plan.scope!==expectedScope)throw Error('存档已切换，请重新确认');
+                    if(expectedIds&&JSON.stringify([...plan.ids].sort())!==JSON.stringify([...expectedIds].sort()))throw Error('记忆范围已变化，请重新确认');
+                    const links=await listLinks(characterId),vectors=await dexieDB.memoryPalaceVectors.where('characterId').equals(characterId).toArray();
+                    const owned=id=>known.has(id)&&known.get(id).characterId===characterId&&nodeInArchiveScope(known.get(id),character);
+                    const deadLinks=links.filter(link=>ids.has(link.sourceId)||ids.has(link.targetId)||filter.mode==='invalid'&&((owned(link.sourceId)&&!known.has(link.targetId))||(owned(link.targetId)&&!known.has(link.sourceId))));
+                    const deadVectors=vectors.filter(vector=>ids.has(vector.memoryId)||filter.mode==='invalid'&&!known.has(vector.memoryId)&&Object.hasOwn(vector,'chatArchiveScopeId')&&vector.chatArchiveScopeId===expectedScope);
+                    await dexieDB.memoryPalaceLinks.bulkDelete(deadLinks.map(link=>link.id));
+                    await dexieDB.memoryPalaceVectors.bulkDelete(deadVectors.map(vector=>vector.memoryId));
+                    for(const box of plan.boxes){
+                        if(!box.nodeIds.some(id=>ids.has(id)||filter.mode==='invalid'&&owned(id)))continue;
+                        const nodeIds=box.nodeIds.filter(id=>!ids.has(id)&&(filter.mode!=='invalid'||known.has(id)));
+                        if(nodeIds.length)await dexieDB.memoryPalaceEventBoxes.put({...box,nodeIds,summaryNodeId:ids.has(box.summaryNodeId)?null:box.summaryNodeId});
+                        else await dexieDB.memoryPalaceEventBoxes.delete(box.id);
+                    }
+                    if(filter.mode!=='invalid'){
+                        await dexieDB.memoryPalaceNodes.bulkDelete(plan.ids);
+                        await dexieDB.memoryPalaceDigestReports.bulkDelete(plan.reports.map(row=>row.id));
+                        await dexieDB.memoryPalaceRoomPlates.bulkDelete(plan.plates.map(row=>row.id));
+                        await dexieDB.globalSettings.delete(historyJobKey(characterId));
+                        const last=historyEntries(character).at(-1);
+                        nextState=Core.normalizeArchiveState({watermarkMessageId:last?.id||'',watermarkTimestamp:last?.timestamp||0,lastRunAt:Date.now()});
+                        const persisted=await dexieDB.characters?.get(characterId);
+                        if(persisted&&archiveScope(persisted)!==expectedScope)throw Error('存档已切换，请重新确认');
+                        nextLayout=getRoomLayout(characterId).map(room=>room.nodeIds?{...room,nodeIds:room.nodeIds.filter(id=>!ids.has(id))}:room);
+                        if(persisted)await dexieDB.characters.put({...persisted,memoryPalaceArchiveState:nextState,memoryPalaceRoomLayout:nextLayout});
+                    }
+                    count=plan.count;
+                });
+                if(nextState)character.memoryPalaceArchiveState=nextState;
+                if(nextLayout)character.memoryPalaceRoomLayout=nextLayout;
+                cleanupEpoch.set(characterId,(cleanupEpoch.get(characterId)||0)+1);runtime.delete(characterId);
+                return {deleted:count};
+            }finally{archiveLocks.delete(characterId);}
+        };
+        if(global.navigator?.locks)return navigator.locks.request(`mio-memory-archive:${characterId}`,{ifAvailable:true},lock=>{if(!lock)throw Error('其他页面正在整理，请先暂停');return execute();});
+        return execute();
+    }
+
+    async function openCleanup() {
+        const character=currentCharacter();if(!character)return;
+        document.getElementById('palace-manage-modal')?.classList.remove('visible');
+        const scope=archiveScope(character),characterId=character.id;
+        const choice=await showAppFormDialog({title:'清理记忆空间',message:'仅清理当前角色、当前存档的记忆宫殿。原始聊天、角色设定和聊天摘要均保留。',fields:[{name:'mode',value:'all',required:true,label:'清理范围',type:'select',options:[{value:'all',label:'清空当前角色全部记忆'},{value:'room',label:'清空指定房间'},{value:'type',label:'清空指定类型'},{value:'invalid',label:'清理无效数据（保留有效记忆）'}]}],confirmText:'查看范围'});
+        if(!choice)return;
+        if(['room','type'].includes(choice.mode)){
+            const options=choice.mode==='room'?getRoomLayout(characterId).map(room=>({value:room.id,label:room.name||room.label||room.id})):Object.entries({episodes:'经历',facts:'事实',states:'近况',relations:'关系',knowledge:'知识',cognition:'认知',intentions:'愿望约定'}).map(([value,label])=>({value,label}));
+            const selected=await showAppFormDialog({title:'选择清理范围',fields:[{name:'value',value:options[0]?.value,required:true,label:choice.mode==='room'?'房间':'类型',type:'select',options}],confirmText:'查看范围'});if(!selected)return;choice.value=selected.value;choice.label=options.find(option=>option.value===selected.value)?.label;
+        }
+        const plan=await planCleanup(characterId,choice);
+        const confirmation=showAppConfirmDialog({title:'确认清理记忆空间',message:`角色：${character.remarkName||character.name||characterId}\n存档：${scope||'默认存档'}\n范围：${choice.label|| (choice.mode==='invalid'?'无效数据':'全部记忆')}\n将删除 ${plan.count} 条记忆（含依赖这些来源的整理结果），并清理对应关联、房间汇总与索引。${choice.mode==='invalid'?'仅移除可确认归属的失效数据。':'此操作不可撤销。原聊天保留；以后可手动重新整理全部或指定范围。'}`,confirmText:choice.mode==='invalid'?'清理无效数据':'删除这些记忆',cancelText:'取消',dismissText:''});
+        const confirmButton=document.querySelector('#app-confirm-dialog [data-action="confirm"]');
+        const confirmTitle=document.getElementById('app-confirm-dialog-title'),previousColor=confirmTitle?.style.color;
+        if(confirmTitle)confirmTitle.style.color='var(--text-color, #2a3032)';
+        confirmButton?.classList.remove('primary');confirmButton?.classList.add('btn-danger');
+        const ok=await confirmation.finally(()=>{confirmButton?.classList.remove('btn-danger');confirmButton?.classList.add('primary');if(confirmTitle)confirmTitle.style.color=previousColor;});
+        if(ok!=='confirm'&&ok!==true)return;
+        await clearMemorySpace(characterId,choice,scope,plan.ids);showToast('记忆空间已清理');await render();await renderHistoryProgress(character);
     }
 
     async function deleteNode(id) {
@@ -1037,6 +1162,7 @@
         const vectors = await embedTexts(nodes.map(node => node.content), character);
         const config = featureConfig('embedding', character) || {};
         const records = [];
+        let stored=0;
         nodes.forEach((node, index) => {
             const vector = vectors[index];
             if (!Array.isArray(vector) || !vector.length) return;
@@ -1044,11 +1170,16 @@
             records.push({ memoryId: node.id, characterId, chatArchiveScopeId:archiveScope(character), vector, dimensions: vector.length, model: config.model || '', profileKey: node.embeddingProfileKey, updatedAt: Date.now() });
         });
         await dexieDB.transaction('rw', dexieDB.memoryPalaceNodes, dexieDB.memoryPalaceVectors, async () => {
-            if (nodes.length) await dexieDB.memoryPalaceNodes.bulkPut(nodes);
-            if (records.length) await dexieDB.memoryPalaceVectors.bulkPut(records);
+            for(const record of records){
+                const latest=await getNode(record.memoryId),original=nodes.find(node=>node.id===record.memoryId);
+                if(!latest||latest.content!==original.content)continue;
+                await dexieDB.memoryPalaceNodes.put({...latest,embedded:true,embeddingProfileKey:record.profileKey});
+                await dexieDB.memoryPalaceVectors.put(record);
+                stored++;
+            }
         });
         runtime.delete(characterId);
-        return records.length;
+        return stored;
     }
 
     async function rerank(query, results, character) {
@@ -1105,7 +1236,9 @@
             : seeds;
         if (selected.length) {
             const now = Date.now();
-            await dexieDB.memoryPalaceNodes.bulkPut(selected.map(item => ({ ...item.node, lastAccessedAt: now, accessCount: (item.node.accessCount || 0) + 1 })));
+            await dexieDB.transaction('rw',dexieDB.memoryPalaceNodes,async()=>{
+                for(const item of selected){const latest=await getNode(item.node.id);if(latest)await dexieDB.memoryPalaceNodes.put({...latest,lastAccessedAt:now,accessCount:(latest.accessCount||0)+1});}
+            });
         }
         return selected;
     }
@@ -1113,9 +1246,10 @@
     async function prepareContext(character, options = {}) {
         ensureSettings(character);
         if (!character.memoryPalaceEnabled) { runtime.delete(character.id); return ''; }
-        const query = buildQuery(character, options.queryText);
+        const query = buildQuery(character, options.queryText),epoch=cleanupEpoch.get(character.id)||0;
         try {
             const results = await search(character, query);
+            if(epoch!==(cleanupEpoch.get(character.id)||0))return '';
             const block = Core.formatContext(results, character.memoryPalaceTopK);
             runtime.set(character.id, { scope:archiveScope(character), query, block, ids: results.map(item => item.node.id), preparedAt: Date.now() });
             return block;
@@ -1758,6 +1892,7 @@
             catch (error) { showToast(error.message || '重建失败'); }
         });
         document.getElementById('palace-manage-open').onclick=()=>document.getElementById('palace-manage-modal').classList.add('visible');
+        document.getElementById('palace-clear-space-btn').onclick=()=>{void openCleanup().catch(error=>showToast(error.message));};
         document.getElementById('palace-manage-modal').addEventListener('click',event=>{if(['memory-palace-relationship-btn','memory-palace-room-plates-btn','memory-palace-anticipations-btn','memory-palace-digest-reports-btn','memory-palace-api-open-btn'].includes(event.target.closest('button')?.id))document.getElementById('palace-manage-modal').classList.remove('visible');},true);
         document.getElementById('palace-progress-open').onclick=()=>document.getElementById('palace-progress-modal').classList.add('visible');
         document.querySelectorAll('[data-palace-close]').forEach(button=>button.onclick=()=>document.getElementById(button.dataset.palaceClose).classList.remove('visible'));
@@ -1896,7 +2031,7 @@
     }
 
     global.MemoryPalace = {
-        featureConfig, withTimeout, render, getRoomLayout, saveRoomLayout,
+        featureConfig, withTimeout, render, getRoomLayout, saveRoomLayout, planCleanup, clearMemorySpace,
         archiveScope, scopeSource:sourceForArchive,
         historyEntries, getHistoryJob, historyProgress, createHistoryJob, runHistoryJob, controlHistoryJob,
         ensureSettings, listNodes, getNode, saveNode, deleteNode, reembed, search, prepareContext,

@@ -34,7 +34,16 @@ function getPromptAgeInfo(birthday, clockConfig, realNow) {
 
 function getPromptTimelineInstruction(character) {
     if (typeof VirtualClock === 'undefined' || !VirtualClock.resolveCharacter(character)?.enabled) return '';
-    return '时间背景用于判断当地作息、日程与事件先后。角色与用户的日期各属自己的时间线，年份之差不代表已经等待或分离的时长；历史消息的发送时间只是交流记录。普通聊天围绕当前话题回应；询问时间、约定日程或谈及跨年代事物时，结合相关时间自然回答。是否感慨以及如何表达，由角色原有人设、性格、关系和当前语境决定，不需要每轮说明年代差。';
+    return '角色世界按自己的日期推进；用户现实时间另列，消息时间戳是交流记录。时间仅供相关话题、日程与事件顺序参考，普通聊天沿用角色原本人设和表达习惯，无需主动报时或说明年代差。';
+}
+
+function getPromptUserTimeNotice(character, realNow) {
+    if (typeof VirtualClock==='undefined') return '';
+    const real=VirtualClock.resolveUserReal(character,db.userTimeline);
+    const fictional=VirtualClock.resolveUser(character,db.userTimeline);
+    let text=`用户现实当地时间：${VirtualClock.format(real,realNow,{includeWeekday:true})} (${real.timeZone||'设备时区'})。日期、星期和时刻以此为准，不从角色年代或历史回复推算。`;
+    if(fictional.enabled)text+=`\n用户人设时间（独立设定，非现实时间）：${VirtualClock.format(fictional,realNow,{includeWeekday:true})}。`;
+    return text;
 }
 
 function appendElevenLabsVoicePrompt(prompt, character) {
@@ -64,11 +73,12 @@ function getRoleVoiceInstruction(character) {
 
 function generatePrivateSystemPrompt(character, opts) {
     const includeMomentsActivity = window.Moments?.isChatLinked?.(character.id) !== false;
-    opts = opts || {};
+    opts = {...(opts || {}),realNow:Date.now()};
     if (window.PromptStudio && typeof window.PromptStudio.compile === 'function') {
         const studioResult = window.PromptStudio.compile(character, opts);
         if (studioResult && studioResult.prompt) {
-            return appendElevenLabsVoicePrompt(`${studioResult.prompt}${getRoleVoiceInstruction(character)}`, character)
+            const userTime=studioResult.prompt.includes('用户现实当地时间：')?'':getPromptUserTimeNotice(character,opts.realNow);
+            return appendElevenLabsVoicePrompt(`${studioResult.prompt}\n${userTime}${getRoleVoiceInstruction(character)}`, character)
                 + getBilingualChatInstruction(character);
         }
     }
@@ -78,7 +88,7 @@ function generatePrivateSystemPrompt(character, opts) {
 
     let { before: worldBooksBefore, middle: worldBooksMiddle, after: worldBooksAfter } = getActiveWorldBooksContents(character);
     
-    const realNow = Date.now();
+    const realNow = opts.realNow;
     const clockApi = typeof VirtualClock !== 'undefined' ? VirtualClock : null;
     const characterClock = clockApi ? clockApi.resolveCharacter(character) : null;
     const userClock = clockApi
@@ -87,7 +97,7 @@ function generatePrivateSystemPrompt(character, opts) {
     const deviceNow = new Date(realNow);
     let currentTime = `${deviceNow.getFullYear()}年${pad(deviceNow.getMonth() + 1)}月${pad(deviceNow.getDate())}日 ${pad(deviceNow.getHours())}:${pad(deviceNow.getMinutes())}`;
     if (clockApi) {
-        currentTime = clockApi.format(characterClock, realNow);
+        currentTime = clockApi.format(characterClock, realNow,{includeWeekday:true});
     } else if (character.enableDynamicTimezone && character.charTimezone) {
         const tzTime = getLocalTimeInTimezone(character.charTimezone);
         if (tzTime) currentTime = tzTime;
@@ -258,7 +268,7 @@ function generatePrivateSystemPrompt(character, opts) {
         }
 
         if (!momentsInTemplate && window.Moments) template += window.Moments.promptForCharacter(character.id, !!opts.isBackground);
-        return appendElevenLabsVoicePrompt(template, character) + getBilingualChatInstruction(character);
+        return appendElevenLabsVoicePrompt(`${template}\n${getPromptUserTimeNotice(character,realNow)}\n${getPromptTimelineInstruction(character)}`, character) + getBilingualChatInstruction(character);
     }
 
     // 节点系统：拦截并返回专属提示词
@@ -308,13 +318,7 @@ function generatePrivateSystemPrompt(character, opts) {
                 nodePrompt += `[System Notice] 与你对话的用户（称呼：${character.myName}）出生于${ageInfo.birthYear}年${ageInfo.birthMonth}月${ageInfo.birthDay}日，现在的年龄是${ageInfo.age}岁。\n`;
             }
         }
-        if (clockApi ? clockApi.isActive(userClock) : (character.myEnableDynamicTimezone && character.myTimezone)) {
-            const timeStr = clockApi ? clockApi.format(userClock, realNow) : getLocalTimeInTimezone(character.myTimezone);
-            const timezone = clockApi ? clockApi.getTimeZone(userClock) : character.myTimezone;
-            if (timeStr) {
-                nodePrompt += `[System Notice] 与你对话的用户（称呼：${character.myName}）当前所在的当地时间是：${timeStr}${timezone ? ` (${timezone})` : ''}。\n`;
-            }
-        }
+        nodePrompt += getPromptUserTimeNotice(character,realNow)+'\n';
         nodePrompt += `</user_settings>\n\n`;
         
         nodePrompt += `<node_directive>\n${activeNode.prompt}\n</node_directive>\n\n`;
@@ -636,13 +640,7 @@ function generatePrivateSystemPrompt(character, opts) {
             prompt += `[System Notice] 与你对话的用户（称呼：${character.myName}）出生于${ageInfo.birthYear}年${ageInfo.birthMonth}月${ageInfo.birthDay}日，现在的年龄是${ageInfo.age}岁。\n`;
         }
     }
-    if (clockApi ? clockApi.isActive(userClock) : (character.myEnableDynamicTimezone && character.myTimezone)) {
-        const timeStr = clockApi ? clockApi.format(userClock, realNow) : getLocalTimeInTimezone(character.myTimezone);
-        const timezone = clockApi ? clockApi.getTimeZone(userClock) : character.myTimezone;
-        if (timeStr) {
-            prompt += `[System Notice] 与你对话的用户（称呼：${character.myName}）当前所在的当地时间是：${timeStr}${timezone ? ` (${timezone})` : ''}。\n`;
-        }
-    }
+    prompt += getPromptUserTimeNotice(character,realNow)+'\n';
     prompt += `</user_settings>\n`
 
     const liveWallet=typeof WalletLedger!=='undefined'?WalletLedger.snapshot(String(character.id)):null;
