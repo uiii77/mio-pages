@@ -120,6 +120,7 @@
         const config = featureConfig(character);
         if (!config || typeof global.fetchAiResponse !== 'function') return { skipped: true, reason: 'api-unavailable' };
         locks.add(character.id);
+        const revision = character.emotionRevision;
         try {
             const payload = {
                 model: config.model,
@@ -131,6 +132,7 @@
             const response = await global.fetchAiResponse(config, payload, headersFor(config), endpointFor(config), false);
             const result = Core.parseResult(response);
             if (!result) return { skipped: true, reason: 'invalid-response' };
+            if (character.emotionRevision !== revision) return { skipped: true, reason: 'state-changed' };
             await applyResult(character, result);
             return { skipped: false, result };
         } catch (error) {
@@ -156,6 +158,7 @@
 
     async function saveManualState(character, value) {
         ensureSettings(character);
+        const previous = Object.fromEntries(['activeBuffs', 'buffInjection', 'emotionInnerState', 'emotionUpdatedAt', 'emotionRevision'].map(key => [key, character[key]]));
         const state = Core.normalizeState(value, { now: Date.now() });
         character.activeBuffs = state.activeBuffs;
         character.buffInjection = state.buffInjection;
@@ -163,8 +166,27 @@
         character.emotionUpdatedAt = Date.now();
         character.emotionRevision = Math.max(0, Number(character.emotionRevision) || 0) + 1;
         runtime.delete(character.id);
-        if (typeof global.saveCharacter === 'function') await global.saveCharacter(character.id);
+        try {
+            if (typeof global.saveCharacter === 'function' && await global.saveCharacter(character.id) === false) throw new Error('保存情绪失败，请重试');
+        } catch (error) {
+            if (character.emotionRevision === previous.emotionRevision + 1) Object.assign(character, previous);
+            runtime.delete(character.id);
+            throw error;
+        }
         return state;
+    }
+    async function removeBuff(character, index, revision) {
+        ensureSettings(character);
+        if (revision !== undefined && revision !== character.emotionRevision) throw new Error('情绪已更新，请重新选择要删除的记录');
+        const state = stateFor(character);
+        if (!Number.isInteger(index) || !state.activeBuffs[index]) return false;
+        state.activeBuffs.splice(index, 1);
+        // The old aggregate can mention any removed buff; rebuild only from remaining explicit entries.
+        state.buffInjection = state.activeBuffs.map(buff => `${buff.label}${buff.description ? `：${buff.description}` : ''}`).join('；');
+        state.innerState = '';
+        await saveManualState(character, state);
+        await prepareContext(character);
+        return true;
     }
 
     async function clear(character) {
@@ -201,7 +223,7 @@
         if (summary) summary.textContent = `${character.remarkName || character.name || '角色'} · 当前心情`;
         document.getElementById('emotion-updated-at').textContent = state.updatedAt ? `最近更新 · ${new Date(state.updatedAt).toLocaleString()}` : '还没有记录';
         document.getElementById('emotion-state-list').innerHTML = state.activeBuffs.length
-            ? state.activeBuffs.map(buff => `<article class="emotion-state-item"><div><strong>${escape(buff.emoji || '')} ${escape(buff.label)}</strong><small>强度 · ${escape(Core.INTENSITIES[buff.intensity])}</small></div>${buff.description ? `<p>${escape(buff.description)}</p>` : ''}</article>`).join('')
+            ? state.activeBuffs.map((buff, index) => `<article class="emotion-state-item"><div><strong>${escape(buff.emoji || '')} ${escape(buff.label)}</strong><small>强度 · ${escape(Core.INTENSITIES[buff.intensity])}</small></div>${buff.description ? `<p>${escape(buff.description)}</p>` : ''}<button type="button" class="btn btn-small btn-secondary character-status-delete" data-emotion-delete="${index}">删除</button></article>`).join('')
             : '<div class="emotion-empty">还没有记录当前心情。可以新增情绪，或根据对话评估。</div>';
         for (const [id, text] of [['emotion-expression-preview', state.buffInjection], ['emotion-inner-preview', state.innerState]]) {
             const note = document.getElementById(id);
@@ -225,6 +247,23 @@
         const index = list.querySelectorAll('[data-emotion-index]').length;
         list.insertAdjacentHTML('beforeend', editorRow({}, index));
         list.lastElementChild.querySelector('input')?.focus({ preventScroll: true });
+    }
+    async function deleteFromUi(event) {
+        const button = event.target.closest('[data-emotion-delete]');
+        const character = currentCharacter();
+        if (!button || !character || button.disabled) return;
+        const index = Number(button.dataset.emotionDelete);
+        const state = stateFor(character), buff = state.activeBuffs[index];
+        if (!buff) return;
+        button.disabled = true;
+        try {
+            const decision = await global.showAppConfirmDialog({ title: '删除情绪', message: `删除「${buff.label}」？删除后将按剩余情绪更新状态说明。`, confirmText: '删除', dismissText: '' });
+            if (decision !== 'confirm') return;
+            await removeBuff(character, index, state.revision);
+            if (currentCharacter()?.id === character.id) await render();
+            global.showToast?.('情绪已删除');
+        } catch (error) { global.showToast?.(error?.message || '删除失败，请重试'); }
+        finally { button.disabled = false; }
     }
 
     async function saveFromUi() {
@@ -267,9 +306,10 @@
         document.getElementById('emotion-clear-btn')?.addEventListener('click', async () => { const character = currentCharacter(); if (character) { await clear(character); await render(); } });
         document.getElementById('emotion-evaluate-btn')?.addEventListener('click', async () => { const character = currentCharacter(); if (character) { const result = await evaluate(character, { force: true }); if (result.error) global.showToast?.(`情绪评估失败：${result.error}`); await render(); } });
         document.getElementById('emotion-buff-list')?.addEventListener('click', event => { if (event.target.closest('[data-emotion-action="remove"]')) event.target.closest('[data-emotion-index]')?.remove(); });
+        document.getElementById('emotion-state-list')?.addEventListener('click', event => void deleteFromUi(event));
     }
 
-    global.Emotion = { VERSION: Core?.VERSION || 1, ensureSettings, evaluate, prepareContext, getContext, saveManualState, clear, open, render, setup };
+    global.Emotion = { VERSION: Core?.VERSION || 1, ensureSettings, evaluate, prepareContext, getContext, saveManualState, removeBuff, clear, open, render, setup };
     global.prepareEmotionContext = prepareContext;
     global.getEmotionContextBlock = getContext;
     global.setupEmotionScreen = setup;

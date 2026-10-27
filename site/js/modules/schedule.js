@@ -103,7 +103,27 @@
         if (!global.dexieDB?.dailySchedules) return schedule;
         const normalized = Core.normalizeSchedule(schedule);
         await global.dexieDB.dailySchedules.put(normalized);
+        runtime.delete(normalized.characterId);
         return normalized;
+    }
+    async function removeSlot(char, slotId, options = {}) {
+        if (locks.has(char.id)) throw new Error('请等待日程生成完成后再删除');
+        const date = options.date || dateKey(char);
+        const removed = await global.dexieDB.transaction('rw', global.dexieDB.dailySchedules, global.dexieDB.scheduleActivityLedger, async () => {
+            const schedule = await getScheduleForDate(char, date);
+            const slot = schedule?.slots.find(item => item.id === slotId);
+            if (!slot) return false;
+            schedule.slots = schedule.slots.filter(item => item.id !== slotId);
+            // A day-part narrative may still describe the removed activity; keep the other day parts.
+            const period = Core.minutes(slot.startTime) < 720 ? 'morning' : Core.minutes(slot.startTime) < 1080 ? 'afternoon' : 'evening';
+            delete schedule.flowNarrative[period];
+            schedule.weatherImpactLog = schedule.weatherImpactLog.filter(item => item.slotId !== slotId);
+            schedule.updatedAt = Date.now();
+            await saveSchedule(schedule);
+            return true;
+        });
+        await prepareContext(char);
+        return removed;
     }
     async function recordActivity(char, input = {}) {
         if (!global.dexieDB?.scheduleActivityLedger) return;
@@ -275,7 +295,7 @@
         list.innerHTML = schedule.slots.map(slot => {
             const locked = char.scheduleTimeUnlockEnabled === true && !Core.isSlotUnlocked(slot, currentMinutes);
             const unlockLabel = locked ? '<em class="schedule-status schedule-status-locked">待解锁</em>' : '';
-            return `<div class="schedule-row${locked ? ' schedule-row-locked' : ''}" data-id="${escape(slot.id)}"><div class="schedule-row-main"><div class="schedule-row-time">${escape(slot.startTime)}</div><div class="schedule-row-content"><strong>${escape(slot.emoji)} ${escape(slot.activity)}</strong><span>${escape(slot.location || '')}${slot.description ? `${slot.location ? ' · ' : ''}${escape(slot.description)}` : ''}</span><em class="schedule-status schedule-status-${escape(slot.status)}">${escape(Core.STATUS_LABELS[slot.status] || slot.status)}</em>${unlockLabel}</div></div><div class="schedule-row-actions"><button class="btn btn-small btn-secondary" data-action="edit">编辑</button><button class="btn btn-small btn-secondary" data-action="complete">完成</button><button class="btn btn-small btn-secondary" data-action="skip">跳过</button></div></div>`;
+            return `<div class="schedule-row${locked ? ' schedule-row-locked' : ''}" data-id="${escape(slot.id)}"><div class="schedule-row-main"><div class="schedule-row-time">${escape(slot.startTime)}</div><div class="schedule-row-content"><strong>${escape(slot.emoji)} ${escape(slot.activity)}</strong><span>${escape(slot.location || '')}${slot.description ? `${slot.location ? ' · ' : ''}${escape(slot.description)}` : ''}</span><em class="schedule-status schedule-status-${escape(slot.status)}">${escape(Core.STATUS_LABELS[slot.status] || slot.status)}</em>${unlockLabel}</div></div><div class="schedule-row-actions"><button class="btn btn-small btn-secondary" data-action="edit">编辑</button><button class="btn btn-small btn-secondary" data-action="complete">完成</button><button class="btn btn-small btn-secondary" data-action="skip">跳过</button><button type="button" class="btn btn-small btn-secondary character-status-delete" data-action="delete">删除</button></div></div>`;
         }).join('');
     }
     async function editSlotFields(slot, save) {
@@ -313,6 +333,13 @@
         if (!button || !row || !char) return;
         const schedule = ui.dateOverride ? await getScheduleForDate(char, ui.dateOverride) : await getSchedule(char); const slot = schedule?.slots.find(item => item.id === row.dataset.id); if (!schedule || !slot) return;
         const action = button.dataset.action;
+        if (action === 'delete') {
+            const decision = await global.showAppConfirmDialog({ title: '删除日程', message: `删除「${slot.activity}」？其他日程会保留。`, confirmText: '删除', dismissText: '' });
+            if (decision !== 'confirm') return;
+            try { await removeSlot(char, slot.id, { date: schedule.date }); await render(); global.showToast?.('日程已删除'); }
+            catch (error) { global.showToast?.(error?.message || '删除失败，请重试'); }
+            return;
+        }
         if (action === 'complete' || action === 'skip') { await setSlotStatus(char, slot.id, action === 'complete' ? 'completed' : 'skipped', { date: schedule.date }); await render(); return; }
         const saved = await editSlotFields(slot, async fields => {
             schedule.slots = schedule.slots.map(item => item.id === slot.id
@@ -345,7 +372,7 @@
         document.getElementById('schedule-generate-btn')?.addEventListener('click', async () => { const char = currentCharacter(); if (!char) return; const result = await generate(char, { force: true }); if (result.error) global.showToast?.(`日程生成失败：${result.error}`); else if (!result.skipped) { ui.dateOverride = ''; global.showToast?.('角色日程已刷新'); } await render(); });
         document.getElementById('schedule-list')?.addEventListener('click', event => void modify(event));
     }
-    global.Schedule = { VERSION: Core.VERSION, ensureSettings, getSchedule, getScheduleForDate, saveSchedule, generate, prepareContext, getContext, ensureCurrentSchedule, setSlotStatus, getActivityLedger, recordActivity, isActivitySettled, evaluateWeatherImpact: Core.evaluateWeatherImpact, applyWeatherImpact: Core.applyWeatherImpact, applyWeatherSnapshot: Core.applyWeatherSnapshot, applyWeatherRules, isSlotUnlocked: Core.isSlotUnlocked, open, setup };
+    global.Schedule = { VERSION: Core.VERSION, ensureSettings, getSchedule, getScheduleForDate, saveSchedule, removeSlot, generate, prepareContext, getContext, ensureCurrentSchedule, setSlotStatus, getActivityLedger, recordActivity, isActivitySettled, evaluateWeatherImpact: Core.evaluateWeatherImpact, applyWeatherImpact: Core.applyWeatherImpact, applyWeatherSnapshot: Core.applyWeatherSnapshot, applyWeatherRules, isSlotUnlocked: Core.isSlotUnlocked, open, setup };
     global.prepareScheduleContext = prepareContext;
     global.getScheduleContextBlock = getContext;
     global.setupScheduleScreen = setup;
