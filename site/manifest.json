@@ -10,9 +10,15 @@
   "description": "A world of your own.",
   "icons": [
     {
-      "src": "assets/icons/mio-app.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
+      "src": "assets/icons/mio-app-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "assets/icons/mio-app-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
       "purpose": "any"
     },
     {

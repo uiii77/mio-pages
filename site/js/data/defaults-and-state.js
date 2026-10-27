@@ -88,7 +88,7 @@ const defaultIcons = {
     'diary-screen': {name: '日记本', url: 'https://i.postimg.cc/bJBLzmFH/chan-70.png'},
     'piggy-bank-screen': {name: '钱包', url: 'https://i.postimg.cc/3RmWRRtS/chan-18.png'},
     'period-screen': {name: '生理期', url: 'assets/icons/period-pixel.png'},
-    'health-screen': {name: '日历', url: 'assets/icons/period-pixel.png'},
+    'health-screen': {name: '日历', url: 'assets/icons/calendar-pixel.png'},
     'couple-space-screen': {name: '情侣空间', url: 'assets/icons/couple-space-pixel.png'},
     'pomodoro-screen': {name: '番茄钟', url: 'https://i.postimg.cc/PrYGRDPF/chan-76.png'},
     'storage-analysis-screen': {name: '存储分析', url: 'https://i.postimg.cc/J0F3Lt0T/chan-107.png'},
