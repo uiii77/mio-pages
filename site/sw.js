@@ -1,7 +1,7 @@
 // Service Worker - 应用壳离线恢复与系统推送通知
 try {
     // A new import URL also reaches users whose older page still uses the default HTTP cache policy.
-    importScripts('./sw-assets.js?ovo-manifest=file-update-1');
+    importScripts('./sw-assets.js?ovo-manifest=pwa-update-2');
 } catch (error) {
     console.warn('Service worker asset manifest unavailable:', error);
 }
@@ -124,7 +124,7 @@ self.addEventListener('install', (event) => {
         validateManifest(OVO_SW_MANIFEST);
         const current = await readShell();
         const cached = await (await caches.open(current.name)).match(new URL('index.html', OVO_SCOPE).href);
-        if (current.manifest.version === OVO_SW_MANIFEST.version && cached) {
+        if (current.protocol === 2 && current.manifest.version === OVO_SW_MANIFEST.version && cached) {
             ovoInstalledShell = current;
         } else {
             try {
@@ -135,21 +135,36 @@ self.addEventListener('install', (event) => {
                 throw error;
             }
         }
-        await self.skipWaiting();
+        // Old pages cannot acknowledge the new protocol. Bootstrap once; keep their shell pinned.
+        if (!self.registration.active || !current.protocol) await self.skipWaiting();
     })());
 });
 
 self.addEventListener('activate', (event) => {
     event.waitUntil((async () => {
         const previous = await readShell();
-        const shell = ovoInstalledShell || previous;
-        await writeShell(shell);
+        const shell = ovoInstalledShell || { name: OVO_CACHE_NAME, manifest: OVO_SW_MANIFEST };
+        const pages = await clients.matchAll({ type: 'window', includeUncontrolled: true });
+        const state = await caches.open(OVO_STATE_CACHE);
+        const liveKeys = new Set(pages.map(page => new URL(`__ovo_client_${page.id}__`, OVO_SCOPE).href));
+        for (const key of await state.keys()) {
+            if (key.url.startsWith(new URL('__ovo_client_', OVO_SCOPE).href) && !liveKeys.has(key.url)) await state.delete(key);
+        }
+        for (const page of pages.filter(page => page.url.startsWith(OVO_SCOPE))) {
+            const key = new URL(`__ovo_client_${page.id}__`, OVO_SCOPE).href;
+            if (!await state.match(key)) await state.put(key, new Response(JSON.stringify(previous)));
+        }
+        await writeShell({ ...shell, protocol: 2 });
         await clients.claim();
-        if (previous.name !== shell.name) await caches.delete(previous.name);
+        const retained = new Set([shell.name, previous.name]);
+        for (const page of pages) {
+            const pin = await state.match(new URL(`__ovo_client_${page.id}__`, OVO_SCOPE).href);
+            if (pin) retained.add((await pin.json()).name);
+        }
         // Never delete another repository's caches or an in-progress pull.
         const names = await caches.keys();
         await Promise.all(names.filter(name => name.startsWith(OVO_CACHE_PREFIX)
-            && name !== shell.name && !name.includes('-pull-')).map(name => caches.delete(name)));
+            && !retained.has(name) && !name.includes('-pull-')).map(name => caches.delete(name)));
     })());
 });
 
@@ -161,9 +176,20 @@ self.addEventListener('fetch', (event) => {
 
     // Only handle app files; API requests, uploads and remote resources keep their existing behavior.
     const relative = url.href.startsWith(OVO_SCOPE) ? url.pathname.slice(new URL(OVO_SCOPE).pathname.length) : '';
+    if (relative === 'release.json' || relative === 'sw-assets.js') {
+        event.respondWith(fetch(new Request(request, { cache: 'no-store' })));
+        return;
+    }
     if (request.mode !== 'navigate' && !OVO_SW_MANIFEST.assets.includes(relative) && !/\.(?:js|css|json|png|svg)$/.test(relative)) return;
     event.respondWith((async () => {
-        const shell = await readShell();
+        let shell = await readShell();
+        const state = await caches.open(OVO_STATE_CACHE);
+        if (request.mode === 'navigate' && event.resultingClientId) {
+            await state.put(new URL(`__ovo_client_${event.resultingClientId}__`, OVO_SCOPE).href, new Response(JSON.stringify(shell)));
+        } else if (event.clientId) {
+            const pinned = await state.match(new URL(`__ovo_client_${event.clientId}__`, OVO_SCOPE).href);
+            if (pinned) shell = await pinned.json();
+        }
         const cache = await caches.open(shell.name);
         const asset = request.mode === 'navigate' ? 'index.html' : relative;
         if (!shell.manifest.assets.includes(asset)) return fetch(request);
@@ -182,6 +208,18 @@ self.addEventListener('fetch', (event) => {
 });
 
 // A staged pull becomes active only after the page has saved its data.
+self.addEventListener('message', event => {
+    if (event.data?.type === 'MIO_UPDATE_STATUS' && event.source?.url?.startsWith(OVO_SCOPE) && event.ports?.[0]) {
+        event.waitUntil((async () => {
+            const shell = await readShell();
+            const release = await (await caches.open(shell.name)).match(new URL('release.json', OVO_SCOPE).href);
+            event.ports[0].postMessage({ commit: release ? (await release.json()).commit : null });
+        })());
+    }
+    if (event.data?.type === 'MIO_UPDATE_ACTIVATE' && event.source?.url?.startsWith(OVO_SCOPE)) {
+        event.waitUntil(self.skipWaiting());
+    }
+});
 self.addEventListener('message', event => {
     const data = event.data;
     const port = event.ports && event.ports[0];
@@ -240,9 +278,9 @@ self.addEventListener('message', event => {
                 if (!(await (await caches.open(name)).match(new URL('index.html', OVO_SCOPE).href))) {
                     throw new Error('更新缓存已被清理，请重新拉取');
                 }
-                await writeShell({ name, manifest: prepared.manifest });
+                await writeShell({ name, manifest: prepared.manifest, protocol: 2 });
                 // The commit has succeeded; cleanup failure must not report the update as failed.
-                await Promise.allSettled([state.delete(key), caches.delete(previous.name)]);
+                await Promise.allSettled([state.delete(key)]);
                 port.postMessage({ type: 'done', version: prepared.manifest.version });
             }
         } catch (error) {

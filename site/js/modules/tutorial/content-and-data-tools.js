@@ -1216,7 +1216,7 @@ function renderTutorialContent(targetId = 'tutorial-content-area') {
     // 文件更新入口紧接仓库备份，三套外观复用现有次要操作样式。
     const fileUpdateSection = document.createElement('div');
     fileUpdateSection.className = 'ovo-file-update';
-    const fileUpdateButton = createActionItem('button', '拉取最新文件', 'btn btn-neutral');
+    const fileUpdateButton = createActionItem('button', '检查更新', 'btn btn-neutral');
     fileUpdateButton.id = 'ovo-file-update-btn';
     fileUpdateButton.type = 'button';
     fileUpdateButton.setAttribute('aria-describedby', 'ovo-file-update-status');

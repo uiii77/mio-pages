@@ -1,8 +1,7 @@
-// Manual application-file refresh. User data stays in its existing IndexedDB/localStorage.
+// PWA update orchestration. User data stays in its existing IndexedDB/localStorage.
 (() => {
     const baseUrl = new URL('../../../', document.currentScript.src).href;
-    let operation = null;
-    let lastStatus = '更新前建议先备份重要数据。';
+    let lastStatus = '更新只替换应用文件，不清除聊天和设置。';
     let reloadPending = false;
 
     function renderState() {
@@ -10,9 +9,9 @@
         const status = document.getElementById('ovo-file-update-status');
         if (button) {
             const label = button.querySelector('span') || button;
-            label.textContent = operation ? (operation.committing ? '正在更新…' : '取消拉取') : '拉取最新文件';
-            button.disabled = !!operation && (operation.confirming || operation.committing);
-            button.setAttribute('aria-busy', String(!!operation));
+            label.textContent = checking ? '正在检查…' : '检查更新';
+            button.disabled = checking;
+            button.setAttribute('aria-busy', String(checking));
         }
         if (status) status.textContent = lastStatus;
     }
@@ -33,142 +32,91 @@
         return false;
     }
 
-    function abortError() { return new Error('已取消拉取，当前应用保持不变'); }
-
-    function delay(ms, signal) {
+    let checking = false;
+    let lastCheck = 0;
+    let deferred = '';
+    function connection(task) {
         return new Promise((resolve, reject) => {
-            if (signal.aborted) { reject(abortError()); return; }
-            const cancel = () => { clearTimeout(timer); reject(abortError()); };
-            const timer = setTimeout(() => { signal.removeEventListener('abort', cancel); resolve(); }, ms);
-            signal.addEventListener('abort', cancel, { once: true });
+            const timer = setTimeout(() => reject(new Error('连接更新服务超时，请稍后重试')), 30000);
+            task.then(resolve, reject).finally(() => clearTimeout(timer));
         });
     }
-
-    function send(worker, type, token, { signal, progress, timeout = 45000 } = {}) {
-        return new Promise((resolve, reject) => {
+    function activeCommit(worker) {
+        return new Promise(resolve => {
+            if (!worker || !window.MioRelease) { resolve(null); return; }
             const channel = new MessageChannel();
-            let timer;
-            const finish = (error, value) => {
-                clearTimeout(timer);
-                signal?.removeEventListener('abort', cancel);
-                channel.port1.close();
-                error ? reject(error) : resolve(value);
-            };
-            const cancel = () => finish(abortError());
-            const armTimer = () => {
-                clearTimeout(timer);
-                timer = setTimeout(() => finish(new Error('更新服务响应超时，请检查网络后重试')), timeout);
-            };
-            channel.port1.onmessage = event => {
-                const data = event.data;
-                if (data.type === 'progress') { armTimer(); progress?.(data); }
-                else if (data.type === 'error') finish(new Error(data.message));
-                else if (data.type === 'done') finish(null, data);
-            };
-            if (signal?.aborted) { cancel(); return; }
-            signal?.addEventListener('abort', cancel, { once: true });
-            armTimer();
-            try { worker.postMessage({ type, token }, [channel.port2]); }
-            catch (error) { finish(error); }
+            const finish = value => { clearTimeout(timer); channel.port1.close(); resolve(value); };
+            const timer = setTimeout(() => finish(null), 5000);
+            channel.port1.onmessage = event => finish(event.data.commit);
+            worker.postMessage({ type: 'MIO_UPDATE_STATUS' }, [channel.port2]);
         });
     }
-
-    async function getWorker(signal) {
-        const registration = await new Promise((resolve, reject) => {
-            const finish = (error, value) => {
-                clearTimeout(timer);
-                signal.removeEventListener('abort', cancel);
-                error ? reject(error) : resolve(value);
-            };
-            const cancel = () => finish(abortError());
-            const timer = setTimeout(() => finish(new Error('更新服务连接超时，请检查网络后重试')), 30000);
-            if (signal.aborted) { cancel(); return; }
-            signal.addEventListener('abort', cancel, { once: true });
-            navigator.serviceWorker.register(new URL('sw.js', baseUrl).href,
-                { scope: baseUrl, updateViaCache: 'none' }).then(value => finish(null, value), finish);
-        });
-        const deadline = Date.now() + 180000;
-        while ((registration.installing || !registration.active || registration.active.state === 'activating') && Date.now() < deadline) {
-            await delay(250, signal);
-        }
-        if (signal.aborted) throw abortError();
-        const worker = registration.active;
-        if (!worker || registration.installing) throw new Error('更新服务尚未准备好，请稍后重试');
-        const reply = await send(worker, 'OVO_UPDATE_PING', '', { signal, timeout: 5000 });
-        if (reply.protocol !== 1) throw new Error('网站更新服务尚未发布完成，请稍后重试');
-        return worker;
-    }
-
-    async function run() {
-        if (reloadPending) return;
-        if (operation) {
-            if (!operation.committing && !operation.confirming) operation.controller.abort();
-            return;
-        }
-        if (!/^https?:$/.test(location.protocol) || !navigator.serviceWorker || !window.isSecureContext) {
-            report('请通过 HTTPS 网站链接打开后再更新。');
-            return;
-        }
-        if (busy()) { report('请先等待回复生成或备份完成，再拉取更新。'); return; }
-        const current = { controller: new AbortController(), confirming: true, committing: false,
-            token: `${Date.now().toString(36)}-${crypto.randomUUID().replaceAll('-', '')}`, worker: null };
-        operation = current;
-        renderState();
-        let applied = false;
+    async function check(manual = false) {
+        if (checking || reloadPending || !navigator.serviceWorker || !window.isSecureContext) return;
+        if (!manual && (document.visibilityState === 'hidden' || Date.now() - lastCheck < 300000)) return;
+        checking = true;
+        lastCheck = Date.now();
         try {
-            const confirmation = customConfirm('更新前建议先使用「备份数据」或上方的仓库备份保存重要数据。\n\n将重新下载当前站点的应用文件，完成后刷新一次；不会主动删除聊天记录、角色和设置。', '拉取最新文件');
-            const confirmButton = document.getElementById('custom-confirm-ok-btn');
-            const originalLabel = confirmButton.textContent;
-            confirmButton.textContent = '拉取并更新';
+            report('正在检查更新…');
+            const registration = await connection(navigator.serviceWorker.register(new URL('sw.js', baseUrl).href,
+                { scope: baseUrl, updateViaCache: 'none' }));
+            await connection(registration.update());
+            const worker = registration.installing;
+            if (worker) {
+                report('正在后台下载并校验新版本…');
+                await new Promise((resolve, reject) => {
+                    const timer = setTimeout(() => finish(new Error('下载尚未完成，请稍后检查；当前版本仍可使用')), 180000);
+                    const changed = () => {
+                        if (worker.state === 'installed' || worker.state === 'activated') finish();
+                        else if (worker.state === 'redundant') finish(new Error('新版本下载或校验失败，请稍后重试'));
+                    };
+                    function finish(error) { clearTimeout(timer); worker.removeEventListener('statechange', changed); error ? reject(error) : resolve(); }
+                    worker.addEventListener('statechange', changed);
+                    changed();
+                });
+            }
+            const waiting = registration.waiting;
+            const installedCommit = waiting ? null : await activeCommit(registration.active);
+            const needsReload = installedCommit && installedCommit !== window.MioRelease?.commit;
+            if (!waiting && !needsReload) { report('当前已是最新可用版本。'); return; }
+            const candidate = waiting || installedCommit;
+            if ((!manual && deferred === candidate) || busy()
+                || document.getElementById('custom-confirm-modal')?.style.display === 'flex') {
+                report('新版本已准备好，可在操作完成后点击「检查更新」。'); return;
+            }
+            const confirmation = customConfirm('应用文件已下载并校验完成。更新将刷新页面，聊天记录、角色和设置都会保留。', '发现新版本');
+            const ok = document.getElementById('custom-confirm-ok-btn');
+            const cancel = document.getElementById('custom-confirm-cancel-btn');
+            const labels = [ok?.textContent, cancel?.textContent];
+            if (ok) ok.textContent = '立即更新';
+            if (cancel) cancel.textContent = '稍后';
             let confirmed;
             try { confirmed = await confirmation; }
-            finally { confirmButton.textContent = originalLabel; }
-            if (!confirmed) return;
-            current.confirming = false;
-            const signal = current.controller.signal;
-            report('正在连接更新服务…');
-            current.worker = await getWorker(signal);
-            await send(current.worker, 'OVO_UPDATE_PREPARE', current.token, {
-                signal, progress: data => report(`正在拉取文件：${data.completed} / ${data.total}`)
-            });
-            if (busy()) throw new Error('文件已拉取，但当前仍有回复或备份进行中，请完成后重试');
-            report('文件已拉取，正在保存当前数据…');
-            // Drain existing chat writes before the full save, preserving their original order.
+            finally { if (ok) ok.textContent = labels[0]; if (cancel) cancel.textContent = labels[1]; }
+            if (!confirmed) { deferred = candidate; report('新版本已准备好，稍后可检查并更新。'); return; }
+            if (busy()) throw new Error('请等待当前回复或备份完成后再更新');
             if (typeof characterSaveQueues !== 'undefined' && typeof groupSaveQueues !== 'undefined') {
                 const results = await Promise.all([...characterSaveQueues.values(), ...groupSaveQueues.values()].map(task => task.promise));
-                if (results.some(value => value === false)) throw new Error('当前数据保存失败，更新已停止，请先备份');
+                if (results.includes(false)) throw new Error('当前数据尚未保存，已停止更新');
             }
-            if (typeof saveData !== 'function' || await saveData() === false) {
-                throw new Error('当前数据保存失败，更新已停止，请先备份');
-            }
-            if (signal.aborted) throw abortError();
-            if (busy()) throw new Error('当前仍有回复或备份进行中，请完成后重试');
-            current.committing = true;
-            renderState();
-            await send(current.worker, 'OVO_UPDATE_APPLY', current.token);
-            applied = true;
-            report('拉取完成，即将刷新…');
-            // A task started during the commit must finish before reloading.
-            const deadline = Date.now() + 90000;
-            while (busy() && Date.now() < deadline) {
-                report('文件已更新，正在等待当前操作完成后刷新…');
-                await delay(500, signal);
-            }
-            if (busy()) { report('文件已更新，请在当前操作完成后手动刷新页面。'); return; }
+            if (typeof saveData !== 'function' || await saveData() === false || busy()) throw new Error('当前操作尚未保存完成，已停止更新');
+            report('正在应用新版本…');
+            if (waiting) await new Promise((resolve, reject) => {
+                const timer = setTimeout(() => finish(new Error('激活尚未完成，请稍后重试')), 30000);
+                const changed = () => { if (navigator.serviceWorker.controller === waiting) finish(); };
+                function finish(error) { clearTimeout(timer); navigator.serviceWorker.removeEventListener('controllerchange', changed); error ? reject(error) : resolve(); }
+                navigator.serviceWorker.addEventListener('controllerchange', changed);
+                waiting.postMessage({ type: 'MIO_UPDATE_ACTIVATE' });
+                changed();
+            });
             reloadPending = true;
-            await delay(500, signal);
             location.reload();
         } catch (error) {
-            report(current.controller.signal.aborted ? '已取消拉取，当前应用保持不变。'
-                : `${error.message || '拉取失败，请检查网络后重试'}${applied ? '' : '。当前应用保持不变。'}`);
-        } finally {
-            if (current.worker && !applied) {
-                await send(current.worker, 'OVO_UPDATE_DISCARD', current.token, { timeout: 5000 }).catch(() => {});
-            }
-            operation = null;
-            renderState();
-        }
+            report(`${error.message || '暂时无法连接更新服务'}。已保留当前版本和数据，可稍后重试。`);
+        } finally { checking = false; renderState(); }
     }
-
-    window.OVOFileUpdate = { baseUrl, run, renderState };
+    window.OVOFileUpdate = { baseUrl, run: () => check(true), check, renderState };
+    window.addEventListener?.('pageshow', () => check());
+    window.addEventListener?.('online', () => check());
+    document.addEventListener?.('visibilitychange', () => check());
 })();

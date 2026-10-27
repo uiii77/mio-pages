@@ -6,6 +6,7 @@ if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register(new URL('sw.js', window.OVOFileUpdate?.baseUrl || window.location.href).href, { updateViaCache: 'none' })
             .then(registration => {
                 console.log('ServiceWorker registration successful with scope: ', registration.scope);
+                window.OVOFileUpdate?.check();
             })
             .catch(err => {
                 console.log('ServiceWorker registration failed: ', err);
