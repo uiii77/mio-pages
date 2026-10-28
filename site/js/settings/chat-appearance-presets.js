@@ -79,13 +79,17 @@ async function applyChatAppearancePresetToCharacters(preset, ids) {
     const updated = targets.map(char => ({ ...char, ...values }));
     try {
         if (typeof window !== 'undefined' && window.StatusStorage) await window.StatusStorage.persistChats(dexieDB.characters, updated);
-        else await dexieDB.transaction('rw', dexieDB.characters, () => dexieDB.characters.bulkPut(updated));
+        else if (typeof window !== 'undefined' && window.WalletStorage) await window.WalletStorage.saveChats(dexieDB, dexieDB.characters, updated);
+        else throw new Error('聊天保存组件未就绪，请重新载入');
     } catch (error) {
         console.error('应用美化预设失败:', error);
         showToast('应用失败，角色设置未更新', 6000);
         return false;
     }
-    targets.forEach(char => Object.assign(char, values));
+    targets.forEach((char, index) => {
+        Object.assign(char, values);
+        if (updated[index]._chatSaveRevision) char._chatSaveRevision = updated[index]._chatSaveRevision;
+    });
     if (currentChatType === 'private' && idSet.has(currentChatId)) {
         writeChatAppearanceControls(values);
         refreshCurrentChatAppearance(values);

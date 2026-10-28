@@ -32,12 +32,12 @@ function ensureCharacterWalletLedger(character) {
 }
 
 async function persistWalletState(characterIds = []) {
-    if(window.WalletLedger && await WalletLedger.mode()!=='legacy'){for(const id of characterIds)await saveCharacter(id);return true;}
+    if(window.WalletLedger && await WalletLedger.mode()!=='legacy'){for(const id of characterIds)if(await saveCharacter(id)===false)return false;return true;}
     ensurePiggyBankState();
     const ids = Array.from(new Set((characterIds || []).filter(Boolean)));
     if(window.WalletStorage && typeof dexieDB !== 'undefined') {
         const fields=['id','transferStatus','payStatus','shopPaymentStatus','shopOrderId','shopPaymentSource','familyCardStatus','receivedFamilyCardStatus','familyCardActionProcessed'];
-        const characters=ids.map(id=>db.characters.find(row=>row.id===id)).filter(Boolean).map(row=>({id:row.id,walletLedger:row.walletLedger,history:(row.history || []).map(message=>message.isFamilyCardEvent || message.isFamilyCardNarration ? message : Object.fromEntries(fields.filter(key=>message[key]!==undefined).map(key=>[key,message[key]])))}));
+        const characters=ids.map(id=>db.characters.find(row=>row.id===id)).filter(Boolean).map(row=>({id:row.id,_chatSaveRevision:row._chatSaveRevision,walletLedger:row.walletLedger,history:(row.history || []).map(message=>message.isFamilyCardEvent || message.isFamilyCardNarration ? message : Object.fromEntries(fields.filter(key=>message[key]!==undefined).map(key=>[key,message[key]])))}));
         const result=await window.WalletStorage.forDatabase(dexieDB,db).execute({kind:'legacyCommit',ownerId:'user',idempotencyKey:crypto.randomUUID(),expectedRevision:window.WalletStorage.revision(db.piggyBank),bank:db.piggyBank,characters});
         if(!result.ok && typeof showToast==='function')showToast(result.reason || '钱包保存失败',5000);
         return result.ok;
@@ -50,15 +50,15 @@ async function persistWalletState(characterIds = []) {
                     const character = (db.characters || []).find(item => item.id === id);
                     if (character) {
                         if (window.StatusStorage) await window.StatusStorage.persistChats(dexieDB.characters, [character]);
-                        else await dexieDB.characters.put(character);
+                        else throw new Error('聊天保存组件未就绪，请重新载入');
                     }
                 }
             });
             return true;
         }
-        if (typeof saveGlobalSettings === 'function') await saveGlobalSettings(['piggyBank']);
+        if (typeof saveGlobalSettings === 'function' && await saveGlobalSettings(['piggyBank']) === false) return false;
         for (const id of ids) {
-            if (typeof saveCharacter === 'function') await saveCharacter(id);
+            if (typeof saveCharacter === 'function' && await saveCharacter(id) === false) return false;
         }
         return true;
     } catch (error) {

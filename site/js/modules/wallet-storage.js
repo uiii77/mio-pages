@@ -38,10 +38,18 @@
             return database.globalSettings.put({key,value:bank});
         });
     }
-    async function saveChats(database,table,records,preservePending=false) {
-        return database.transaction('rw',table,async()=>{
-            for(const record of records)await table.put([database.characters,database.groups].includes(table) ? protectChat(record,await table.get(record.id),preservePending) : record);
+    async function saveChats(database,table,records,preservePending=false,replace=false) {
+        const snapshots=records.map(copy),saved=[];
+        await database.transaction('rw',table,async()=>{
+            for(const record of snapshots){
+                const disk=await table.get(record.id);
+                if(!replace)global.ChatSaveGuard?.check(table,record,disk);
+                let next=[database.characters,database.groups].includes(table) && (!replace || preservePending) ? protectChat(record,disk,preservePending) : record;
+                if(global.ChatSaveGuard)next=global.ChatSaveGuard.stamp(next);
+                await table.put(next);saved.push(next);
+            }
         });
+        saved.forEach((row,index)=>global.ChatSaveGuard?.accept(table,records[index],row));
     }
     function mergeBackupCharacters(memoryRows,diskRows) {
         const memory=new Map(memoryRows.map(row=>[row.id,row]));
@@ -118,13 +126,17 @@
                         for(const draft of request.characters || []) {
                             const saved=await database.characters.get(draft.id);
                             if(!saved) continue;
+                            global.ChatSaveGuard?.check(database.characters,draft,saved);
                             saved.walletLedger=copy(draft.walletLedger);
                             const patches=new Map((draft.history || []).map(message=>[message.id,message]));
                             for(const message of saved.history || []) for(const field of flags) {
                                 if(patches.get(message.id)?.[field]!==undefined)message[field]=patches.get(message.id)[field];
                             }
                             const ids=new Set((saved.history || []).map(message=>message.id));
-                            for(const message of draft.history || []) if((message.isFamilyCardEvent || message.isFamilyCardNarration) && !ids.has(message.id)) (saved.history ||= []).push(copy(message));
+                            for(const message of draft.history || []) if((message.isFamilyCardEvent || message.isFamilyCardNarration) && !ids.has(message.id)) {
+                                (saved.history ||= []).push(copy(message));
+                                if(global.ChatSaveGuard)saved._chatSaveRevision=global.ChatSaveGuard.stamp(saved)._chatSaveRevision;
+                            }
                             characters.push(saved);
                         }
                     } else {
@@ -188,7 +200,13 @@
                     committed={bank,characters};
                     return {ok:true,data:receipt};
                 });
-                if(committed)synchronize(committed.bank,committed.characters);
+                if(committed){
+                    synchronize(committed.bank,committed.characters);
+                    for(const saved of committed.characters){
+                        const draft=request.characters?.find(row=>row.id===saved.id),live=memory.characters?.find(row=>row.id===saved.id);
+                        if(draft && live && live._chatSaveRevision===draft._chatSaveRevision)global.ChatSaveGuard?.accept(database.characters,live,saved);
+                    }
+                }
                 else {
                     const bank=(await database.globalSettings.get('piggyBank'))?.value;
                     if(bank)synchronize(bank,await database.characters.toArray());
@@ -200,6 +218,7 @@
                     const ids=new Set([request.ownerId,request.targetOwnerId,...(request.characters || []).map(row=>row.id)].filter(value=>value && value!=='user'));
                     if(bank)synchronize(bank,(await database.characters.bulkGet([...ids])).filter(Boolean));
                 }catch(_){/* A closed/quota-failed database must still report the failed command. */}
+                if(error.code==='CHAT_WRITE_CONFLICT')return {...fail('VERSION_CONFLICT'),reason:error.message};
                 return fail(error.message==='INVALID_ACCOUNT'?'INVALID_ACCOUNT':'PERSISTENCE_FAILED',true);
             }
         }

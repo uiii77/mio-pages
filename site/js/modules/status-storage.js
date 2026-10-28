@@ -370,23 +370,32 @@
     // 所有普通角色写入也检查整理修订号，防止其他标签页旧副本写回已删除字段。
     async function persistChats(table, records) {
         const write = async () => {
-            const synced = [];
+            const synced = [], committed = [];
+            const snapshots = records.map(record => clone(record));
             await dexieDB.transaction('rw', table, async () => {
                 const prepared = [];
-                for (const record of records) {
+                for (const [index, record] of snapshots.entries()) {
                     const disk = await table.get(record.id);
+                    window.ChatSaveGuard?.check(table, record, disk);
                     const protectedRecord = [dexieDB.characters,dexieDB.groups].includes(table) && window.WalletStorage ? window.WalletStorage.protectChat(record,disk) : record;
                     if (disk && revision(disk) !== revision(record)) {
                         const patches = templateCleanupPatch(protectedRecord, disk);
                         if (!patches) throw new Error(`${name(record)}：该会话在其他页面完成了状态栏整理。请先导出当前未保存内容，再重新载入页面，避免覆盖整理结果。`);
                         const updated = { ...protectedRecord, history: protectedRecord.history.map(message => ({ ...message })), _statusStorageRevision: revision(disk) };
                         applyTemplatePatch(updated, disk, patches);
-                        prepared.push(updated); synced.push({ record, disk, patches });
+                        prepared.push(updated); synced.push({ record: records[index], disk, patches });
                     } else prepared.push(protectedRecord);
+                    if (window.ChatSaveGuard && !equal(prepared[index], disk)) prepared[index] = window.ChatSaveGuard.stamp(prepared[index]);
+                    committed.push({ source: records[index], saved: prepared[index] });
                 }
                 await table.bulkPut(prepared);
             });
-            for (const { record, disk, patches } of synced) applyTemplatePatch(record, disk, patches);
+            const publish = () => {
+                for (const { record, disk, patches } of synced) applyTemplatePatch(record, disk, patches);
+                for (const { source, saved } of committed) window.ChatSaveGuard?.accept(table, source, saved);
+            };
+            if (typeof Dexie !== 'undefined' && Dexie.currentTransaction) Dexie.currentTransaction.on('complete', publish);
+            else publish();
         };
         // 钱包等调用可能已在 Dexie 事务中；此时数据库自身排队，不能等待持锁事务后的队列。
         if (typeof Dexie !== 'undefined' && Dexie.currentTransaction) return write();
@@ -467,6 +476,7 @@
                         assertRows(source, group);
                         const baseline = clone(statusDraft(source, group.rows, true));
                         const diskBefore = await table.get(group.chatId);
+                        window.ChatSaveGuard?.check(table, source, diskBefore);
                         if (!diskBefore) throw new Error('数据库中找不到会话，未处理');
                         if (revision(diskBefore) !== revision(source)) throw new Error('其他页面数据已变化，请重新载入');
                         const draft = statusDraft(source, group.rows);
@@ -624,6 +634,7 @@
                     const item = { name: group.name, count: restored };
                     await dexieDB.transaction('rw', table, dexieDB.globalSettings, async () => {
                         const disk = await table.get(group.chatId);
+                        window.ChatSaveGuard?.check(table, source, disk);
                         if (!disk || revision(disk) !== revision(source) || JSON.stringify(source) !== serialized || busy(group.type, group.chatId)) throw new Error('会话发生变化或已删除，请重新预览');
                         await table.put(draft);
                         await dexieDB.globalSettings.put({ key: '_statusStorageLastRun', value: { ...result, completed: [...result.completed, item] } });
@@ -661,6 +672,7 @@
         await dexieDB.transaction('rw', dexieDB.characters, dexieDB.globalSettings, async () => {
             for (let index = 0; index < drafts.length; index++) {
                 const disk = await dexieDB.characters.get(drafts[index].id);
+                window.ChatSaveGuard?.check(dexieDB.characters, sources[index], disk);
                 if ((disk && revision(disk) !== revision(sources[index])) || JSON.stringify(sources[index]) !== serialized[index]
                     || busy('private', sources[index].id)) throw new Error('会话发生变化，请重新载入后设置');
             }

@@ -179,6 +179,7 @@ function renderJournalList(searchQuery = '') {
     });
 }
 
+const pendingGeneratedJournals = new WeakMap();
 async function generateJournal(start, end, includeFavorited = false, silent = false, nodeInfo = null, options = {}) {
     if (!silent) {
         showToast('正在生成日记，请稍候...');
@@ -219,6 +220,7 @@ async function generateJournal(start, end, includeFavorited = false, silent = fa
             throw new Error("未找到当前聊天。");
         }
         ensureAutoJournalState(chat);
+        const scope = chat.chatArchiveScopeId;
 
         const startIndex = start - 1;
         const endIndex = end;
@@ -466,7 +468,9 @@ async function generateJournal(start, end, includeFavorited = false, silent = fa
         apiConfig = typeof getApiConfigForFeature === 'function' ? getApiConfigForFeature('journal', apiConfig, chat) : apiConfig;
         
         if (journalAuthored) summaryPrompt += BilingualContent.prompt(chat, 'journal', '角色第一人称日记的标题和正文');
-        const rawContent = await requestJournalSummary(apiConfig, summaryPrompt);
+        const draftKey = JSON.stringify([scope,start,end,includeFavorited,nodeInfo,rangeMessageSignature]);
+        const pendingDraft = pendingGeneratedJournals.get(chat);
+        const rawContent = !options.deferCommit && pendingDraft?.key === draftKey ? pendingDraft.rawContent : await requestJournalSummary(apiConfig, summaryPrompt);
         const journalData = parseJournalResponse(rawContent);
 
         const newJournal = {
@@ -487,6 +491,8 @@ async function generateJournal(start, end, includeFavorited = false, silent = fa
         if (options.deferCommit) {
             return { journal: newJournal, rangeStartMessage, rangeEndMessage, rangeMessageIds, rangeMessageSignature };
         }
+        if (chat.chatArchiveScopeId !== scope) throw new Error('存档已切换，请在原存档重试');
+        pendingGeneratedJournals.set(chat, { key:draftKey, rawContent });
 
         // 如果是节点总结，附加节点信息
         if (nodeInfo && nodeInfo.isNodeSummary) {
@@ -497,38 +503,38 @@ async function generateJournal(start, end, includeFavorited = false, silent = fa
             }
         }
 
-        if (!chat.memoryJournals) {
-            chat.memoryJournals = [];
-        }
+        const journals = [...(chat.memoryJournals || [])];
 
         // 如果是重新总结，查找并替换旧的总结
         if (nodeInfo && nodeInfo.isResummarize) {
-            const existingIndex = chat.memoryJournals.findIndex(j => j.isNodeSummary && j.nodeId === nodeInfo.nodeId);
+            const existingIndex = journals.findIndex(j => j.isNodeSummary && j.nodeId === nodeInfo.nodeId);
             if (existingIndex !== -1) {
                 // 保留原有的 id 和 createdAt，只更新内容和标题
-                chat.memoryJournals[existingIndex].content = newJournal.content;
-                chat.memoryJournals[existingIndex].title = newJournal.title;
-                chat.memoryJournals[existingIndex].range = newJournal.range;
+                journals[existingIndex] = {...journals[existingIndex],content:newJournal.content,title:newJournal.title,range:newJournal.range};
             } else {
-                chat.memoryJournals.push(newJournal);
+                journals.push(newJournal);
             }
         } else {
-            chat.memoryJournals.push(newJournal);
+            journals.push(newJournal);
         }
 
         // 如果是节点总结，同时更新节点对象中的 summaryContent
-        if (nodeInfo && nodeInfo.nodeId && chat.nodes) {
-            const node = chat.nodes.find(n => n.id === nodeInfo.nodeId);
-            if (node) {
-                node.summaryContent = newJournal.content;
-            }
-        }
+        const changes = { memoryJournals:journals };
+        if (nodeInfo && nodeInfo.nodeId && chat.nodes) changes.nodes = chat.nodes.map(node => node.id === nodeInfo.nodeId ? {...node,summaryContent:newJournal.content} : node);
 
         if (!options.isAutoJournal && (!nodeInfo || !nodeInfo.isNodeSummary)) {
-            syncAutoJournalCursorAfterManualSummary(chat, start, end);
+            const cursor = {...chat};
+            syncAutoJournalCursorAfterManualSummary(cursor, start, end);
+            for (const key of ['lastSummarizedMsgId','lastSummarizedMsgTimestamp','lastAutoJournalIndex','autoJournalState','autoJournalPending']) if (cursor[key] !== chat[key]) changes[key] = cursor[key];
         }
 
-        await saveData();
+        if (!await saveChatChanges(chat, targetChatType, changes)) {
+            document.getElementById('journal-generating-card')?.remove();
+            if (placeholder && !chat.memoryJournals?.length) placeholder.style.display = 'block';
+            if (options.propagateError) throw new Error('日记未保存，可重试保存已生成的内容');
+            return false;
+        }
+        pendingGeneratedJournals.delete(chat);
         refreshAutoJournalButton(chat, targetChatType);
 
         if (currentChatId === targetChatId && currentChatType === targetChatType) {
@@ -545,6 +551,7 @@ async function generateJournal(start, end, includeFavorited = false, silent = fa
         if (!options.suppressSuccessToast) {
             showToast(silent ? `日记总结已生成 (第${start}-${end}条)` : '新日记已生成！');
         }
+        return true;
 
     } catch (error) {
         // 移除生成卡片
@@ -563,10 +570,12 @@ async function generateJournal(start, end, includeFavorited = false, silent = fa
         }
 
         showApiError(error);
+        return false;
     } finally {
         if (!isBackgroundAutoJournal) {
             isGenerating = false;
             generatingChatId = null;
+            document.getElementById('journal-generating-card')?.remove();
         }
     }
 }

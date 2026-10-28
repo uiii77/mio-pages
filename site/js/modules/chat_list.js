@@ -136,6 +136,7 @@ function setupChatListScreen() {
                 if (result && result.data) {
                     const importedChar = result.data.data || result.data;
                     importedChar.id = `char_${Date.now()}`; // 重新生成 ID 防止冲突
+                    delete importedChar._chatSaveRevision;
                     
                     // 如果没有头像但导出了 PNG 头像，则合并回去
                     if (result.avatar && !importedChar.avatar) {
@@ -436,13 +437,16 @@ function handleChatListLongPress(chatId, chatType, x, y) {
                         // 1. 从 IndexedDB 彻底删除
                         try {
                             const remove = async () => {
-                                await dexieDB.characters.delete(chatId);
+                                await dexieDB.transaction('rw', dexieDB.characters, async () => {
+                                    window.ChatSaveGuard?.check(dexieDB.characters, chatItem, await dexieDB.characters.get(chatId));
+                                    await dexieDB.characters.delete(chatId);
+                                });
                                 db.characters = db.characters.filter(c => c.id !== chatId);
                             };
                             if(window.ReminderBackground) await window.ReminderBackground.removeCharacters([chatId],remove);
                             else await remove();
-                        } catch {
-                            showToast('删除未完成：请连接原后台账号，确认提醒已取消后重试');
+                        } catch (error) {
+                            showToast(error.code === 'CHAT_WRITE_CONFLICT' ? error.message : '删除未完成：请连接原后台账号，确认提醒已取消后重试');
                             return;
                         }
                         // 3. 同步清理通讯录里遗留的“我的档案”绑定关系，避免出现幽灵角色
@@ -454,7 +458,12 @@ function handleChatListLongPress(chatId, chatType, x, y) {
                             });
                         }
                     } else {
-                        await dexieDB.groups.delete(chatId);
+                        try {
+                            await dexieDB.transaction('rw', dexieDB.groups, async () => {
+                                window.ChatSaveGuard?.check(dexieDB.groups, chatItem, await dexieDB.groups.get(chatId));
+                                await dexieDB.groups.delete(chatId);
+                            });
+                        } catch (error) { showToast(error.message); return; }
                         db.groups = db.groups.filter(g => g.id !== chatId);
                     }
                     await saveData(); // 确保删除状态被即刻持久化

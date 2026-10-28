@@ -3,9 +3,9 @@
 
 async function saveCurrentChat() {
     if (currentChatType === 'group') {
-        await saveGroup(currentChatId);
+        return saveGroup(currentChatId);
     } else {
-        await saveCharacter(currentChatId);
+        return saveCharacter(currentChatId);
     }
 }
 

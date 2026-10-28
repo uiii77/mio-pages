@@ -1047,8 +1047,8 @@ async function commitImportStagingLocked(isPartial,providedKeys=null) {
         if(isPartial && currentControl?.activationJournalId && !window.WalletStorage)throw Error('钱包保护组件未就绪，请刷新后恢复');
         await validateReadingImportStaging(isPartial);
         if (!isPartial) await Promise.all(coreTables.map(table => table.clear()));
-        await copyDexieTableRecords(dexieDB.importCharacters, dexieDB.characters,isPartial && window.WalletStorage ? rows=>window.WalletStorage.saveChats(dexieDB,dexieDB.characters,rows,true) : null);
-        await copyDexieTableRecords(dexieDB.importGroups, dexieDB.groups,isPartial && window.WalletStorage ? rows=>window.WalletStorage.saveChats(dexieDB,dexieDB.groups,rows,true) : null);
+        await copyDexieTableRecords(dexieDB.importCharacters, dexieDB.characters,window.WalletStorage ? rows=>window.WalletStorage.saveChats(dexieDB,dexieDB.characters,rows,isPartial,true) : null);
+        await copyDexieTableRecords(dexieDB.importGroups, dexieDB.groups,window.WalletStorage ? rows=>window.WalletStorage.saveChats(dexieDB,dexieDB.groups,rows,isPartial,true) : null);
         await copyDexieTableRecords(dexieDB.importWorldBooks, dexieDB.worldBooks);
         await copyDexieTableRecords(dexieDB.importMyStickers, dexieDB.myStickers);
         if (dexieDB.archives && dexieDB.importArchives) {

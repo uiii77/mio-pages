@@ -221,7 +221,7 @@ function promptForBackupIfNeeded(triggerType) {
 }
 
 // 重新计算并更新角色状态
-function recalculateChatStatus(chat) {
+function recalculateChatStatus(chat, render = true) {
     if (!chat || !chat.history) return;
     
     // 仅针对私聊且非群聊
@@ -251,7 +251,7 @@ function recalculateChatStatus(chat) {
     chat.status = foundStatus;
     
     // 如果当前正在该聊天室，实时更新 UI
-    if (currentChatId === chat.id) {
+    if (render && currentChatId === chat.id) {
         const statusTextEl = document.getElementById('chat-room-status-text');
         if (statusTextEl) {
             statusTextEl.textContent = foundStatus;

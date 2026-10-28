@@ -83,7 +83,12 @@ function setupChatSettings() {
 
     document.getElementById('chat-settings-form')?.addEventListener('submit', async (e) => {
         e.preventDefault();
-        await saveSettingsFromSidebar();
+        const form = e.currentTarget;
+        if (form.dataset.saving === 'true') return;
+        form.dataset.saving = 'true';
+        try { await saveSettingsFromSidebar(); }
+        catch (error) { console.error('保存角色设置失败:', error); showToast('保存失败，输入已保留，请重试'); }
+        finally { delete form.dataset.saving; }
     });
 
     document.getElementById('chat-scroll-to-top-current-btn')?.addEventListener('click', () => {
@@ -576,15 +581,18 @@ function setupChatSettings() {
         try {
             const compressedUrl = await compressImage(file, {quality: 0.8, maxWidth: 400, maxHeight: 400});
             const oldMyAvatar = char.myAvatar;
-            if (oldMyAvatar && compressedUrl !== oldMyAvatar && window.AvatarSystem && char.charSenseAvatarChangeEnabled) {
-                showToast('正在识别头像变化…');
-                await window.AvatarSystem.recognizeAndNotifyUserAvatarChange(currentChatId, oldMyAvatar, compressedUrl);
-            }
-            if (window.AvatarSystem && typeof window.AvatarSystem.syncManualAvatarChange === 'function') {
-                window.AvatarSystem.syncManualAvatarChange(currentChatId, compressedUrl, undefined);
-            }
-            char.myAvatar = compressedUrl;
-            await saveCharacter(currentChatId);
+            if (!await saveChatChanges(char, 'private', {myAvatar:compressedUrl})) return;
+            try {
+                if (oldMyAvatar && compressedUrl !== oldMyAvatar && window.AvatarSystem && char.charSenseAvatarChangeEnabled) {
+                    await window.AvatarSystem.recognizeAndNotifyUserAvatarChange(char.id, oldMyAvatar, compressedUrl);
+                }
+                window.AvatarSystem?.syncManualAvatarChange?.(char.id, compressedUrl, undefined);
+                if (window.AvatarSystem && await saveCharacter(char.id) !== true) {
+                    showToast('头像已保存，关联信息未保存，请重试');
+                    return;
+                }
+            } catch (error) { console.warn('头像已保存，识别未完成', error); showToast('头像已保存，识别未完成'); }
+            if (currentChatId !== char.id) return;
             document.getElementById('setting-my-avatar-preview').src = compressedUrl;
             showToast('我的头像已更新');
             if (typeof renderMessages === 'function') renderMessages(false, true);
@@ -656,8 +664,10 @@ function setupChatSettings() {
             });
         });
 
-        if (cancelBtn) cancelBtn?.addEventListener('click', function () { modal.classList.remove('visible'); });
-        if (confirmBtn) confirmBtn?.addEventListener('click', function () {
+        if (cancelBtn) cancelBtn?.addEventListener('click', function () { if (!confirmBtn.disabled) modal.classList.remove('visible'); });
+        if (confirmBtn) confirmBtn?.addEventListener('click', async function () {
+            if (confirmBtn.disabled) return;
+            const previous = db.avatarRecognitionDetailLevel;
             const checked = document.querySelector('input[name="ar-detail-level"]:checked');
             if (checked && checked.value === 'custom' && customInput) {
                 const n = parseInt(customInput.value, 10);
@@ -665,11 +675,20 @@ function setupChatSettings() {
             } else if (checked) {
                 db.avatarRecognitionDetailLevel = checked.value;
             }
-            if (typeof saveGlobalSettings === 'function') saveGlobalSettings();
+            confirmBtn.disabled = true;
+            let saved = false;
+            try { saved = await saveGlobalSettings(['avatarRecognitionDetailLevel']) === true; }
+            catch (error) { console.error('保存识别设置失败:', error); }
+            finally { confirmBtn.disabled = false; }
+            if (!saved) {
+                if (previous === undefined) delete db.avatarRecognitionDetailLevel; else db.avatarRecognitionDetailLevel = previous;
+                showToast('保存失败，输入已保留，请重试');
+                return;
+            }
             updateDisplay();
             modal.classList.remove('visible');
         });
-        modal?.addEventListener('click', function (e) { if (e.target === modal) modal.classList.remove('visible'); });
+        modal?.addEventListener('click', function (e) { if (e.target === modal && !confirmBtn.disabled) modal.classList.remove('visible'); });
 
         updateDisplay();
     })();
@@ -685,9 +704,9 @@ function setupChatSettings() {
                         maxWidth: 1080,
                         maxHeight: 1920
                     });
-                    char.chatBg = compressedUrl;
+                    if (!await saveChatChanges(char, 'private', {chatBg:compressedUrl})) return;
+                    if (currentChatId !== char.id) return;
                     chatRoomScreen.style.backgroundImage = `url(${compressedUrl})`;
-                    await saveCharacter(currentChatId);
                     showToast('聊天背景已更换');
                 } catch (error) {
                     showToast('背景压缩失败，请重试');
@@ -699,9 +718,9 @@ function setupChatSettings() {
     document.getElementById('reset-chat-bg-btn')?.addEventListener('click', async () => {
         const char = db.characters.find(c => c.id === currentChatId);
         if (!char) return;
-        char.chatBg = '';
+        if (!await saveChatChanges(char, 'private', {chatBg:''})) return;
+        if (currentChatId !== char.id) return;
         chatRoomScreen.style.backgroundImage = 'none';
-        await saveCharacter(currentChatId);
         showToast('已恢复默认背景');
     });
 
@@ -716,8 +735,7 @@ function setupChatSettings() {
                         maxWidth: 1080,
                         maxHeight: 1920
                     });
-                    char.callWallpaper = compressedUrl;
-                    await saveCharacter(currentChatId);
+                    if (!await saveChatChanges(char, 'private', {callWallpaper:compressedUrl})) return;
                     showToast('通话背景已更换');
                 } catch (error) {
                     showToast('背景压缩失败，请重试');
@@ -729,8 +747,7 @@ function setupChatSettings() {
     document.getElementById('reset-call-bg-btn')?.addEventListener('click', async () => {
         const char = db.characters.find(c => c.id === currentChatId);
         if (!char) return;
-        char.callWallpaper = '';
-        await saveCharacter(currentChatId);
+        if (!await saveChatChanges(char, 'private', {callWallpaper:''})) return;
         showToast('已恢复默认通话背景');
     });
     
@@ -738,23 +755,15 @@ function setupChatSettings() {
         const character = db.characters.find(c => c.id === currentChatId);
         if (!character) return;
         if (confirm(`你确定要清空与“${character.remarkName}”的所有聊天记录吗？这个操作是不可恢复的！`)) {
-            character.history = [];
-            character.status = '在线';
             // 清除拉黑相关记忆
-            character.blockHistory = [];
-            character.friendRequests = [];
-            character.charBlockHistory = [];
-            character.userFriendRequests = [];
-            character.isBlocked = false;
-            character.blockedAt = null;
-            character.blockReapply = null;
-            character.isBlockedByChar = false;
-            character.blockedByCharAt = null;
-            character.blockedByCharReason = null;
+            if (!await saveChatChanges(character, 'private', {
+                history:[], status:'在线', blockHistory:[], friendRequests:[], charBlockHistory:[], userFriendRequests:[],
+                isBlocked:false, blockedAt:null, blockReapply:null, isBlockedByChar:false, blockedByCharAt:null, blockedByCharReason:null
+            })) return;
+            if (currentChatId !== character.id) return;
             // 隐藏角色拉黑遮罩（如果有）
             var charBlockedOverlay = document.getElementById('char-blocked-overlay');
             if (charBlockedOverlay) charBlockedOverlay.style.display = 'none';
-            await saveCharacter(currentChatId);
             renderMessages(false, true);
             renderChatList();
             if (currentChatId === character.id) {
@@ -912,6 +921,7 @@ function setupChatSettings() {
     });
 
     document.getElementById('import-chat-history-btn')?.addEventListener('click', () => {
+        if (document.getElementById('confirm-import-chat-btn').disabled) return;
         const character = db.characters.find(c => c.id === currentChatId);
         if (!character) return;
         // 重置文件输入和单选按钮
@@ -940,15 +950,19 @@ function setupChatSettings() {
     });
 
     document.getElementById('cancel-import-chat-btn')?.addEventListener('click', () => {
+        if (document.getElementById('import-chat-history-modal').dataset.saving === 'true') return;
         document.getElementById('import-chat-history-modal').classList.remove('visible');
     });
     document.getElementById('import-chat-history-modal')?.addEventListener('click', (e) => {
-        if (e.target === document.getElementById('import-chat-history-modal')) {
+        if (e.target === document.getElementById('import-chat-history-modal') && e.target.dataset.saving !== 'true') {
             document.getElementById('import-chat-history-modal').classList.remove('visible');
         }
     });
 
-    document.getElementById('confirm-import-chat-btn')?.addEventListener('click', async () => {
+    document.getElementById('confirm-import-chat-btn')?.addEventListener('click', async event => {
+        const button = event.currentTarget;
+        const modal = document.getElementById('import-chat-history-modal');
+        if (button.disabled || !modal.classList.contains('visible')) return;
         const fileInput = document.getElementById('import-chat-history-file');
         const file = fileInput.files[0];
         if (!file) {
@@ -957,10 +971,15 @@ function setupChatSettings() {
         }
         const character = db.characters.find(c => c.id === currentChatId);
         if (!character) return;
-
+        const scope = character.chatArchiveScopeId;
+        const mode = document.querySelector('input[name="import-chat-mode"]:checked').value;
+        button.disabled = true;
+        let persisted = false;
         try {
             const text = await file.text();
             const data = JSON.parse(text);
+            if (!modal.classList.contains('visible')) return; // Cancel before writing does not save.
+            if (character.id !== currentChatId || character.chatArchiveScopeId !== scope) return;
 
             // 验证数据格式
             if (!data.history || !Array.isArray(data.history)) {
@@ -972,14 +991,14 @@ function setupChatSettings() {
                 return;
             }
 
-            const mode = document.querySelector('input[name="import-chat-mode"]:checked').value;
             const importHistory = data.history;
+            let history;
 
             if (mode === 'overwrite') {
                 if (!confirm(`覆盖导入将清空当前所有聊天记录（${character.history.length}条），替换为导入的${importHistory.length}条记录。确定继续吗？`)) {
                     return;
                 }
-                character.history = importHistory;
+                history = importHistory;
             } else {
                 // 追加模式：为避免ID冲突，给导入的消息生成新ID
                 const existingIds = new Set(character.history.map(m => m.id));
@@ -987,25 +1006,42 @@ function setupChatSettings() {
                     if (existingIds.has(msg.id)) {
                         msg.id = generateUUID();
                     }
+                    existingIds.add(msg.id);
                 });
-                character.history = character.history.concat(importHistory);
+                history = character.history.concat(importHistory);
                 // 按时间排序
-                character.history.sort((a, b) => a.timestamp - b.timestamp);
+                history.sort((a, b) => a.timestamp - b.timestamp);
             }
 
+            const draft = {...character, history};
             if (typeof recalculateChatStatus === 'function') {
-                recalculateChatStatus(character);
+                recalculateChatStatus(draft, false);
             }
-
-            await saveCharacter(currentChatId);
+            modal.dataset.saving = 'true';
+            document.getElementById('cancel-import-chat-btn').disabled = true;
+            if (!await saveChatChanges(character, 'private', {history, status:draft.status})) return;
+            persisted = true;
+            if (currentChatId !== character.id || character.chatArchiveScopeId !== scope) return;
             currentPage = 1;
+            const statusText = document.getElementById('chat-room-status-text');
+            if (statusText) statusText.textContent = character.status;
             renderMessages(false, true);
             renderChatList();
             document.getElementById('import-chat-history-modal').classList.remove('visible');
             showToast(`成功${mode === 'overwrite' ? '覆盖' : '追加'}导入 ${importHistory.length} 条聊天记录`);
         } catch (e) {
+            if (persisted) {
+                modal.classList.remove('visible');
+                console.warn('记录已保存，界面刷新失败:', e);
+                showToast('记录已保存，请重新打开聊天刷新显示');
+                return;
+            }
             console.error('导入聊天记录失败:', e);
-            showToast('导入失败：文件解析错误');
+            showToast('导入失败，请检查文件后重试；当前输入已保留');
+        } finally {
+            button.disabled = false;
+            delete modal.dataset.saving;
+            document.getElementById('cancel-import-chat-btn').disabled = false;
         }
     });
 
@@ -1211,11 +1247,16 @@ function setupChatSettings() {
         const confirmCharsBtn = document.getElementById('phone-control-char-confirm-btn');
         if (confirmCharsBtn) {
             confirmCharsBtn?.addEventListener('click', async () => {
+                if (confirmCharsBtn.disabled) return;
                 const char = db.characters.find(c => c.id === currentChatId);
                 if (!char) return;
                 const cbs = Array.from(document.querySelectorAll('.phone-control-char-cb:checked'));
-                char.phoneControlVisibleCharIds = cbs.map(cb => cb.value);
-                await saveCharacter(currentChatId);
+                confirmCharsBtn.disabled = true;
+                let saved;
+                try { saved = await saveChatChanges(char, 'private', {phoneControlVisibleCharIds:cbs.map(cb => cb.value)}); }
+                finally { confirmCharsBtn.disabled = false; }
+                if (saved !== true) return;
+                if (currentChatId !== char.id) return;
                 document.getElementById('phone-control-char-select-modal').style.display = 'none';
                 showToast('已保存可见角色设置');
             });
@@ -1224,6 +1265,7 @@ function setupChatSettings() {
         const cancelCharsBtn = document.getElementById('phone-control-char-cancel-btn');
         if (cancelCharsBtn) {
             cancelCharsBtn?.addEventListener('click', () => {
+                if (confirmCharsBtn.disabled) return;
                 const modal = document.getElementById('phone-control-char-select-modal');
                 if (modal) modal.style.display = 'none';
             });
@@ -1253,8 +1295,8 @@ function setupChatSettings() {
         document.getElementById('phone-control-force-confirm')?.addEventListener('click', async () => {
             const character = db.characters.find(c => c.id === currentChatId);
             if (character) {
-                character.phoneControlEnabled = false;
-                await saveCharacter(currentChatId);
+                if (!await saveChatChanges(character, 'private', {phoneControlEnabled:false})) return;
+                if (currentChatId !== character.id) return;
                 if (phoneControlEnabledEl) phoneControlEnabledEl.checked = false;
                 hidePhoneControlOptions();
                 if (typeof showToast === 'function') showToast('已强制关闭');
@@ -1297,16 +1339,30 @@ function setupChatSettings() {
         });
         document.getElementById('phone-control-recycle-list')?.addEventListener('click', async (e) => {
             const btn = e.target.closest('.phone-control-restore-btn');
-            if (!btn) return;
+            if (!btn || btn.disabled) return;
             const idx = parseInt(btn.getAttribute('data-index'), 10);
             const bin2 = db.phoneControlRecycleBin || [];
             if (isNaN(idx) || idx < 0 || idx >= bin2.length) return;
-            const character = bin2[idx];
+            const character = {...bin2[idx]};
+            if (db.characters.some(item => item.id === character.id)) { showToast('角色已在列表中，无需重复恢复'); return; }
             delete character.recycledAt;
             delete character.recycledByCharId;
-            db.phoneControlRecycleBin = bin2.filter((_, i) => i !== idx);
+            const nextBin = bin2.filter((_, i) => i !== idx);
+            btn.disabled = true;
+            try {
+                await dexieDB.transaction('rw', dexieDB.characters, dexieDB.globalSettings, async () => {
+                    const disk = await dexieDB.globalSettings.get('phoneControlRecycleBin');
+                    if (JSON.stringify(disk?.value || []) !== JSON.stringify(bin2) || db.phoneControlRecycleBin !== bin2) throw new Error('回收站已变更，请重新载入后重试');
+                    await window.StatusStorage.persistChats(dexieDB.characters, [character]);
+                    await dexieDB.globalSettings.put({key:'phoneControlRecycleBin', value:nextBin});
+                });
+            } catch (error) {
+                console.error('恢复角色失败:', error);
+                showToast('恢复失败，回收站内容已保留，请重试');
+                return;
+            } finally { btn.disabled = false; }
+            db.phoneControlRecycleBin = nextBin;
             db.characters.push(character);
-            await saveData(); // 这里恢复了角色，修改了 db.characters 数组，保留全量保存或可考虑精细化但暂时保留 saveData
             if (typeof renderChatList === 'function') renderChatList();
             if (typeof showToast === 'function') showToast('已恢复');
             renderPhoneControlRecycleList();
@@ -1377,33 +1433,21 @@ function setupChatSettings() {
 
     document.getElementById('save-world-book-selection-btn')?.addEventListener('click', async event => {
         const button = event.currentTarget; if (button.disabled) return;
-        if (!['private', 'group'].includes(currentChatType)) {
-            await saveData();
-            document.getElementById('world-book-selection-modal').classList.remove('visible');
-            showToast('世界书关联已更新');
-            return;
-        }
+        if (!['private', 'group'].includes(currentChatType)) return;
         const globalIds = (db.worldBooks || []).filter(wb => wb.isGlobal && !wb.disabled).map(wb => wb.id);
         const selectedIds = Array.from(document.getElementById('world-book-selection-list').querySelectorAll('.item-checkbox:checked')).map(input => input.value);
         const toSave = [...new Set(selectedIds.filter(id => !globalIds.includes(id)))];
         const chat = currentChatType === 'private' ? db.characters.find(c => c.id === currentChatId) : db.groups.find(g => g.id === currentChatId);
         if (!chat) return;
         const key = currentWorldBookMode === 'offline' ? 'offlineWorldBookIds' : 'worldBookIds';
-        const previous = chat[key], explicit = chat.offlineWorldBookSelectionExplicit;
-        chat[key] = toSave;
-        if (currentWorldBookMode === 'offline') chat.offlineWorldBookSelectionExplicit = true;
+        const chatType = currentChatType, scope = chat.chatArchiveScopeId;
+        const changes = {[key]:toSave};
+        if (currentWorldBookMode === 'offline') changes.offlineWorldBookSelectionExplicit = true;
         button.disabled = true;
         let saved;
-        try { saved = await (currentChatType === 'private' ? saveCharacter(currentChatId) : saveGroup(currentChatId)); }
-        catch (_) { saved = false; }
+        try { saved = await saveChatChanges(chat, chatType, changes); }
         finally { button.disabled = false; }
-        if (saved === false) {
-            chat[key] = previous;
-            if (explicit === undefined) delete chat.offlineWorldBookSelectionExplicit; else chat.offlineWorldBookSelectionExplicit = explicit;
-            showToast('保存失败，请重试；世界书选择尚未保存');
-            return;
-        }
-        window.ChatTokenStats?.changed(currentChatId, currentChatType, '世界书绑定已更新');
+        if (saved !== true || currentChatId !== chat.id || currentChatType !== chatType || chat.chatArchiveScopeId !== scope) return;
         document.getElementById('world-book-selection-modal').classList.remove('visible');
         showToast('世界书关联已更新');
     });
@@ -2508,13 +2552,17 @@ function loadSettingsToSidebar() {
                 const confirmed = await customConfirm('确定要为该角色开启新档吗？\n当前角色的所有聊天记录、上下文和日记将被清空，但人设等基础设置会保留。\n\n建议在此操作前先保存当前进度的存档！', '提示');
                 if (!confirmed) return;
                 
+                const previous = structuredClone(char);
                 resetCharacterForNewArchive(char);
+                if (await saveCharacter(cid) === false) {
+                    for (const key of Object.keys(char)) delete char[key];
+                    Object.assign(char, previous);
+                    return;
+                }
                 
                 // 隐藏角色拉黑遮罩（如果有）
                 var charBlockedOverlay = document.getElementById('char-blocked-overlay');
                 if (charBlockedOverlay) charBlockedOverlay.style.display = 'none';
-                
-                await saveData();
                 
                 showToast('新档开启成功！');
                 if (currentChatId === cid && typeof renderMessages === 'function') {
@@ -3156,43 +3204,12 @@ async function saveSettingsFromSidebar() {
         e.avatarMode = document.getElementById('setting-avatar-mode').value;
         e.avatarRadius = parseInt(document.getElementById('setting-avatar-radius').value, 10);
 
-        const chatScreen = document.getElementById('chat-room-screen');
-
         e.bubbleBlurEnabled = document.getElementById('setting-bubble-blur').checked;
-        if (e.bubbleBlurEnabled) {
-            chatScreen.classList.remove('disable-blur');
-        } else {
-            chatScreen.classList.add('disable-blur');
-        }
-
         e.titleLayout = document.getElementById('setting-title-layout').value;
-        const header = document.getElementById('chat-room-header-default');
-        if (e.titleLayout === 'center') {
-            header.classList.add('title-centered');
-        } else {
-            header.classList.remove('title-centered');
-        }
-
         e.showTimestamp = document.getElementById('setting-show-timestamp').checked;
-        
-        if (e.showTimestamp) {
-            chatScreen.classList.add('show-timestamp');
-        } else {
-            chatScreen.classList.remove('show-timestamp');
-        }
-        chatScreen.classList.remove('timestamp-side');
-
         e.timestampStyle = document.getElementById('setting-timestamp-style').value;
-        chatScreen.classList.remove('timestamp-style-bubble', 'timestamp-style-avatar');
-        chatScreen.classList.add(`timestamp-style-${e.timestampStyle || 'bubble'}`);
-
         e.timestampFormat = document.getElementById('setting-timestamp-format').value;
-
         e.showStatus = document.getElementById('setting-show-status').checked;
-        const subtitle = document.getElementById('chat-room-subtitle');
-        if (subtitle) {
-            subtitle.style.display = e.showStatus ? 'flex' : 'none';
-        }
 
         e.showStatusUpdateMsg = document.getElementById('setting-show-status-update-msg').checked;
         e.showReminderMsg = document.getElementById('setting-show-reminder-msg').checked;
@@ -3405,13 +3422,29 @@ async function saveSettingsFromSidebar() {
         if (window.McpManager && document.getElementById('chat-mcp-settings')) e.mcpSettings = window.McpManager.readPermissionEditor(document.getElementById('chat-mcp-settings'));
         // phoneControlVisibleCharIds 的保存将在弹窗确认时直接操作 db 并触发 saveData，这里无需额外处理，只需保持状态同步
 
-        await saveData();
-        if (window.MomentsControls) await window.MomentsControls.reschedule(e.momentsActorId || 'char:' + e.id);
-        showToast('设置已保存！');
-        chatRoomTitle.textContent = e.remarkName;
-        renderChatList();
-        // updateCustomBubbleStyle(currentChatId, e.customBubbleCss, e.useCustomBubbleCss); // 移除实时应用以防污染设置页
-        currentPage = 1;
-        renderMessages(false, true);
+        if (await saveCharacter(e.id) !== true) return false;
+        if (db.novelAiSettings && await saveGlobalSettings(['novelAiSettings']) !== true) return false;
+        try {
+            if (window.MomentsControls) await window.MomentsControls.reschedule(e.momentsActorId || 'char:' + e.id);
+            showToast('设置已保存！');
+            if (currentChatId !== e.id || currentChatType !== 'private') return true;
+            const chatScreen = document.getElementById('chat-room-screen');
+            chatScreen.classList.toggle('disable-blur', !e.bubbleBlurEnabled);
+            document.getElementById('chat-room-header-default').classList.toggle('title-centered', e.titleLayout === 'center');
+            chatScreen.classList.toggle('show-timestamp', !!e.showTimestamp);
+            chatScreen.classList.remove('timestamp-side', 'timestamp-style-bubble', 'timestamp-style-avatar');
+            chatScreen.classList.add(`timestamp-style-${e.timestampStyle || 'bubble'}`);
+            const subtitle = document.getElementById('chat-room-subtitle');
+            if (subtitle) subtitle.style.display = e.showStatus ? 'flex' : 'none';
+            chatRoomTitle.textContent = e.remarkName;
+            renderChatList();
+            // updateCustomBubbleStyle(currentChatId, e.customBubbleCss, e.useCustomBubbleCss); // 移除实时应用以防污染设置页
+            currentPage = 1;
+            renderMessages(false, true);
+        } catch (error) {
+            console.warn('设置已保存，界面刷新失败:', error);
+            showToast('设置已保存，请重新打开聊天刷新显示');
+        }
+        return true;
     }
 }

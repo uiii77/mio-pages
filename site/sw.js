@@ -95,21 +95,37 @@ async function fetchFresh(asset, nonce, signal) {
 
 async function downloadShell(manifest, name, nonce, signal, progress = () => {}) {
     const cache = await caches.open(name);
-    // Preserve lazy loading for the large tokenizer dictionaries.
-    const assets = manifest.assets.filter(asset => !asset.startsWith('js/vendor/tokenizer/'));
+    const previous = await readShell();
+    const source = previous.name !== name && previous.name.startsWith(OVO_CACHE_PREFIX)
+        ? await caches.open(previous.name) : null;
+    const assets = manifest.assets;
+    // Carry over cached dictionaries, but never download unused dictionaries during an update.
+    const total = assets.filter(asset => !asset.startsWith('js/vendor/tokenizer/')).length;
     let next = 0;
     let completed = 0;
     let failure;
-    progress({ completed, total: assets.length });
+    progress({ completed, total });
     await Promise.all(Array.from({ length: Math.min(4, assets.length) }, async () => {
         while (!failure && next < assets.length) {
             const asset = assets[next++];
             try {
                 if (signal && signal.aborted) throw new Error('已取消拉取');
-                const response = await verifyResponse(await fetchFresh(asset, nonce, signal), asset, manifest);
+                const key = new URL(asset, OVO_SCOPE).href;
+                const lazy = asset.startsWith('js/vendor/tokenizer/');
+                const expected = manifest.integrity[asset];
+                const previousHash = previous.manifest?.integrity?.[asset];
+                let response;
+                if (source && expected && (!previousHash || previousHash === expected)) {
+                    try {
+                        // A matching manifest hash is not enough: verify the cached body too.
+                        response = await verifyResponse(await source.match(key), asset, manifest);
+                    } catch (_) { /* Missing or damaged cache entries fall back to a fresh download. */ }
+                }
+                if (!response && lazy) continue;
+                if (!response) response = await verifyResponse(await fetchFresh(asset, nonce, signal), asset, manifest);
                 if (signal && signal.aborted) throw new Error('已取消拉取');
-                await cache.put(new URL(asset, OVO_SCOPE).href, response);
-                progress({ completed: ++completed, total: assets.length });
+                await cache.put(key, response);
+                if (!lazy) progress({ completed: ++completed, total });
             } catch (error) {
                 failure = error;
             }

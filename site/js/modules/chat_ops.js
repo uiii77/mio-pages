@@ -229,6 +229,7 @@ function handleMessageLongPress(messageWrapper, x, y) {
                 if (confirm('确定要删除该节点标记吗？如果是开始标记，将同时删除该节点记录。')) {
                     const char = db.characters.find(c => c.id === currentChatId);
                     if (!char) return;
+                    const snapshot = captureChatEditSnapshot(char), nodes = cloneMessageDebugValue(char.nodes), activeNodeId = char.activeNodeId;
                     
                     if (message.nodeAction === 'start') {
                         if (char.nodes) {
@@ -248,9 +249,11 @@ function handleMessageLongPress(messageWrapper, x, y) {
                     }
                     
                     char.history = char.history.filter(m => m.id !== messageId);
+                    if (await saveCurrentChat() === false) {
+                        restoreChatEditSnapshot(char, snapshot); char.nodes = nodes; char.activeNodeId = activeNodeId;
+                        return;
+                    }
                     await releaseSharedMessageAssets([messageId]);
-                    
-                    await saveCurrentChat();
                     renderMessages(false, true);
                     if (typeof NodeSystem !== 'undefined') {
                         NodeSystem.checkActiveNodeUI();
@@ -311,7 +314,7 @@ function handleMessageLongPress(messageWrapper, x, y) {
                     if (message.parts && message.parts.length > 0) {
                         message.parts = [{type: 'text', text: message.content}];
                     }
-                    if (typeof saveCurrentChat === 'function') await saveCurrentChat();
+                    if (typeof saveCurrentChat === 'function' && await saveCurrentChat() === false) return;
                     renderMessages(false, true);
                     if (typeof showToast === 'function') showToast('时间已修改');
                 }
@@ -387,7 +390,7 @@ function handleMessageLongPress(messageWrapper, x, y) {
                     if (message.ttsAudioPermanentKey) {
                         await MinimaxTTSService.setPermanentByKey(message.ttsAudioPermanentKey, false, { chatId: currentChatId, messageId });
                         delete message.ttsAudioPermanentKey;
-                        await saveCurrentChat();
+                        if (await saveCurrentChat() === false) return;
                         showToast('已改为普通缓存');
                         return;
                     }
@@ -396,7 +399,7 @@ function handleMessageLongPress(messageWrapper, x, y) {
                     message.ttsAudioPermanentKey = await MinimaxTTSService.setPermanent(
                         text, voiceConfig.voiceId, voiceConfig.language || 'auto', options, true
                     );
-                    await saveCurrentChat();
+                    if (await saveCurrentChat() === false) return;
                     showToast('✅ 语音已永久保留');
                 } catch (err) {
                     console.error('[ChatOps] 保存语音失败:', err);
@@ -1065,6 +1068,7 @@ async function deleteSelectedMessages() {
     const deletedCount = selectedMessageIds.size;
     const chat = (currentChatType === 'private') ? db.characters.find(c => c.id === currentChatId) : db.groups.find(g => g.id === currentChatId);
 
+    const snapshot = captureChatEditSnapshot(chat);
     // 收集需要一并删除的关联消息 ID（思维链 + 状态栏消息）
     const idsToDelete = new Set(selectedMessageIds);
 
@@ -1113,13 +1117,13 @@ async function deleteSelectedMessages() {
     }
 
     chat.history = chat.history.filter(m => !idsToDelete.has(m.id));
-    await releaseSharedMessageAssets(idsToDelete);
 
     if (currentChatType === 'private') {
         recalculateChatStatus(chat);
     }
 
-    await saveCurrentChat();
+    if (await saveCurrentChat() === false) { restoreChatEditSnapshot(chat, snapshot); return false; }
+    await releaseSharedMessageAssets(idsToDelete);
     currentPage = 1;
     renderMessages(false, true);
     renderChatList();
@@ -1143,6 +1147,7 @@ async function withdrawMessage(messageId) {
         return;
     }
 
+    const snapshot = captureChatEditSnapshot(chat);
     message.isWithdrawn = true;
 
     const cleanContentMatch = message.content.match(/\[.*?的消息：([\s\S]+?)\]/);
@@ -1157,7 +1162,7 @@ async function withdrawMessage(messageId) {
         recalculateChatStatus(chat);
     }
 
-    await saveCurrentChat();
+    if (await saveCurrentChat() === false) { restoreChatEditSnapshot(chat, snapshot); return false; }
 
     currentPage = 1;
     renderMessages(false, true);
@@ -1342,7 +1347,7 @@ function setupDeleteHistoryChunk() {
             }
             
             if (changedCount > 0) {
-                await saveCurrentChat();
+                if (await saveCurrentChat() === false) return;
                 showToast(`已屏蔽 ${changedCount} 条消息`);
                 // Update DOM in-place
                 modifiedIds.forEach(id => {
@@ -1377,7 +1382,7 @@ function setupDeleteHistoryChunk() {
             }
             
             if (changedCount > 0) {
-                await saveCurrentChat();
+                if (await saveCurrentChat() === false) return;
                 showToast(`已恢复 ${changedCount} 条消息`);
                 // Update DOM in-place
                 modifiedIds.forEach(id => {
@@ -1414,6 +1419,7 @@ function setupDeleteHistoryChunk() {
             if (!pendingDeleteRange) return;
             
             const { chat, startIndex, count } = pendingDeleteRange;
+            const snapshot = captureChatEditSnapshot(chat);
 
             // 清理被删除消息中关联的状态栏历史
             if (currentChatType === 'private' && chat.statusPanel && chat.statusPanel.history) {
@@ -1434,13 +1440,13 @@ function setupDeleteHistoryChunk() {
 
             const deletedMessageIds = chat.history.slice(startIndex, startIndex + count).map(message => message.id).filter(Boolean);
             chat.history.splice(startIndex, count);
-            await releaseSharedMessageAssets(deletedMessageIds);
 
             if (currentChatType === 'private') {
                 recalculateChatStatus(chat);
             }
 
-            await saveCurrentChat();
+            if (await saveCurrentChat() === false) { restoreChatEditSnapshot(chat, snapshot); return; }
+            await releaseSharedMessageAssets(deletedMessageIds);
             confirmDeleteModal.classList.remove('visible');
             deleteChunkModal.classList.remove('visible');
             showToast(`已永久删除 ${count} 条消息`);
@@ -1466,7 +1472,7 @@ function setupDeleteHistoryChunk() {
 }
 
 // 重新计算并更新角色状态
-function recalculateChatStatus(chat) {
+function recalculateChatStatus(chat, render = true) {
     if (!chat || !chat.history) return;
     
     // 仅针对私聊且非群聊
@@ -1496,7 +1502,7 @@ function recalculateChatStatus(chat) {
     chat.status = foundStatus;
     
     // 如果当前正在该聊天室，实时更新 UI
-    if (currentChatId === chat.id) {
+    if (render && currentChatId === chat.id) {
         const statusTextEl = document.getElementById('chat-room-status-text');
         if (statusTextEl) {
             statusTextEl.textContent = foundStatus;
@@ -1665,7 +1671,7 @@ async function confirmInsertMessage() {
         recalculateChatStatus(chat);
     }
 
-    await saveCurrentChat();
+    if (await saveCurrentChat() === false) return;
     currentPage = 1;
     renderMessages(false, true);
     renderChatList();
@@ -1858,7 +1864,7 @@ async function confirmForwardMessages() {
         forwardCount++;
     }
 
-    await saveCurrentChat();
+    if (await saveCurrentChat() === false) return;
     
     // 更新外层聊天列表显示
     if (typeof renderChatList === 'function') {

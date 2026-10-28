@@ -637,7 +637,9 @@ async function saveAutoJournalChatStrict(chat, chatType) {
         throw new Error('找不到自动总结对应的本地数据表。');
     }
 
-    await table.put(chat);
+    if (window.StatusStorage) await window.StatusStorage.persistChats(table, [chat]);
+    else if (window.WalletStorage) await window.WalletStorage.saveChats(dexieDB, table, [chat]);
+    else throw new Error('聊天保存组件未就绪，请重新载入');
 }
 
 async function commitAutoJournalBatch(chat, chatType, generationResult) {

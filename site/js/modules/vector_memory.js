@@ -10,6 +10,7 @@
         reindexing: false
     };
     const runtimeHealth = new Map();
+    const recallRequests = new Map();
 
     function createVectorId(prefix) {
         return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -179,7 +180,7 @@
         return fetchAiResponse(apiConfig, requestBody, headers, endpoint);
     }
 
-    async function fetchVectorResponse(endpoint, options, control = {}) {
+    async function fetchVectorJson(endpoint, options, control = {}) {
         let lastError = null;
         for (let attempt = 0; attempt < 3; attempt++) {
             control.signal?.throwIfAborted();
@@ -191,19 +192,34 @@
             const timeoutId = setTimeout(() => controller.abort(), 20000);
             try {
                 const response = await fetch(endpoint, { ...options, signal: controller.signal });
-                if (response.ok || ![429, 500, 502, 503, 504].includes(response.status) || attempt === 2) return response;
-                lastError = new Error(`Embedding API 暂时不可用：HTTP ${response.status}`);
+                if (!response.ok) {
+                    const error = new Error(`向量服务 HTTP ${response.status}: ${(await response.text()).slice(0, 500)}`);
+                    error.status = response.status;
+                    throw error;
+                }
+                // Keep cancellation and the deadline active through response-body consumption.
+                const data = await response.json();
+                controller.signal.throwIfAborted();
+                control.signal?.throwIfAborted();
+                return data;
             } catch (error) {
                 control.signal?.throwIfAborted();
-                lastError = error?.name === 'AbortError'
+                lastError = controller.signal.aborted
                     ? new Error('Embedding API 请求超时')
                     : (error instanceof TypeError ? new Error('无法连接 Embedding API，请检查地址、网络和服务端 CORS 设置') : error);
-                if (attempt === 2) throw lastError;
+                if (controller.signal.aborted || error?.name === 'SyntaxError' || attempt === 2
+                    || error.status && ![429, 500, 502, 503, 504].includes(error.status)) throw lastError;
             } finally {
                 clearTimeout(timeoutId);
                 control.signal?.removeEventListener('abort', abort);
             }
-            await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
+            await new Promise((resolve, reject) => {
+                const finish = () => { control.signal?.removeEventListener('abort', cancel); resolve(); };
+                const timer = setTimeout(finish, 250 * (attempt + 1));
+                const cancel = () => { clearTimeout(timer); reject(control.signal.reason); };
+                control.signal?.addEventListener('abort', cancel, { once:true });
+                if (control.signal?.aborted) { control.signal.removeEventListener('abort', cancel); cancel(); }
+            });
         }
         throw lastError || new Error('Embedding API 请求失败');
     }
@@ -218,7 +234,7 @@
             for (const text of texts) {
                 const endpointBase = Core ? Core.buildVectorEndpoint(apiConfig, 'embeddings') : `${url}/v1beta/models/${model}:embedContent`;
                 const endpoint = `${endpointBase}${endpointBase.includes('?') ? '&' : '?'}key=${getRandomValue(key)}`;
-                const response = await fetchVectorResponse(endpoint, {
+                const data = await fetchVectorJson(endpoint, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -227,13 +243,6 @@
                         }
                     })
                 }, control);
-                if (!response.ok) {
-                    const errorText = (await response.text()).slice(0, 500);
-                    const error = new Error(`Embedding API Error: ${response.status} ${errorText}`);
-                    error.status = response.status;
-                    throw error;
-                }
-                const data = await response.json();
                 const parsed = Core ? Core.parseEmbeddingResponse(provider, data, 1) : [data.embedding?.values || []];
                 outputs.push(parsed[0]);
             }
@@ -242,18 +251,11 @@
 
         if (provider === 'ollama') {
             const endpoint = Core ? Core.buildVectorEndpoint(apiConfig, 'embeddings') : `${url}/api/embed`;
-            const response = await fetchVectorResponse(endpoint, {
+            const data = await fetchVectorJson(endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ model, input: texts })
             }, control);
-            if (!response.ok) {
-                const errorText = (await response.text()).slice(0, 500);
-                const error = new Error(`Embedding API Error: ${response.status} ${errorText}`);
-                error.status = response.status;
-                throw error;
-            }
-            const data = await response.json();
             return Core ? Core.parseEmbeddingResponse(provider, data, texts.length) : (data.embeddings || []);
         }
 
@@ -267,18 +269,11 @@
         if (Number.isFinite(parseInt(apiConfig.dimensions, 10))) {
             body.dimensions = parseInt(apiConfig.dimensions, 10);
         }
-        const response = await fetchVectorResponse(endpoint, {
+        const data = await fetchVectorJson(endpoint, {
             method: 'POST',
             headers,
             body: JSON.stringify(body)
         }, control);
-        if (!response.ok) {
-            const errorText = (await response.text()).slice(0, 500);
-            const error = new Error(`Embedding API Error: ${response.status} ${errorText}`);
-            error.status = response.status;
-            throw error;
-        }
-        const data = await response.json();
         if (Core) return Core.parseEmbeddingResponse(provider, data, texts.length);
         const list = Array.isArray(data.data) ? data.data : [];
         return list.map(item => item.embedding || []);
@@ -308,12 +303,10 @@
     async function fetchRerank(query, documents, config, control = {}) {
         const base = String(config.url || config.baseUrl || '').replace(/\/$/, '');
         if (!base || !config.model) throw new Error('未配置独立 Rerank API');
-        const response = await fetchVectorResponse(/\/rerank$/i.test(base) ? base : `${base}/rerank`, {
+        const data = await fetchVectorJson(/\/rerank$/i.test(base) ? base : `${base}/rerank`, {
             method: 'POST', headers: { 'Content-Type': 'application/json', ...((config.key || config.apiKey) ? { Authorization: `Bearer ${config.key || config.apiKey}` } : {}) },
             body: JSON.stringify({ model: config.model, query, documents, top_n: Math.min(documents.length, 24) })
         }, control);
-        if (!response.ok) throw new Error(`Rerank API ${response.status}`);
-        const data = await response.json();
         const rows = data.results || data.data;
         if (!Array.isArray(rows)) throw new Error('Rerank 响应格式无效');
         const seen = new Set();
@@ -513,11 +506,12 @@
             profile = Core ? Core.createProfileKey(config, config.health?.dimensions || config.dimensions || 0) : `${config.url}|${config.model}`;
         } catch (_) { /* lexical-only cache */ }
         const templateRevision = Core ? Core.stableHash(JSON.stringify(template || {})) : JSON.stringify(template || {});
-        const raw = [queryText, profile, chat.vectorMemory.entriesRevision || 0, templateRevision].join('|');
-        return Core ? Core.stableHash(raw) : raw;
+        const raw = JSON.stringify([queryText, profile, chat.vectorMemory.entriesRevision || 0, templateRevision]);
+        return JSON.stringify([window.ChatArchiveIdentity?.capture(chat, true)?.key, Core ? Core.stableHash(raw) : raw]);
     }
 
     function getVectorMemoryContextBlock(chat, options = {}) {
+        if (!window.ChatArchiveIdentity?.capture(chat, true)) return '';
         ensureVectorMemoryState(chat);
         if (chat.memoryMode !== 'vector' && !options.force) return '';
         const queryText = options.queryText || buildVectorQueryText(chat);
@@ -542,13 +536,33 @@
     }
 
     async function prepareVectorMemoryContext(chat, options = {}) {
+        const identity = window.ChatArchiveIdentity?.capture(chat);
+        if (!identity) return '';
         ensureVectorMemoryState(chat);
+        const state = chat.vectorMemory, request = Symbol('recall');
+        const profile = getEmbeddingProfileKey(0, db.vectorApiSettings || {});
+        let entriesRevision = state.entriesRevision;
+        recallRequests.set(identity.characterId, request);
+        const current = () => window.ChatArchiveIdentity.isCurrent(identity) && chat.vectorMemory === state
+            && profile === getEmbeddingProfileKey(0, db.vectorApiSettings || {})
+            && state.entriesRevision === entriesRevision && recallRequests.get(identity.characterId) === request;
         const queryText = options.queryText || buildVectorQueryText(chat);
         if (!chat.vectorMemory.entries.length) {
             clearVectorContextCache(chat);
             return '';
         }
         let cacheKey = getVectorCacheKey(chat, queryText);
+        async function embedForRecall(entries, force = false) {
+            // Stage API results away from live entries until the original archive is revalidated.
+            const drafts = entries.map(entry => ({ ...deepClone(entry), ...(force ? { embeddingStatus:'pending' } : {}) }));
+            await embedEntriesIfNeeded(drafts);
+            if (!current()) return false;
+            entries.forEach((entry, index) => Object.assign(entry, drafts[index]));
+            clearVectorContextCache(chat);
+            entriesRevision = state.entriesRevision;
+            cacheKey = getVectorCacheKey(chat, queryText);
+            return await saveCharacter(identity.characterId) !== false && current();
+        }
         if (chat.vectorMemory.lastContextBlock
             && chat.vectorMemory.lastCacheKey === cacheKey
             && chat.vectorMemory.lastRetrievalMode === 'semantic') {
@@ -567,12 +581,10 @@
                 .filter(entry => entry.embeddingStatus === 'pending' || entry.embeddingStatus === 'failed' || entry.embeddingStatus === 'legacy' || !entry.vector?.length)
                 .slice(0, 8);
             if (pendingEntries.length) {
-                await embedEntriesIfNeeded(pendingEntries);
-                clearVectorContextCache(chat);
-                cacheKey = getVectorCacheKey(chat, queryText);
-                await saveCharacter(chat.id);
+                if (!await embedForRecall(pendingEntries)) return '';
             }
             const vectors = await fetchEmbeddings([queryText]);
+            if (!current()) return '';
             const queryVector = vectors[0];
             if (Array.isArray(queryVector) && queryVector.length > 0) {
                 const profileKey = getEmbeddingProfileKey(queryVector.length);
@@ -585,17 +597,14 @@
                         testedAt: Date.now()
                     };
                     if (typeof saveGlobalSettings === 'function') await saveGlobalSettings(['vectorApiSettings']);
+                    if (!current()) return '';
                     cacheKey = getVectorCacheKey(chat, queryText);
                 }
                 const incompatibleEntries = chat.vectorMemory.entries
                     .filter(entry => entry.embeddingProfileKey !== profileKey)
                     .slice(0, 8);
                 if (incompatibleEntries.length) {
-                    incompatibleEntries.forEach(entry => { entry.embeddingStatus = 'pending'; });
-                    await embedEntriesIfNeeded(incompatibleEntries);
-                    clearVectorContextCache(chat);
-                    cacheKey = getVectorCacheKey(chat, queryText);
-                    await saveCharacter(chat.id);
+                    if (!await embedForRecall(incompatibleEntries, true)) return '';
                 }
                 selectedEntries = chat.vectorMemory.entries
                     .map(entry => {
@@ -635,6 +644,7 @@
                 });
             }
         } catch (error) {
+            if (!current()) return '';
             console.warn('[VectorMemory] prepare context fallback:', error);
             runtimeHealth.set(chat.id, {
                 mode: 'degraded',
@@ -644,6 +654,7 @@
             });
         }
 
+        if (!current()) return '';
         if (selectedEntries.length === 0) {
             selectedEntries = selectFallbackEntries(chat, queryText);
         }
@@ -658,7 +669,7 @@
     }
 
     async function embedEntriesIfNeeded(entries) {
-        const config = getVectorApiConfig();
+        const config = { ...getVectorApiConfig() };
         const knownDimensions = Number(config.health?.dimensions || config.dimensions || 0);
         const expectedProfileKey = knownDimensions ? getEmbeddingProfileKey(knownDimensions, config) : '';
         const targets = entries.filter(item => !Array.isArray(item.vector)
@@ -669,7 +680,7 @@
             || (expectedProfileKey && item.embeddingProfileKey && item.embeddingProfileKey !== expectedProfileKey));
         if (targets.length === 0) return;
         const texts = targets.map(item => item.text || '');
-        const vectors = await fetchEmbeddings(texts);
+        const vectors = await fetchEmbeddings(texts, config);
         targets.forEach((item, index) => {
             item.vector = Array.isArray(vectors[index]) ? vectors[index] : [];
             item.embeddingDimensions = item.vector.length;

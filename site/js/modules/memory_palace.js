@@ -21,9 +21,16 @@
         else delete next.chatArchiveScopeId;
         return next;
     }
-    function withTimeout(promise, milliseconds = 45000) {
+    function withTimeout(task, milliseconds = 45000) {
+        const controller = new AbortController();
         let timer;
-        return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('记忆处理超时，可稍后重试')), milliseconds); })]).finally(() => clearTimeout(timer));
+        const promise = Promise.resolve().then(() => typeof task === 'function' ? task(controller.signal) : task);
+        return Promise.race([promise, new Promise((_, reject) => {
+            timer = setTimeout(() => {
+                controller.abort();
+                reject(new Error('记忆处理超时，可稍后重试'));
+            }, milliseconds);
+        })]).finally(() => clearTimeout(timer));
     }
     const ui = { page:0,filterKey:'',characterId: '', room: 'all', query: '', editingId: '', linksId: '', eventBoxNodeId: '', eventBoxId: '', anticipationEditingId: '' };
 
@@ -664,15 +671,13 @@
         return config ? { ...config, key: config.key || config.apiKey || '', apiKey: config.apiKey || config.key || '' } : null;
     }
 
-    async function embedTexts(texts, character) {
+    async function embedTexts(texts, character, config = normalizeEmbeddingConfig(featureConfig('embedding', character))) {
         const adapter = global.VectorMemoryEmbedding;
-        const config = normalizeEmbeddingConfig(featureConfig('embedding', character));
         if (!adapter || !config) throw new Error('未配置独立 Embedding API');
-        return withTimeout(adapter.fetchEmbeddings(texts, config), 8000);
+        return withTimeout(signal => adapter.fetchEmbeddings(texts, config, { signal }), 8000);
     }
 
-    function embeddingProfile(vector, character) {
-        const config = normalizeEmbeddingConfig(featureConfig('embedding', character)) || {};
+    function embeddingProfile(vector, character, config = normalizeEmbeddingConfig(featureConfig('embedding', character)) || {}) {
         if (global.VectorMemoryEmbedding?.getEmbeddingProfileKey) {
             return global.VectorMemoryEmbedding.getEmbeddingProfileKey(vector.length, config);
         }
@@ -682,10 +687,12 @@
     async function listNodes(characterId, room = 'all') {
         if (!dexieDB?.memoryPalaceNodes || !characterId) return [];
         const character = characterForId(characterId);
+        if (!character) return [];
+        const scope = archiveScope(character);
         const list = room === 'all'
             ? await dexieDB.memoryPalaceNodes.where('characterId').equals(characterId).toArray()
             : await dexieDB.memoryPalaceNodes.where('[characterId+room]').equals([characterId, room]).toArray();
-        return list.map(node => Core.normalizeNode(node, { characterId })).filter(node => nodeInArchiveScope(node, character))
+        return list.map(node => Core.normalizeNode(node, { characterId })).filter(node => String(node.source?.chatArchiveScopeId || '') === scope)
             .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt - a.updatedAt);
     }
 
@@ -1003,11 +1010,11 @@
             } else if (!contentChanged && scopedExisting?.embedded) {
                 // 只改标签/房间/固定状态时保留原向量，不发 API。
             } else {
-            const vector = (await embedTexts([node.content], character))[0];
+            const config = normalizeEmbeddingConfig(featureConfig('embedding', character));
+            const vector = (await embedTexts([node.content], character, config))[0];
             if (Array.isArray(vector) && vector.length) {
                 node.embedded = true;
-                node.embeddingProfileKey = embeddingProfile(vector, character);
-                const config = featureConfig('embedding', character) || {};
+                node.embeddingProfileKey = embeddingProfile(vector, character, config);
                 vectorRecord = { memoryId: node.id, characterId: character.id, chatArchiveScopeId:archiveScope(character), vector, dimensions: vector.length, model: config.model || '', profileKey: node.embeddingProfileKey, updatedAt: Date.now() };
             }
             }
@@ -1159,14 +1166,14 @@
         const character = (db.characters || []).find(item => item.id === characterId);
         const nodes = (await listNodes(characterId)).filter(node => !ids || ids.includes(node.id));
         if (!nodes.length) return 0;
-        const vectors = await embedTexts(nodes.map(node => node.content), character);
-        const config = featureConfig('embedding', character) || {};
+        const config = normalizeEmbeddingConfig(featureConfig('embedding', character));
+        const vectors = await embedTexts(nodes.map(node => node.content), character, config);
         const records = [];
         let stored=0;
         nodes.forEach((node, index) => {
             const vector = vectors[index];
             if (!Array.isArray(vector) || !vector.length) return;
-            node.embedded = true; node.embeddingProfileKey = embeddingProfile(vector, character); node.updatedAt = Date.now();
+            node.embedded = true; node.embeddingProfileKey = embeddingProfile(vector, character, config); node.updatedAt = Date.now();
             records.push({ memoryId: node.id, characterId, chatArchiveScopeId:archiveScope(character), vector, dimensions: vector.length, model: config.model || '', profileKey: node.embeddingProfileKey, updatedAt: Date.now() });
         });
         await dexieDB.transaction('rw', dexieDB.memoryPalaceNodes, dexieDB.memoryPalaceVectors, async () => {
@@ -1186,7 +1193,7 @@
         const config = normalizeEmbeddingConfig(featureConfig('rerank', character));
         if (!config || !results.length) return results;
         try {
-            const ranked = await global.VectorMemoryEmbedding.fetchRerank(query, results.map(item => item.node.content), config);
+            const ranked = await withTimeout(signal => global.VectorMemoryEmbedding.fetchRerank(query, results.map(item => item.node.content), config, { signal }), 8000);
             const mapped = ranked.slice(0, 12).map(item => ({ ...results[item.index], rerankScore: item.score })).filter(item => item.node);
             return mapped.length ? mapped : results;
         } catch (error) {
@@ -1207,55 +1214,84 @@
     async function search(character, query, options = {}) {
         ensureSettings(character);
         if (!character.memoryPalaceEnabled && !options.force) return [];
+        const identity = global.ChatArchiveIdentity?.capture(character), epoch = cleanupEpoch.get(character.id) || 0;
+        const config = normalizeEmbeddingConfig(featureConfig('embedding', character));
+        const profile = embeddingProfile([], character, config || {});
+        const current = () => global.ChatArchiveIdentity?.isCurrent(identity) && epoch === (cleanupEpoch.get(identity.characterId) || 0)
+            && profile === embeddingProfile([], character) && (!options.isCurrent || options.isCurrent());
+        if (!current()) return [];
         const now = global.VirtualClock ? global.VirtualClock.virtualInstantMs(global.VirtualClock.resolveCharacter(character)) : Date.now();
         const nodes = (await listNodes(character.id)).filter(node => !node.archived && (node.validUntil == null || node.validUntil > now));
-        if (!nodes.length) return [];
+        if (!current() || !nodes.length) return [];
         let queryVector = null;
-        try { queryVector = (await withTimeout(embedTexts([query], character), 8000))[0] || null; }
+        try { queryVector = (await embedTexts([query], character, config))[0] || null; }
         catch (error) { console.warn('[MemoryPalace] embedding fallback:', error); }
+        if (!current()) return [];
         const nodeIds = new Set(nodes.map(node => node.id));
         const vectorRecords = (await dexieDB.memoryPalaceVectors.where('characterId').equals(character.id).toArray()).filter(record => nodeIds.has(record.memoryId));
-        const compatible = queryVector ? vectorRecords.filter(record => record.dimensions === queryVector.length) : [];
+        if (!current()) return [];
+        const queryProfile = queryVector ? embeddingProfile(queryVector, character, config) : '';
+        // Equal dimensions do not make different models' vector spaces compatible.
+        const compatible = queryVector ? vectorRecords.filter(record => record.dimensions === queryVector.length && record.profileKey === queryProfile) : [];
+        if (!compatible.length) queryVector = null;
+        const links = (await listLinks(identity.characterId)).filter(link => nodeIds.has(link.sourceId) && nodeIds.has(link.targetId));
+        if (!current()) return [];
         if (character.memoryPalaceSevenEnabled && global.MemoryGovernanceCore) {
-            const results = await global.MemoryGovernanceCore.recall(nodes, compatible, await listLinks(character.id), query, queryVector, {
+            let results = await global.MemoryGovernanceCore.recall(nodes, compatible, links, query, queryVector, {
                 now, dateKey: global.VirtualClock?.dateKey(global.VirtualClock.resolveCharacter(character)),
                 activation: character.memoryPalaceActivationEnabled, limit: character.memoryPalaceTopK,
             });
-            try { return await withTimeout(rerank(query, results, character), 8000); }
-            catch (_) { return results; }
+            if (!current()) return [];
+            results = await rerank(query, results, character);
+            return current() ? results : [];
         }
         let results = Core.hybridSearch(nodes, compatible, query, queryVector, { limit: 12, threshold: 0.08 });
-        try { results = await withTimeout(rerank(query, results, character), 8000); } catch (_) { /* local recall remains usable */ }
+        results = await rerank(query, results, character);
+        if (!current()) return [];
         const topK = Math.max(1, Number(character.memoryPalaceTopK) || 8);
         const seeds = results.slice(0, topK);
         const selected = character.memoryPalaceActivationEnabled
-            ? Core.spreadingActivation(seeds, nodes, await listLinks(character.id), {
+            ? Core.spreadingActivation(seeds, nodes, links, {
                 maxExpand: character.memoryPalaceActivationMaxExpand,
                 style: character.memoryPalaceActivationStyle,
             }).slice(0, topK + Math.max(0, Math.min(Core.ACTIVATION_MAX_EXPAND, Number(character.memoryPalaceActivationMaxExpand) || Core.ACTIVATION_MAX_EXPAND)))
             : seeds;
         if (selected.length) {
             const now = Date.now();
-            await dexieDB.transaction('rw',dexieDB.memoryPalaceNodes,async()=>{
-                for(const item of selected){const latest=await getNode(item.node.id);if(latest)await dexieDB.memoryPalaceNodes.put({...latest,lastAccessedAt:now,accessCount:(latest.accessCount||0)+1});}
-            });
+            try {
+                await dexieDB.transaction('rw',dexieDB.memoryPalaceNodes,async()=>{
+                    for(const item of selected){
+                        const latest=await getNode(item.node.id);
+                        if(!current())throw Error('存档已切换，已取消旧记忆召回');
+                        if(latest && latest.characterId===identity.characterId && String(latest.source?.chatArchiveScopeId||'')===identity.scope)
+                            await dexieDB.memoryPalaceNodes.put({...latest,lastAccessedAt:now,accessCount:(latest.accessCount||0)+1});
+                    }
+                    if(!current())throw Error('存档已切换，已取消旧记忆召回');
+                });
+            } catch(error) { if(current())throw error; return []; }
         }
-        return selected;
+        return current() ? selected : [];
     }
 
     async function prepareContext(character, options = {}) {
         ensureSettings(character);
         if (!character.memoryPalaceEnabled) { runtime.delete(character.id); return ''; }
         const query = buildQuery(character, options.queryText),epoch=cleanupEpoch.get(character.id)||0;
+        const identity = global.ChatArchiveIdentity?.capture(character);
+        if (!identity) return '';
+        const request = { identity, scope:identity.scope, profile:embeddingProfile([], character), query, block:'', ids:[] };
+        runtime.set(identity.characterId, request);
+        const current = () => global.ChatArchiveIdentity.isCurrent(identity) && runtime.get(identity.characterId) === request
+            && request.profile === embeddingProfile([], character) && epoch === (cleanupEpoch.get(identity.characterId)||0);
         try {
-            const results = await search(character, query);
-            if(epoch!==(cleanupEpoch.get(character.id)||0))return '';
+            const results = await search(character, query, { isCurrent:current });
+            if(!current())return '';
             const block = Core.formatContext(results, character.memoryPalaceTopK);
-            runtime.set(character.id, { scope:archiveScope(character), query, block, ids: results.map(item => item.node.id), preparedAt: Date.now() });
+            Object.assign(request, { block, ids: results.map(item => item.node.id), preparedAt: Date.now() });
             return block;
         } catch (error) {
             console.warn('[MemoryPalace] context preparation failed:', error);
-            runtime.set(character.id, { scope:archiveScope(character), query, block: '', ids: [], error: error.message, preparedAt: Date.now() });
+            if(current())Object.assign(request, { error: error.message, preparedAt: Date.now() });
             return '';
         }
     }
@@ -1263,7 +1299,9 @@
     function getContext(character) {
         ensureSettings(character);
         const prepared = runtime.get(character.id);
-        return character.memoryPalaceEnabled && prepared?.scope === archiveScope(character) ? (prepared.block || '') : '';
+        return character.memoryPalaceEnabled && global.ChatArchiveIdentity?.isCurrent(prepared?.identity)
+            && prepared.identity.key === global.ChatArchiveIdentity.capture(character, true)?.key
+            && prepared.profile === embeddingProfile([], character) ? (prepared.block || '') : '';
     }
 
     function combineContexts(character, legacyContext) {

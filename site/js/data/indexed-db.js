@@ -593,10 +593,44 @@ function initDatabase() {
     dexieDB.version(44).stores({readingActivities:'&id,sessionId,[sessionId+createdAt],[sessionId+status],documentId,kind,status',importReadingActivities:'&id,sessionId,[sessionId+createdAt],[sessionId+status],documentId,kind,status'});
 }
 
+// One optimistic-write boundary for the existing character/group tables; no history merging.
+const ChatSaveGuard = (() => {
+    const loaded = new Set();
+    const key = (table, row) => JSON.stringify([table.name || (table === dexieDB.characters ? 'characters' : 'groups'), row.id]);
+    const revision = row => row?._chatSaveRevision ?? null;
+    const remember = (table, rows) => rows.forEach(row => loaded.add(key(table, row)));
+    function check(table, row, disk) {
+        if (revision(row) !== revision(disk) || !disk && loaded.has(key(table, row))) {
+            const error = new Error('该会话已在其他页面更新或删除，本次未保存。请先保留本页未保存的消息或草稿，再重新载入；不会自动合并或覆盖历史。');
+            error.code = 'CHAT_WRITE_CONFLICT'; error.retryable = false;
+            throw error;
+        }
+    }
+    const stamp = row => ({ ...row, _chatSaveRevision: crypto.randomUUID() });
+    function accept(table, source, saved) {
+        const publish = () => {
+            if (saved._chatSaveRevision === undefined) delete source._chatSaveRevision;
+            else source._chatSaveRevision = saved._chatSaveRevision;
+            remember(table, [source]);
+        };
+        // Nested saves must not acknowledge a revision before their outer transaction commits.
+        if (typeof Dexie !== 'undefined' && Dexie.currentTransaction) Dexie.currentTransaction.on('complete', publish);
+        else publish();
+    }
+    return { check, stamp, accept, remember };
+})();
+window.ChatSaveGuard = ChatSaveGuard;
+
 // 数据保存与加载。旧调用入口保持不变；并发触发时合并为同一个有序写入队列，
 // 防止大数据下多个全量 bulkPut 同时排队、重复结构化克隆整库。
 let saveDataPromise = null;
 let saveDataRequestedWhileRunning = false;
+
+function notifySavedChat(id, type) {
+    // A display observer cannot turn a committed write into a reported failure.
+    try { window.ChatTokenStats?.changed(id, type); }
+    catch (error) { console.warn('数据已保存，统计刷新失败', error); }
+}
 
 const performFullSave = async () => {
     // 存储配额预检
@@ -618,8 +652,8 @@ const performFullSave = async () => {
             await window.StatusStorage.persistChats(dexieDB.groups, db.groups);
         } else {
             if(window.WalletStorage)await window.WalletStorage.saveChats(dexieDB,dexieDB.characters,db.characters);
-            else await dexieDB.characters.bulkPut(db.characters);
-            if(window.WalletStorage)await window.WalletStorage.saveChats(dexieDB,dexieDB.groups,db.groups);else await dexieDB.groups.bulkPut(db.groups);
+            else throw new Error('聊天保存组件未就绪，请重新载入');
+            if(window.WalletStorage)await window.WalletStorage.saveChats(dexieDB,dexieDB.groups,db.groups);else throw new Error('聊天保存组件未就绪，请重新载入');
         }
         await dexieDB.worldBooks.bulkPut(db.worldBooks);
         await dexieDB.myStickers.bulkPut(db.myStickers);
@@ -634,7 +668,7 @@ const performFullSave = async () => {
             return null;
         }).filter(p => p);
         await Promise.all(settingsPromises);
-        window.ChatTokenStats?.changed(null);
+        notifySavedChat(null);
         return true;
     } catch (e) {
         console.error("saveData failed:", e);
@@ -687,17 +721,17 @@ const saveSingleChatRecord = async (table, collection, id, queueMap, label) => {
         return existing.promise;
     }
     const state = { requested: false, promise: null };
-    state.promise = (async () => {
+    state.promise = Promise.resolve().then(async () => {
         try {
             do {
                 state.requested = false;
                 const record = collection.find(item => item.id === id);
-                if (!record) return;
+                if (!record) throw new Error('会话已不存在，未保存');
                 if (window.StatusStorage) await window.StatusStorage.persistChats(table, [record]);
                 else if(window.WalletStorage)await window.WalletStorage.saveChats(dexieDB,table,[record]);
-                else await table.put(record);
+                else throw new Error('聊天保存组件未就绪，请重新载入');
             } while (state.requested);
-            window.ChatTokenStats?.changed(id, table === dexieDB.groups ? 'group' : 'private');
+            notifySavedChat(id, table === dexieDB.groups ? 'group' : 'private');
             return true;
         } catch (error) {
             console.error(`${label} failed:`, error);
@@ -706,7 +740,7 @@ const saveSingleChatRecord = async (table, collection, id, queueMap, label) => {
         } finally {
             queueMap.delete(id);
         }
-    })();
+    });
     queueMap.set(id, state);
     return state.promise;
 };
@@ -736,7 +770,7 @@ const saveGlobalSettings = async (keys) => {
             .map(key => key === 'statusStorageSettings' && window.StatusStorage
                 ? window.StatusStorage.persistSetting(db[key]) : window.WalletStorage ? window.WalletStorage.saveSetting(dexieDB,key,db[key]) : dexieDB.globalSettings.put({ key, value: db[key] }));
         await Promise.all(promises);
-        window.ChatTokenStats?.changed(null);
+        notifySavedChat(null);
         return true;
     } catch (e) {
         console.error("saveGlobalSettings failed:", e);
@@ -748,6 +782,29 @@ const saveGlobalSettings = async (keys) => {
 window.saveCharacter = saveCharacter;
 window.saveGroup = saveGroup;
 window.saveGlobalSettings = saveGlobalSettings;
+
+const chatChangesPending = new WeakSet();
+// Journal and settings forms share field-only rollback; never restore a whole chat snapshot.
+async function saveChatChanges(chat, chatType, changes) {
+    const live = (chatType === 'group' ? db.groups : db.characters).find(item => item.id === chat.id);
+    if (live !== chat) { showToast('会话已切换，请返回原会话后重试'); return false; }
+    if (chatChangesPending.has(chat)) { showToast('正在保存，请稍候'); return false; }
+    const scope = chat.chatArchiveScopeId;
+    const before = Object.fromEntries(Object.keys(changes).map(key => [key, { exists:Object.hasOwn(chat,key), value:chat[key] }]));
+    chatChangesPending.add(chat);
+    Object.assign(chat, changes);
+    let saved = false;
+    try { saved = await (chatType === 'group' ? saveGroup(chat.id) : saveCharacter(chat.id)) === true; }
+    catch (error) { console.error('保存失败:', error); }
+    finally { chatChangesPending.delete(chat); }
+    if (!saved) {
+        if (chat.chatArchiveScopeId === scope) for (const [key, prior] of Object.entries(before)) if (chat[key] === changes[key]) {
+            if (prior.exists) chat[key] = prior.value; else delete chat[key];
+        }
+        showToast('保存失败，输入已保留，请重试');
+    }
+    return saved;
+}
 
 // 清除旧消息中完全相同的媒体副本。每个会话单独落盘；中断后再次运行仍可继续。
 let chatMediaCompactionPromise = null;
@@ -818,6 +875,9 @@ const loadData = async () => {
     const myStickers = results[3];
     const settingsArray = results[4];
     const archives = results[5];
+
+    ChatSaveGuard.remember(dexieDB.characters, characters);
+    ChatSaveGuard.remember(dexieDB.groups, groups);
 
     db.characters = characters;
     db.groups = groups;
@@ -1181,8 +1241,8 @@ const loadData = async () => {
         console.log("Found old localStorage data, migrating...");
         const data = JSON.parse(oldLocalStorageData);
         await dexieDB.transaction('rw', dexieDB.tables, async () => {
-            if (data.characters) await dexieDB.characters.bulkPut(data.characters);
-            if (data.groups) await dexieDB.groups.bulkPut(data.groups);
+            if (data.characters) await dexieDB.characters.bulkPut(data.characters.map(ChatSaveGuard.stamp));
+            if (data.groups) await dexieDB.groups.bulkPut(data.groups.map(ChatSaveGuard.stamp));
         });
         localStorage.removeItem('gemini-chat-app-db');
         await loadData();

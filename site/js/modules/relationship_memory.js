@@ -113,14 +113,20 @@
     async function prepareContext(character) {
         ensureSettings(character);
         if (!character?.memoryPalaceEnabled || !character?.relationshipMemoryEnabled) { runtime.delete(character?.id); return ''; }
+        const identity = global.ChatArchiveIdentity?.capture(character);
+        if (!identity) return '';
+        const request = { identity, scope:identity.scope, block:'' };
+        runtime.set(identity.characterId, request);
+        const current = () => global.ChatArchiveIdentity.isCurrent(identity) && runtime.get(identity.characterId) === request;
         try {
             const profile = await getProfile(character);
+            if (!current()) return '';
             const block = Core.formatContext(profile);
-            runtime.set(character.id, { scope:archiveScope(character), profile, block, preparedAt: Date.now() });
+            Object.assign(request, { profile, block, preparedAt: Date.now() });
             return block;
         } catch (error) {
             console.warn('[RelationshipMemory] context preparation failed:', error);
-            runtime.set(character.id, { scope:archiveScope(character), profile: Core.normalizeProfile(null, { ownerId: character.id }), block: '', error: error.message });
+            if (current()) Object.assign(request, { error: error.message });
             return '';
         }
     }
@@ -128,11 +134,13 @@
     function getContext(character) {
         ensureSettings(character);
         const prepared = runtime.get(character?.id);
-        return character?.memoryPalaceEnabled && character?.relationshipMemoryEnabled && prepared?.scope === archiveScope(character) ? (prepared.block || '') : '';
+        return character?.memoryPalaceEnabled && character?.relationshipMemoryEnabled && global.ChatArchiveIdentity?.isCurrent(prepared?.identity)
+            && prepared.identity.key === global.ChatArchiveIdentity.capture(character, true)?.key ? (prepared.block || '') : '';
     }
 
     async function consumeAiResponse(value, character) {
         ensureSettings(character);
+        const identity = global.ChatArchiveIdentity?.capture(character);
         const scope = archiveScope(character);
         const result = Core.extractLearnedMarkers(value);
         if (!character?.memoryPalaceEnabled || !character?.relationshipMemoryEnabled || !result.learned.length) return { cleaned: result.cleaned, learned: [] };
@@ -141,13 +149,14 @@
             result.learned.forEach(text => { profile = Core.appendImpression(profile, text, 'ai'); });
             if (archiveScope(character) !== scope) return { cleaned: result.cleaned, learned: [] };
             profile = await saveProfile(profile);
-            runtime.set(character.id, { scope, profile, block: Core.formatContext(profile), preparedAt: Date.now() });
+            if (global.ChatArchiveIdentity?.isCurrent(identity)) runtime.set(character.id, { identity, scope, profile, block: Core.formatContext(profile), preparedAt: Date.now() });
         } catch (error) { console.warn('[RelationshipMemory] failed to save learned impression:', error); }
         return { cleaned: result.cleaned, learned: result.learned };
     }
 
     async function checkAndTriggerTopicArchive(character, options = {}) {
         ensureSettings(character);
+        const identity = global.ChatArchiveIdentity?.capture(character);
         const scope = archiveScope(character);
         if (!character?.memoryPalaceEnabled || !character?.relationshipMemoryEnabled) return { skipped: true, reason: 'disabled' };
         if (locks.has(character.id)) return { skipped: true, reason: 'lock' };
@@ -169,7 +178,7 @@
             });
             next.topicWaterline = waterline + pending.length;
             const saved = await saveProfile(next);
-            runtime.set(character.id, { scope, profile: saved, block: Core.formatContext(saved), preparedAt: Date.now() });
+            if (global.ChatArchiveIdentity?.isCurrent(identity)) runtime.set(character.id, { identity, scope, profile: saved, block: Core.formatContext(saved), preparedAt: Date.now() });
             return { skipped: false, processed: pending.length, stored: 1 };
         } catch (error) {
             console.warn('[RelationshipMemory] topic archive failed without blocking chat:', error);

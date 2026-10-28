@@ -6,6 +6,24 @@ var archiveMultiSelectMode = false;
 var selectedArchiveIds = new Set();
 var archiveReturnScreen = 'chat-settings-screen';
 
+// Transient identity only: recall consumers load after startup; no archive data is changed.
+window.ChatArchiveIdentity = (() => {
+    const epochs = new WeakMap();
+    const key = character => JSON.stringify([character.id, String(character.chatArchiveScopeId || ''), epochs.get(character) || 0]);
+    function capture(character, readOnly = false) {
+        const live = character && db.characters?.find(item => item.id === character.id);
+        // Token previews use copies; only synchronous readers may resolve a same-archive copy.
+        if (!live || !readOnly && live !== character || String(live.chatArchiveScopeId || '') !== String(character.chatArchiveScopeId || '')) return null;
+        return { character:live, characterId:live.id, scope:String(live.chatArchiveScopeId || ''), key:key(live) };
+    }
+    function isCurrent(identity) {
+        return !!identity && db.characters?.find(item => item.id === identity.characterId) === identity.character
+            && key(identity.character) === identity.key;
+    }
+    function invalidate(character) { if (character) epochs.set(character, (epochs.get(character) || 0) + 1); }
+    return { capture, isCurrent, invalidate };
+})();
+
 function openArchiveLibrary(characterId = null, origin = 'more-screen') {
     archiveReturnScreen = origin === 'more-screen' ? origin : 'chat-settings-screen';
     const preferred = [characterId, currentArchiveCharacterId, typeof currentChatId === 'undefined' ? null : currentChatId];
@@ -50,6 +68,7 @@ function createChatArchiveScopeId() {
 // Independent memory stores use chatArchiveScopeId as their read boundary.
 function resetCharacterForNewArchive(character) {
     if (!character) return '';
+    window.ChatArchiveIdentity.invalidate(character);
     character.chatArchiveScopeId = createChatArchiveScopeId();
     character.history = [];
     character.tokens = 0;
@@ -123,7 +142,10 @@ async function createArchive(characterId, archiveName) {
     };
     if (!db.archives) db.archives = [];
     db.archives.push(archive);
-    await saveData();
+    if (await saveData() === false) {
+        db.archives = db.archives.filter(item => item !== archive);
+        return false;
+    }
     showToast('存档保存成功！');
     renderArchiveList();
     updateArchiveMultiSelectUI();
@@ -142,6 +164,7 @@ async function loadArchive(archiveId) {
     }
     const snapshot = JSON.parse(JSON.stringify(archive.snapshot));
     const previous = db.characters[characterIndex];
+    window.ChatArchiveIdentity.invalidate(previous);
     // Old archives predate room layouts and must not erase current custom-room references.
     if (!Object.hasOwn(snapshot, 'memoryPalaceRoomLayout') && previous.memoryPalaceRoomLayout !== undefined) {
         snapshot.memoryPalaceRoomLayout = JSON.parse(JSON.stringify(previous.memoryPalaceRoomLayout));
@@ -149,6 +172,9 @@ async function loadArchive(archiveId) {
     const persisted = await dexieDB.characters.get(archive.characterId);
     const restoredChar = window.WalletStorage ? window.WalletStorage.protectChat(snapshot,persisted || previous,true) : snapshot;
     restoredChar.id = archive.characterId;
+    // Restore against the current chat version, not the historical snapshot's write token.
+    restoredChar._chatSaveRevision = previous._chatSaveRevision;
+    restoredChar._statusStorageRevision = previous._statusStorageRevision;
     db.characters[characterIndex] = restoredChar;
     try {
         if (await window.saveCharacter(archive.characterId) === false) throw Error('存档读取未保存，请重试');
@@ -169,6 +195,11 @@ async function loadArchive(archiveId) {
 
 async function deleteArchives(archiveIds) {
     if (!archiveIds || archiveIds.length === 0) return;
+    const removed = db.archives.filter(archive => archiveIds.includes(archive.id));
+    for (const character of db.characters) {
+        if (removed.some(archive => archive.characterId === character.id
+            && String(archive.snapshot?.chatArchiveScopeId || '') === String(character.chatArchiveScopeId || ''))) window.ChatArchiveIdentity.invalidate(character);
+    }
     db.archives = db.archives.filter(a => !archiveIds.includes(a.id));
     if (dexieDB.archives) await dexieDB.archives.bulkDelete(archiveIds);
     await saveData();

@@ -1,4 +1,18 @@
 function createMessageBubbleElement(message, isContinuous = false, options = {}) {
+    const textHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+    const appendImage = (container, source, alt, messageId = null) => {
+        const image = document.createElement('img');
+        image.alt = alt;
+        const value = String(source || '').trim();
+        try {
+            const url = new URL(value, document.baseURI);
+            if (value && (/^https?:$/.test(url.protocol) || url.protocol === 'blob:' || /^data:image\/[a-z0-9.+-]+[;,]/i.test(value))) image.src = value;
+        } catch (_) { /* Invalid historical URLs remain non-executable image placeholders. */ }
+        image.style.cursor = 'zoom-in';
+        image.addEventListener('click', () => { if (image.getAttribute('src')) openImageViewer(image.src, messageId); });
+        container.appendChild(image);
+        return image;
+    };
     const chat = (currentChatType === 'private') ? db.characters.find(c => c.id === currentChatId) : db.groups.find(g => g.id === currentChatId);
     const showDebugContent = currentChatType === 'private' && !!chat.showDebugContent;
     const debugVisible = isDebugMode || showDebugContent;
@@ -331,7 +345,7 @@ function createMessageBubbleElement(message, isContinuous = false, options = {})
             const quoteDiv = document.createElement('div');
             quoteDiv.className = 'quoted-message';
             const sanitizedQuotedText = DOMPurify.sanitize(quote.content, { ALLOWED_TAGS: [] });
-            quoteDiv.innerHTML = `<span class="quoted-sender">回复 ${quotedSenderName}</span><p class="quoted-text">${sanitizedQuotedText}</p>`;
+            quoteDiv.innerHTML = `<span class="quoted-sender">回复 ${textHtml(quotedSenderName)}</span><p class="quoted-text">${sanitizedQuotedText}</p>`;
             
             // 将引用气泡插入到双语主气泡的前面 (CSS绝对定位会自动处理位置)
             bubbleElement.prepend(quoteDiv);
@@ -418,7 +432,7 @@ function createMessageBubbleElement(message, isContinuous = false, options = {})
         wrapper.className = 'message-wrapper system-notification';
         if (message.isContextDisabled) wrapper.classList.add('context-disabled');
         const withdrawnText = (role === 'user') ? '你撤回了一条消息' : `${chat.remarkName || chat.name}撤回了一条消息`;
-        wrapper.innerHTML = `<div><span class="withdrawn-message">${withdrawnText}</span></div><div class="withdrawn-content">${originalContent ? DOMPurify.sanitize(originalContent.replace(/\[.*?的消息[：:]([\s\S]+?)\]/, '$1')) : ''}</div>`;
+        wrapper.innerHTML = `<div><span class="withdrawn-message">${textHtml(withdrawnText)}</span></div><div class="withdrawn-content">${originalContent ? DOMPurify.sanitize(originalContent.replace(/\[.*?的消息[：:]([\s\S]+?)\]/, '$1')) : ''}</div>`;
         const withdrawnMessageSpan = wrapper.querySelector('.withdrawn-message');
         if (withdrawnMessageSpan) {
             withdrawnMessageSpan.addEventListener('click', () => {
@@ -511,7 +525,7 @@ function createMessageBubbleElement(message, isContinuous = false, options = {})
             bubble.textContent = bubbleText;
             wrapper.appendChild(bubble);
         } else {
-            wrapper.innerHTML = `<div class="system-notification-bubble">${bubbleText}</div>`;
+            wrapper.innerHTML = `<div class="system-notification-bubble">${textHtml(bubbleText)}</div>`;
         }
         return wrapper;
     }
@@ -626,7 +640,7 @@ function createMessageBubbleElement(message, isContinuous = false, options = {})
         // 直接设置 wrapper 内容，模仿系统通知
         wrapper.innerHTML = `
             <div class="system-notification-bubble" style="cursor: pointer;" title="点击查看详情">
-                ${title} ${durationStr} <span style="font-size: 10px; opacity: 0.6;">›</span>
+                ${title} ${textHtml(durationStr)} <span style="font-size: 10px; opacity: 0.6;">›</span>
             </div>
         `;
         
@@ -656,9 +670,9 @@ function createMessageBubbleElement(message, isContinuous = false, options = {})
         const items = itemsStr.split(/,\s*/).map(s => {
             const parts = s.match(/(.+?)\s*x(\d+)$/);
             if (parts) {
-                return { name: DOMPurify.sanitize(parts[1]), qty: parts[2] };
+                return { name: parts[1], qty: parts[2] };
             }
-            return { name: DOMPurify.sanitize(s), qty: 1 };
+            return { name: s, qty: 1 };
         });
 
         const now = new Date(timestamp);
@@ -690,7 +704,7 @@ function createMessageBubbleElement(message, isContinuous = false, options = {})
             // 已自提或普通订单：显示商品
             itemsHtml = items.map(item => `
                 <div class="receipt-item-row">
-                    <span class="receipt-item-name">${item.name}</span>
+                    <span class="receipt-item-name">${textHtml(item.name)}</span>
                     <span class="receipt-dots"></span>
                     <span class="receipt-item-qty">x${item.qty}</span>
                 </div>
@@ -708,7 +722,7 @@ function createMessageBubbleElement(message, isContinuous = false, options = {})
 
         let pickupCodeHtml = '';
         if (isPickup && !isPickedUp) {
-            pickupCodeHtml = `<div class="receipt-pickup-code">🔑 ${pickupCode}</div>`;
+            pickupCodeHtml = `<div class="receipt-pickup-code">🔑 ${textHtml(pickupCode)}</div>`;
         }
 
         bubbleElement.innerHTML = `
@@ -721,7 +735,7 @@ function createMessageBubbleElement(message, isContinuous = false, options = {})
                 ${itemsHtml}
             </div>
             <div class="receipt-total-section">
-                <span class="receipt-total-price">¥${totalPrice}</span>
+                <span class="receipt-total-price">¥${textHtml(totalPrice)}</span>
             </div>
             <div class="receipt-footer">
                 ${pickupCodeHtml}
@@ -756,7 +770,7 @@ function createMessageBubbleElement(message, isContinuous = false, options = {})
         
         let itemsHtml = items.map(item => `
             <div class="receipt-item-row">
-                <span class="receipt-item-name">${item.name}</span>
+                <span class="receipt-item-name">${textHtml(item.name)}</span>
                 <span class="receipt-dots"></span>
                 <span class="receipt-item-qty">x${item.qty}</span>
             </div>
@@ -775,8 +789,8 @@ function createMessageBubbleElement(message, isContinuous = false, options = {})
         if (!isSent && !message.payStatus) {
             actionButtonsHtml = `
                 <div class="receipt-actions">
-                    <button class="receipt-action-btn" onclick="sendPayResponse('${id}', 'pay')">支付</button>
-                    <button class="receipt-action-btn" onclick="sendPayResponse('${id}', 'reject')">拒绝</button>
+                    <button class="receipt-action-btn" data-pay-action="pay">支付</button>
+                    <button class="receipt-action-btn" data-pay-action="reject">拒绝</button>
                 </div>
             `;
         }
@@ -791,7 +805,7 @@ function createMessageBubbleElement(message, isContinuous = false, options = {})
                 ${itemsHtml}
             </div>
             <div class="receipt-total-section">
-                <span class="receipt-total-price">¥${totalPrice}</span>
+                <span class="receipt-total-price">¥${textHtml(totalPrice)}</span>
             </div>
             <div class="receipt-footer">
                 <div class="receipt-delivery-info">
@@ -802,6 +816,9 @@ function createMessageBubbleElement(message, isContinuous = false, options = {})
             </div>
         `;
 
+        bubbleElement.querySelectorAll('[data-pay-action]').forEach(button => {
+            button.addEventListener('click', () => sendPayResponse(id, button.dataset.payAction));
+        });
     } else if (pomodoroMatch) {
         const taskName = pomodoroMatch[1];
         const duration = pomodoroMatch[2];
@@ -809,10 +826,10 @@ function createMessageBubbleElement(message, isContinuous = false, options = {})
         bubbleElement = document.createElement('div');
         bubbleElement.className = 'pomodoro-record-card';
         const details = { taskName, duration, pokeCount };
-        bubbleElement.innerHTML = `<img src="https://i.postimg.cc/sgdS9khZ/chan-122.png" class="pomodoro-record-icon" alt="pomodoro complete"><div class="pomodoro-record-body"><p class="task-name">${taskName}</p></div>`;
+        bubbleElement.innerHTML = `<img src="https://i.postimg.cc/sgdS9khZ/chan-122.png" class="pomodoro-record-icon" alt="pomodoro complete"><div class="pomodoro-record-body"><p class="task-name">${textHtml(taskName)}</p></div>`;
         const detailsDiv = document.createElement('div');
         detailsDiv.className = 'pomodoro-record-details';
-        detailsDiv.innerHTML = `<p><strong>任务名称:</strong> ${taskName}</p><p><strong>专注时长:</strong> ${duration}</p><p><strong>“戳一戳”次数:</strong> ${pokeCount}</p>`;
+        detailsDiv.innerHTML = `<p><strong>任务名称:</strong> ${textHtml(taskName)}</p><p><strong>专注时长:</strong> ${textHtml(duration)}</p><p><strong>“戳一戳”次数:</strong> ${pokeCount}</p>`;
         wrapper.appendChild(detailsDiv);
         bubbleElement.addEventListener('click', () => {
             detailsDiv.classList.toggle('active');
@@ -864,7 +881,7 @@ function createMessageBubbleElement(message, isContinuous = false, options = {})
             ${preview ? `<div class="theater-share-preview">${DOMPurify.sanitize(preview)}</div>` : ''}
             <div class="theater-share-footer">
                 <span class="theater-share-char">${charLine}</span>
-                <span class="theater-share-time">${timeString}</span>
+                <span class="theater-share-time">${textHtml(timeString)}</span>
             </div>
         `;
 
@@ -911,7 +928,7 @@ function createMessageBubbleElement(message, isContinuous = false, options = {})
                 stickerSrc = 'https://i.postimg.cc/Y96LPskq/o-o-2.jpg'; 
             }
         }
-        bubbleElement.innerHTML = `<img src="${stickerSrc}" alt="表情包" onclick="openImageViewer(this.src)" style="cursor: zoom-in;">`;
+        appendImage(bubbleElement, stickerSrc, '表情包');
     } else if (privateGiftMatch || groupGiftMatch) {
         const match = privateGiftMatch || groupGiftMatch;
         bubbleElement = document.createElement('div');
@@ -927,7 +944,7 @@ function createMessageBubbleElement(message, isContinuous = false, options = {})
         } else {
             giftText = isSent ? '您有一份礼物～' : '您有一份礼物～';
         }
-        bubbleElement.innerHTML = `<img src="https://i.postimg.cc/rp0Yg31K/chan-75.png" alt="gift" class="gift-card-icon"><div class="gift-card-text">${giftText}</div><div class="gift-card-received-stamp">已查收</div>`;
+        bubbleElement.innerHTML = `<img src="https://i.postimg.cc/rp0Yg31K/chan-75.png" alt="gift" class="gift-card-icon"><div class="gift-card-text">${textHtml(giftText)}</div><div class="gift-card-received-stamp">已查收</div>`;
         const description = groupGiftMatch ? groupGiftMatch[3].trim() : match[1].trim();
         const descriptionDiv = document.createElement('div');
         descriptionDiv.className = 'gift-card-description';
@@ -937,8 +954,8 @@ function createMessageBubbleElement(message, isContinuous = false, options = {})
         const forumShareRegex = /\[论坛分享\]标题：([\s\S]+?)\n摘要：([\s\S]+)/;
         const forumShareMatch = content.match(forumShareRegex);
         if (forumShareMatch) {
-            const title = forumShareMatch[1].trim();
-            const summary = forumShareMatch[2].trim();
+            const title = textHtml(forumShareMatch[1].trim());
+            const summary = textHtml(forumShareMatch[2].trim());
             bubbleElement = document.createElement('div');
             bubbleElement.className = 'forum-share-card';
             bubbleElement.innerHTML = `<div class="forum-share-header"><svg viewBox="0 0 24 24"><path d="M21,3H3A2,2 0 0,0 1,5V19A2,2 0 0,0 3,21H21A2,2 0 0,0 23,19V5A2,2 0 0,0 21,3M21,19H3V5H21V19M8,11H16V9H8V11M8,15H13V13H8V15Z" /></svg><span>来自论坛的分享</span></div><div class="forum-share-content"><div class="forum-share-title">${title}</div><div class="forum-share-summary">${summary}</div></div>`;
@@ -950,11 +967,11 @@ function createMessageBubbleElement(message, isContinuous = false, options = {})
             const postTitle = forumCommentMatch[1].trim();
             const postContent = forumCommentMatch[2].trim().replace(/\n/g, ' ');
             const commentAuthor = forumCommentMatch[3].trim();
-            const commentContent = forumCommentMatch[4].trim().replace(/\n/g, '<br>');
+            const commentContent = textHtml(forumCommentMatch[4].trim()).replace(/\n/g, '<br>');
             const contentShort = postContent.length > 80 ? postContent.slice(0, 80) + '…' : postContent;
             bubbleElement = document.createElement('div');
             bubbleElement.className = 'forum-share-card forum-share-comment-card';
-            bubbleElement.innerHTML = `<div class="forum-share-header"><svg viewBox="0 0 24 24"><path d="M21,3H3A2,2 0 0,0 1,5V19A2,2 0 0,0 3,21H21A2,2 0 0,0 23,19V5A2,2 0 0,0 21,3M21,19H3V5H21V19M8,11H16V9H8V11M8,15H13V13H8V15Z" /></svg><span>来自论坛的评论分享</span></div><div class="forum-share-content"><div class="forum-share-title">${postTitle}</div><div class="forum-share-summary">${contentShort}</div><div class="forum-share-comment-block"><span class="forum-share-comment-author">${commentAuthor}</span>：<span class="forum-share-comment-text">${commentContent}</span></div></div>`;
+            bubbleElement.innerHTML = `<div class="forum-share-header"><svg viewBox="0 0 24 24"><path d="M21,3H3A2,2 0 0,0 1,5V19A2,2 0 0,0 3,21H21A2,2 0 0,0 23,19V5A2,2 0 0,0 21,3M21,19H3V5H21V19M8,11H16V9H8V11M8,15H13V13H8V15Z" /></svg><span>来自论坛的评论分享</span></div><div class="forum-share-content"><div class="forum-share-title">${textHtml(postTitle)}</div><div class="forum-share-summary">${textHtml(contentShort)}</div><div class="forum-share-comment-block"><span class="forum-share-comment-author">${textHtml(commentAuthor)}</span>：<span class="forum-share-comment-text">${commentContent}</span></div></div>`;
         }
     } else if (voiceMatch) {
         bubbleElement = document.createElement('div');
@@ -993,7 +1010,7 @@ function createMessageBubbleElement(message, isContinuous = false, options = {})
         if (isRealPhoto) {
             bubbleElement = document.createElement('div');
             bubbleElement.className = 'image-bubble photo-bubble';
-            bubbleElement.innerHTML = `<img src="${realPhotoUrl}" alt="${pvContent}" onclick="openImageViewer(this.src, '${message.id}')" style="cursor: zoom-in;">`;
+            appendImage(bubbleElement, realPhotoUrl, pvContent, message.id);
         } else {
             // === 自动生图逻辑 (NovelAI 或 GPT) ===
             const gptEnabled = db.gptImageSettings && db.gptImageSettings.enabled && db.gptImageSettings.url && db.gptImageSettings.key;
@@ -1004,7 +1021,6 @@ function createMessageBubbleElement(message, isContinuous = false, options = {})
             
             if (message.isNovelAiGenerating) {
                 // 后台生图进行中...
-                let bgStyle = '';
                 let bgOverlay = '';
                 let currentUrl = message.novelAiImageUrl;
                 if (message._imageVersions && message._currentImageIndex !== undefined) {
@@ -1013,19 +1029,24 @@ function createMessageBubbleElement(message, isContinuous = false, options = {})
                     }
                 }
                 if (currentUrl) {
-                    bgStyle = `background-image: url('${currentUrl}'); background-size: cover; background-position: center;`;
                     bgOverlay = `<div style="position: absolute; top:0; left:0; right:0; bottom:0; background: rgba(255,255,255,0.7); backdrop-filter: blur(4px);"></div>`;
                 }
 
                 bubbleElement = document.createElement('div');
                 bubbleElement.className = 'image-bubble nai-generating';
                 bubbleElement.innerHTML = `
-                    <div class="nai-loading-card" style="width: 84px; height: 84px; border-radius: 8px; background: #f0f0f0; ${bgStyle} display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; overflow: hidden; position: relative;">
+                    <div class="nai-loading-card" style="width: 84px; height: 84px; border-radius: 8px; background: #f0f0f0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; overflow: hidden; position: relative;">
                         ${bgOverlay}
                         <div class="nai-loading-shimmer" style="position: absolute; top: 0; left: -100%; width: 100%; height: 100%; background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent); animation: nai-shimmer 1.5s infinite;"></div>
                         <div style="width: 16px; height: 16px; border: 2px solid #ccc; border-top-color: #999; border-radius: 50%; animation: nai-spin 0.8s linear infinite; z-index: 1;"></div>
                         <span style="font-size: 10px; color: ${currentUrl ? '#333' : '#999'}; font-weight: ${currentUrl ? 'bold' : 'normal'}; z-index: 1; transform: scale(0.8);">作画中</span>
                     </div>`;
+                if (currentUrl) {
+                    const style = bubbleElement.querySelector('.nai-loading-card').style;
+                    style.backgroundImage = `url(${JSON.stringify(String(currentUrl))})`;
+                    style.backgroundSize = 'cover';
+                    style.backgroundPosition = 'center';
+                }
             } else if (message.novelAiImageUrl) {
                 // 已有生成好的图片
                 let currentUrl = message.novelAiImageUrl;
@@ -1039,19 +1060,16 @@ function createMessageBubbleElement(message, isContinuous = false, options = {})
                 bubbleElement = document.createElement('div');
                 bubbleElement.className = 'image-bubble';
 
-                bubbleElement.innerHTML = `
-                    <img src="${currentUrl}" alt="${pvContent}" onclick="openImageViewer(this.src, '${message.id}')" style="cursor: zoom-in; display: block;">
-                `;
+                appendImage(bubbleElement, currentUrl, pvContent, message.id).style.display = 'block';
             } else if (message.novelAiError) {
                 // 生图失败卡片
                 bubbleElement = document.createElement('div');
                 bubbleElement.className = 'pv-card';
                 const displayContent = pvContent.replace(/\{\{[\s\S]+?\}\}/, '').trim();
                 const errMsg = message.novelAiError;
-                const safeErrMsg = typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(errMsg) : errMsg;
-                const encodedErrMsg = encodeURIComponent(errMsg);
+                const safeErrMsg = textHtml(errMsg);
                 bubbleElement.innerHTML = `
-                    <div class="pv-card-content">${displayContent}</div>
+                    <div class="pv-card-content">${textHtml(displayContent)}</div>
                     <div class="pv-card-image-overlay" style="background-image: url('${isSent ? 'https://i.postimg.cc/L8NFrBrW/1752307494497.jpg' : 'https://i.postimg.cc/1tH6ds9g/1752301200490.jpg'}'); filter: grayscale(1) opacity(0.3);"></div>
                     <div class="pv-card-footer" style="flex-direction: column; align-items: stretch; gap: 8px;">
                         <div style="display: flex; align-items: center; gap: 5px; color: #d32f2f;">
@@ -1059,10 +1077,13 @@ function createMessageBubbleElement(message, isContinuous = false, options = {})
                             <span style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px;">${safeErrMsg}</span>
                         </div>
                         <div style="display: flex; gap: 8px; pointer-events: auto;">
-                            <button class="btn btn-small btn-neutral" style="flex: 1; font-size: 11px; padding: 4px; background: #eee; border: none;" onclick="window.showErrorModal('生图出错了', new Error(decodeURIComponent('${encodedErrMsg}')))">查看报错</button>
-                            <button class="btn btn-small btn-primary" style="flex: 1; font-size: 11px; padding: 4px; border: none;" onclick="window.retryImageGen('${message.id}', '${currentChatId}', '${currentChatType}')">重新生成</button>
+                            <button class="btn btn-small btn-neutral" style="flex: 1; font-size: 11px; padding: 4px; background: #eee; border: none;">查看报错</button>
+                            <button class="btn btn-small btn-primary" style="flex: 1; font-size: 11px; padding: 4px; border: none;">重新生成</button>
                         </div>
                     </div>`;
+                bubbleElement.querySelector('.btn-neutral').addEventListener('click', () => window.showErrorModal('生图出错了', new Error(errMsg)));
+                const chatId = currentChatId, chatType = currentChatType;
+                bubbleElement.querySelector('.btn-primary').addEventListener('click', () => window.retryImageGen(message.id, chatId, chatType));
             } else if (_imgEnabled && !isSent && !options.historyInspection && _naiAutoGenNewMsgIds.has(message.id)) {
                 // 首次触发静默生图
                 message.isNovelAiGenerating = true;
@@ -1083,7 +1104,7 @@ function createMessageBubbleElement(message, isContinuous = false, options = {})
                 const displayContent = pvContent.replace(/\{\{[\s\S]+?\}\}/, '').trim() || pvContent;
                 bubbleElement = document.createElement('div');
                 bubbleElement.className = 'pv-card';
-                bubbleElement.innerHTML = `<div class="pv-card-content">${displayContent}</div><div class="pv-card-image-overlay" style="background-image: url('${isSent ? 'https://i.postimg.cc/L8NFrBrW/1752307494497.jpg' : 'https://i.postimg.cc/1tH6ds9g/1752301200490.jpg'}');"></div><div class="pv-card-footer"><svg viewBox="0 0 24 24"><path d="M4,4H20A2,2 0 0,1 22,6V18A2,2 0 0,1 20,20H4A2,2 0 0,1 2,18V6A2,2 0 0,1 4,4M4,6V18H20V6H4M10,9A1,1 0 0,1 11,10A1,1 0 0,1 10,11A1,1 0 0,1 9,10A1,1 0 0,1 10,9M8,17L11,13L13,15L17,10L20,14V17H8Z"></path></svg><span>照片/视频・点击查看</span></div>`;
+                bubbleElement.innerHTML = `<div class="pv-card-content">${textHtml(displayContent)}</div><div class="pv-card-image-overlay" style="background-image: url('${isSent ? 'https://i.postimg.cc/L8NFrBrW/1752307494497.jpg' : 'https://i.postimg.cc/1tH6ds9g/1752301200490.jpg'}');"></div><div class="pv-card-footer"><svg viewBox="0 0 24 24"><path d="M4,4H20A2,2 0 0,1 22,6V18A2,2 0 0,1 20,20H4A2,2 0 0,1 2,18V6A2,2 0 0,1 4,4M4,6V18H20V6H4M10,9A1,1 0 0,1 11,10A1,1 0 0,1 10,11A1,1 0 0,1 9,10A1,1 0 0,1 10,9M8,17L11,13L13,15L17,10L20,14V17H8Z"></path></svg><span>照片/视频・点击查看</span></div>`;
             }
         }
     } else if (familyCardGiftMatch || familyCardData || receivedFamilyCardData) {
@@ -1101,8 +1122,8 @@ function createMessageBubbleElement(message, isContinuous = false, options = {})
         if (!isSent && status === 'pending') {
             actionButtonsHtml = `
                 <div class="receipt-actions">
-                    <button class="receipt-action-btn family-card-accept" data-msg-id="${DOMPurify.sanitize(id)}">接收</button>
-                    <button class="receipt-action-btn family-card-return" data-msg-id="${DOMPurify.sanitize(id)}">退回</button>
+                    <button class="receipt-action-btn family-card-accept" data-msg-id="${textHtml(id)}">接收</button>
+                    <button class="receipt-action-btn family-card-return" data-msg-id="${textHtml(id)}">退回</button>
                 </div>`;
         }
         bubbleElement = document.createElement('div');
@@ -1203,27 +1224,27 @@ function createMessageBubbleElement(message, isContinuous = false, options = {})
         } else if (transferStatus !== 'pending' && currentChatType === 'private') {
             bubbleElement.style.cursor = 'default';
         }
-        const remarkHTML = remarkText ? `<p class="transfer-remark">${remarkText}</p>` : '';
-        bubbleElement.innerHTML = `<div class="overlay"></div><div class="transfer-content"><p class="transfer-title">${titleText}</p><p class="transfer-amount">¥${amount}</p>${remarkHTML}<p class="transfer-status">${statusText}</p></div>`;
+        const remarkHTML = remarkText ? `<p class="transfer-remark">${textHtml(remarkText)}</p>` : '';
+        bubbleElement.innerHTML = `<div class="overlay"></div><div class="transfer-content"><p class="transfer-title">${textHtml(titleText)}</p><p class="transfer-amount">¥${amount}</p>${remarkHTML}<p class="transfer-status">${statusText}</p></div>`;
     } else if (locationMatch) {
         const who = (locationMatch[1] || '').trim();
         const place = (locationMatch[2] || '').trim();
         const distanceNum = locationMatch[3];
         const unit = locationMatch[4] || '千米';
-        const titleText = who === '我' ? '位置' : (DOMPurify.sanitize(who) + '的位置');
+        const titleText = who === '我' ? '位置' : (who + '的位置');
         bubbleElement = document.createElement('div');
         bubbleElement.className = 'location-card';
         let distanceHtml = '';
         if (distanceNum && unit) {
             distanceHtml = `<p class="location-distance">距你约 ${distanceNum} ${unit}</p>`;
         }
-        bubbleElement.innerHTML = `<div class="overlay"></div><div class="location-content"><p class="location-title">${titleText}</p><p class="location-place">${DOMPurify.sanitize(place)}</p>${distanceHtml}<p class="location-status">位置分享</p></div>`;
+        bubbleElement.innerHTML = `<div class="overlay"></div><div class="location-content"><p class="location-title">${textHtml(titleText)}</p><p class="location-place">${DOMPurify.sanitize(place)}</p>${distanceHtml}<p class="location-status">位置分享</p></div>`;
     } else if (imageRecogMatch || urlRegex.test(content)) {
         bubbleElement = document.createElement('div');
         bubbleElement.className = 'image-bubble photo-bubble';
         const imagePart = message.parts && message.parts.find(part => part && part.type === 'image' && part.data);
         const imageSource = imagePart ? imagePart.data : content;
-        bubbleElement.innerHTML = `<img src="${imageSource}" alt="图片消息" onclick="openImageViewer(this.src, '${message.id}')" style="cursor: zoom-in;">`;
+        appendImage(bubbleElement, imageSource, '图片消息', message.id);
     } else if (textMatch) {
         bubbleElement = document.createElement('div');
         bubbleElement.className = `message-bubble ${isSent ? 'sent' : 'received'}`;
@@ -1238,9 +1259,16 @@ function createMessageBubbleElement(message, isContinuous = false, options = {})
         bubbleElement.className = `message-bubble ${isSent ? 'sent' : 'received'} html-bubble`;
         let htmlContent = message.parts[0].text;
         htmlContent = htmlContent.replace(/<uwuxjc>/gi, '').replace(/<\/uwuxjc>/gi, '').trim();
-        if (htmlContent.includes('<!DOCTYPE html>') || htmlContent.includes('<html')) {
+        if (/<(?:!doctype\s+html|html)(?:\s|>)/i.test(htmlContent)) {
             const processedHtml = processTemplate(htmlContent, chat);
-            bubbleElement.innerHTML = `<iframe srcdoc="${processedHtml.replace(/"/g, '"')}" style="width: 100%; min-width: 250px; height: 350px; border: none; background: white; border-radius: 10px;"></iframe>`;
+            const frame = document.createElement('iframe');
+            // Keep in-message scripts usable without granting the app's origin or storage.
+            frame.setAttribute('sandbox', 'allow-scripts');
+            frame.referrerPolicy = 'no-referrer';
+            frame.title = 'HTML 消息';
+            frame.style.cssText = 'width: 100%; min-width: 250px; height: 350px; border: none; background: white; border-radius: 10px;';
+            frame.srcdoc = `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline' https: http:; img-src data: blob: https: http:; media-src data: blob: https: http:; font-src data: https: http:; connect-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'">${processedHtml}`;
+            bubbleElement.appendChild(frame);
         } else {
             const processedHtml = processTemplate(htmlContent, chat);
             bubbleElement.innerHTML = DOMPurify.sanitize(processedHtml, { ADD_TAGS: ['style'], ADD_ATTR: ['style'] });
@@ -1280,7 +1308,7 @@ function createMessageBubbleElement(message, isContinuous = false, options = {})
             bubbleElement.style.color = bubbleTheme.text;
         }
     }
-    const nicknameHTML = (currentChatType === 'group' && !isSent && senderNickname) ? `<div class="group-nickname">${senderNickname}</div>` : '';
+    const nicknameHTML = (currentChatType === 'group' && !isSent && senderNickname) ? `<div class="group-nickname">${textHtml(senderNickname)}</div>` : '';
 
     // Time Stamp Logic
     const timeSpan = document.createElement('span');
@@ -1334,7 +1362,7 @@ function createMessageBubbleElement(message, isContinuous = false, options = {})
                 const quoteDiv = document.createElement('div');
                 quoteDiv.className = 'quoted-message';
                 const sanitizedQuotedText = DOMPurify.sanitize(quote.content, { ALLOWED_TAGS: [] });
-                quoteDiv.innerHTML = `<span class="quoted-sender">回复 ${quotedSenderName}</span><p class="quoted-text">${sanitizedQuotedText}</p>`;
+                quoteDiv.innerHTML = `<span class="quoted-sender">回复 ${textHtml(quotedSenderName)}</span><p class="quoted-text">${sanitizedQuotedText}</p>`;
                 bubbleElement.prepend(quoteDiv);
             }
             contentContainer.appendChild(bubbleElement);
@@ -1362,7 +1390,7 @@ function createMessageBubbleElement(message, isContinuous = false, options = {})
                 const quoteDiv = document.createElement('div');
                 quoteDiv.className = 'quoted-message';
                 const sanitizedQuotedText = DOMPurify.sanitize(quote.content, { ALLOWED_TAGS: [] });
-                quoteDiv.innerHTML = `<span class="quoted-sender">回复 ${quotedSenderName}</span><p class="quoted-text">${sanitizedQuotedText}</p>`;
+                quoteDiv.innerHTML = `<span class="quoted-sender">回复 ${textHtml(quotedSenderName)}</span><p class="quoted-text">${sanitizedQuotedText}</p>`;
                 bubbleElement.prepend(quoteDiv);
             }
             bubbleRow.appendChild(bubbleElement);

@@ -378,6 +378,7 @@ async function createCharacterFromData(data, avatar, options) {
         await dexieDB.characters.add(newChar);
         if (newBooks.length) await dexieDB.worldBooks.bulkAdd(newBooks);
     });
+    window.ChatSaveGuard?.remember(dexieDB.characters, [newChar]);
     db.characters.push(newChar);
     db.worldBooks.push(...newBooks);
     renderChatList();

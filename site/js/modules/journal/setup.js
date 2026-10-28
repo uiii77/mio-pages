@@ -3,7 +3,6 @@
 let generatingChatId = null;
 const autoJournalRetryTimers = {};
 const autoJournalActiveTasks = new Map();
-
 function setupMemoryJournalScreen() {
     if (typeof setupAutoJournalVisualization === 'function') {
         setupAutoJournalVisualization();
@@ -51,6 +50,7 @@ function setupMemoryJournalScreen() {
 
     let isMultiSelectMode = false;
     let selectedJournalIds = new Set();
+    let pendingMerge = null;
 
     // 绑定标题点击事件
     if (journalTitleBtn) {
@@ -117,6 +117,7 @@ function setupMemoryJournalScreen() {
     // 绑定手动添加按钮事件
     if (manualAddJournalBtn) {
         manualAddJournalBtn.addEventListener('click', () => {
+            if (manualJournalForm?.dataset.saving === 'true') return;
             if (journalTitleActionsheet) journalTitleActionsheet.classList.remove('visible');
             if (manualJournalForm) manualJournalForm.reset();
             if (manualJournalModal) manualJournalModal.classList.add('visible');
@@ -133,6 +134,7 @@ function setupMemoryJournalScreen() {
     if (manualJournalForm) {
         manualJournalForm.addEventListener('submit', async (e) => {
             e.preventDefault();
+            if (!manualJournalModal.classList.contains('visible') || manualJournalForm.dataset.saving === 'true') return;
             const titleInput = document.getElementById('manual-journal-title');
             const contentInput = document.getElementById('manual-journal-content');
             
@@ -158,15 +160,20 @@ function setupMemoryJournalScreen() {
                 isFavorited: false 
             };
 
-            if (!chat.memoryJournals) {
-                chat.memoryJournals = [];
+            const chatType = currentChatType;
+            const controls = [...manualJournalForm.querySelectorAll('input, textarea, button')].filter(control => !control.disabled);
+            manualJournalForm.dataset.saving = 'true';
+            controls.forEach(control => control.disabled = true);
+            try {
+                if (!await saveChatChanges(chat, chatType, { memoryJournals:[...(chat.memoryJournals || []),newJournal] })) return;
+                if (currentChatId !== chat.id || currentChatType !== chatType) return;
+                manualJournalModal.classList.remove('visible');
+                renderJournalList();
+                showToast('已手动添加新记忆');
+            } finally {
+                delete manualJournalForm.dataset.saving;
+                controls.forEach(control => control.disabled = false);
             }
-            chat.memoryJournals.push(newJournal);
-            await saveData();
-
-            if (manualJournalModal) manualJournalModal.classList.remove('visible');
-            renderJournalList();
-            showToast('已手动添加新记忆');
         });
     }
 
@@ -190,8 +197,7 @@ function setupMemoryJournalScreen() {
                 const chat = (currentChatType === 'private') ? db.characters.find(c => c.id === currentChatId) : db.groups.find(g => g.id === currentChatId);
                 if (!chat) return;
 
-                chat.memoryJournals = chat.memoryJournals.filter(j => !selectedJournalIds.has(j.id));
-                await saveData();
+                if (!await saveChatChanges(chat, currentChatType, { memoryJournals:chat.memoryJournals.filter(j => !selectedJournalIds.has(j.id)) })) return;
                 toggleMultiSelectMode(false);
                 renderJournalList();
                 showToast('已批量删除');
@@ -350,6 +356,9 @@ function setupMemoryJournalScreen() {
     
     // --- 导入日记逻辑 ---
     function importJournals(file) {
+        const chatType = currentChatType;
+        const chat = (chatType === 'private' ? db.characters : db.groups).find(item => item.id === currentChatId);
+        const scope = chat?.chatArchiveScopeId;
         const reader = new FileReader();
         reader.onload = async (e) => {
             try {
@@ -358,11 +367,8 @@ function setupMemoryJournalScreen() {
                     throw new Error("格式错误，请确保导入的是包含日记数组的 JSON 文件。");
                 }
                 
-                const chat = (currentChatType === 'private') ? db.characters.find(c => c.id === currentChatId) : db.groups.find(g => g.id === currentChatId);
-                if (!chat) return;
-                if (!chat.memoryJournals) {
-                    chat.memoryJournals = [];
-                }
+                if (!chat || chat.chatArchiveScopeId !== scope) { showToast('会话已切换，请重新导入'); return; }
+                const journals = [...(chat.memoryJournals || [])];
                 
                 let count = 0;
                 // 为了避免 ID 冲突，给导入的日记重新生成 ID，并确保格式正确
@@ -374,21 +380,21 @@ function setupMemoryJournalScreen() {
                             title: item.title,
                             content: item.content,
                             createdAt: item.createdAt || Date.now(),
-                            chatId: currentChatId,
-                            chatType: currentChatType,
+                            chatId: chat.id,
+                            chatType,
                             isFavorited: !!item.isFavorited
                         };
                         if (item.isNodeSummary) {
                             newJournal.isNodeSummary = true;
                             newJournal.nodeId = item.nodeId || `node_imp_${Date.now()}`;
                         }
-                        chat.memoryJournals.push(newJournal);
+                        journals.push(newJournal);
                         count++;
                     }
                 });
                 
                 if (count > 0) {
-                    await saveData();
+                    if (!await saveChatChanges(chat, chatType, { memoryJournals:journals })) return;
                     renderJournalList();
                     showToast(`成功导入 ${count} 篇日记`);
                 } else {
@@ -403,8 +409,11 @@ function setupMemoryJournalScreen() {
     }
 
     async function mergeJournals(journalIds) {
+        if (isGenerating) { showToast('正在生成，请稍候'); return; }
+        const chatType = currentChatType;
         const chat = (currentChatType === 'private') ? db.characters.find(c => c.id === currentChatId) : db.groups.find(g => g.id === currentChatId);
         if (!chat) return;
+        const scope = chat.chatArchiveScopeId;
 
         // 1. 获取选中的日记对象并排序
         const selectedJournals = chat.memoryJournals
@@ -419,6 +428,7 @@ function setupMemoryJournalScreen() {
 
         // 3. 拼接内容
         const combinedContent = selectedJournals.map(j => `【${j.title}】\n${j.content}`).join('\n\n---\n\n');
+        const mergeKey = JSON.stringify([scope,journalIds,combinedContent]);
 
         // 4. 构建 Prompt
         let summaryPrompt = `你是一个专业的档案记录员。请将以下多篇日记合并整理成一篇连贯、精简的“回忆录”。\n\n`;
@@ -441,9 +451,6 @@ function setupMemoryJournalScreen() {
         summaryPrompt += `待合并的日记内容如下：\n\n${combinedContent}`;
 
         showToast('正在合并精简，请稍候...');
-        
-        // 退出多选模式并显示加载状态
-        toggleMultiSelectMode(false);
         
         // 显示列表占位卡片
         const container = document.getElementById('journal-list-container');
@@ -472,8 +479,11 @@ function setupMemoryJournalScreen() {
                 ? db.summaryApiSettings
                 : db.apiSettings;
             apiConfig = typeof getApiConfigForFeature === 'function' ? getApiConfigForFeature('journal', apiConfig, chat) : apiConfig;
-            const rawContent = await requestJournalSummary(apiConfig, summaryPrompt);
+            const rawContent = pendingMerge?.chat === chat && pendingMerge.key === mergeKey
+                ? pendingMerge.rawContent : await requestJournalSummary(apiConfig, summaryPrompt);
             const journalData = parseJournalResponse(rawContent);
+            if (chat.chatArchiveScopeId !== scope) { showToast('存档已切换，请在原存档重试'); return; }
+            pendingMerge = {chat,key:mergeKey,rawContent};
 
             const newJournal = {
                 id: `journal_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
@@ -481,16 +491,15 @@ function setupMemoryJournalScreen() {
                 title: journalData.title,
                 content: journalData.content,
                 createdAt: Date.now(),
-                chatId: currentChatId,
-                chatType: currentChatType,
+                chatId: chat.id,
+                chatType,
                 isFavorited: false 
             };
 
-            if (!chat.memoryJournals) {
-                chat.memoryJournals = [];
-            }
-            chat.memoryJournals.push(newJournal);
-            await saveData();
+            if (!await saveChatChanges(chat, chatType, { memoryJournals:[...(chat.memoryJournals || []),newJournal] })) return;
+            pendingMerge = null;
+            if (currentChatId !== chat.id || currentChatType !== chatType) return;
+            toggleMultiSelectMode(false);
 
             renderJournalList();
             showToast('日记合并完成！');
@@ -500,8 +509,10 @@ function setupMemoryJournalScreen() {
             if(card) card.remove();
             showApiError(error);
         } finally {
+            loadingCard.remove();
             isGenerating = false;
             generatingChatId = null;
+            document.getElementById('journal-generating-card')?.remove();
         }
     }
 
@@ -549,15 +560,13 @@ function setupMemoryJournalScreen() {
         const selectedMode = document.querySelector('input[name="journal-style-mode"]:checked').value;
         const selectedIds = Array.from(journalStyleWorldBookList.querySelectorAll('.item-checkbox:checked')).map(input => input.value);
 
-        chat.journalStyleSettings = {
+        const journalStyleSettings = {
             mode: selectedMode,
             customWorldBookIds: selectedIds
         };
         
         // 同步更新旧字段以保持潜在的向后兼容性
-        chat.journalWorldBookIds = selectedIds;
-
-        await saveData();
+        if (!await saveChatChanges(chat, 'private', { journalStyleSettings, journalWorldBookIds:selectedIds })) return;
         journalStyleModal.classList.remove('visible');
         showToast('日记风格设置已保存');
     });
@@ -597,15 +606,17 @@ function setupMemoryJournalScreen() {
             return;
         }
 
-        const chat = (currentChatType === 'private') ? db.characters.find(c => c.id === currentChatId) : db.groups.find(g => g.id === currentChatId);
-        if (chat) {
+        const chatType = currentChatType, button = generateJournalForm.querySelector('[type="submit"]');
+        const chat = (chatType === 'private') ? db.characters.find(c => c.id === currentChatId) : db.groups.find(g => g.id === currentChatId);
+        if (!chat || button.disabled || isGenerating) return;
+        const scope = chat.chatArchiveScopeId;
+        button.disabled = true;
+        try {
             ensureAutoJournalState(chat);
-            chat.journalIncludeFavorited = includeFavorited;
-            await saveData();
-        }
-
-        generateJournalModal.classList.remove('visible');
-        await generateJournal(start, end, includeFavorited);
+            if (!await saveChatChanges(chat, chatType, { journalIncludeFavorited:includeFavorited })) return;
+            if (currentChatId !== chat.id || currentChatType !== chatType || chat.chatArchiveScopeId !== scope) return;
+            if (await generateJournal(start, end, includeFavorited, false, null, {targetChatId:chat.id,targetChatType:chatType}) === true && currentChatId === chat.id && currentChatType === chatType && chat.chatArchiveScopeId === scope) generateJournalModal.classList.remove('visible');
+        } finally { button.disabled = false; }
     });
 
     journalListContainer.addEventListener('click', async (e) => {
@@ -635,8 +646,7 @@ function setupMemoryJournalScreen() {
 
         if (target.closest('.delete-journal-btn')) {
             if (confirm('确定要删除这篇日记吗？')) {
-                chat.memoryJournals = chat.memoryJournals.filter(j => j.id !== journalId);
-                await saveData();
+                if (!await saveChatChanges(chat, currentChatType, { memoryJournals:chat.memoryJournals.filter(j => j.id !== journalId) })) return;
                 renderJournalList();
                 showToast('日记已删除');
             }
@@ -644,10 +654,10 @@ function setupMemoryJournalScreen() {
         }
 
         if (target.closest('.favorite-journal-btn')) {
-            journal.isFavorited = !journal.isFavorited;
-            await saveData();
-            target.closest('.favorite-journal-btn').classList.toggle('favorited', journal.isFavorited);
-            showToast(journal.isFavorited ? '已收藏' : '已取消收藏');
+            const isFavorited = !journal.isFavorited;
+            if (!await saveChatChanges(chat, currentChatType, { memoryJournals:chat.memoryJournals.map(item => item === journal ? {...item,isFavorited} : item) })) return;
+            target.closest('.favorite-journal-btn').classList.toggle('favorited', isFavorited);
+            showToast(isFavorited ? '已收藏' : '已取消收藏');
             renderJournalList();
             return;
         }
@@ -660,8 +670,8 @@ function setupMemoryJournalScreen() {
         const titleEl = document.getElementById('journal-detail-title');
         const contentEl = document.getElementById('journal-detail-content');
 
-        titleEl.isContentEditable = false;
-        contentEl.isContentEditable = false;
+        titleEl.setAttribute('contenteditable', 'false');
+        contentEl.setAttribute('contenteditable', 'false');
         titleEl.style.border = 'none';
         contentEl.style.border = 'none';
         titleEl.style.padding = '0';
@@ -710,12 +720,11 @@ function setupMemoryJournalScreen() {
         const journal = chat.memoryJournals.find(j => j.id === currentJournalDetailId);
         if (!journal) return;
 
-        journal.title = titleEl.textContent.trim();
-        journal.content = contentEl.textContent.trim();
-        await saveData();
+        const edited = {...journal,title:titleEl.textContent.trim(),content:contentEl.textContent.trim()};
+        if (!await saveChatChanges(chat, currentChatType, { memoryJournals:chat.memoryJournals.map(item => item === journal ? edited : item) })) return;
 
-        titleEl.isContentEditable = false;
-        contentEl.isContentEditable = false;
+        titleEl.setAttribute('contenteditable', 'false');
+        contentEl.setAttribute('contenteditable', 'false');
         titleEl.style.border = 'none';
         contentEl.style.border = 'none';
         titleEl.style.padding = '0';
