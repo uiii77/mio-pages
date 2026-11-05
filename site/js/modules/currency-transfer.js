@@ -77,6 +77,9 @@
         let target = state.direction === 'user-to-role' ? roleDefault : userDefault;
         setCurrencyOptions(source, target);
     }
+    let referenceQuote=null,rateController=null;
+    const referenceKey=(source,target)=>'mioCurrencyReferenceV1:'+source+':'+target;
+    const provider=()=>byId('currency-rate-provider')?.value||'manual';
     const rateKey=(source,target)=>'mioCurrencyRateV1:'+source+':'+target;
     function ratePair(){return [byId('currency-source')?.value,byId('currency-target')?.value];}
     function rateValid(row,source,target){return row?.sourceCurrency===source&&row?.targetCurrency===target&&row.source==='manual'&&core().rateToScaled(row.rate)!=null&&Number.isSafeInteger(row.savedAt)&&row.savedAt>0;}
@@ -84,26 +87,66 @@
         const [source,target]=ratePair(),field=byId('currency-amount'),output=byId('currency-preview');
         if(!field||!output||!core().isSupported(source)||!core().isSupported(target))return;
         field.step=String(10**-core().meta(source).digits);field.min=field.step;field.placeholder=core().meta(source).digits?'0.00':'0';
-        if(source===target){output.textContent='当前面板用于不同币种直接到账转账，请选择不同的收款币种。同币种人民币待领取转账在聊天中发送。';return;}
-        const amount=core().amountToMinor(field.value,source),rate=core().rateToScaled(byId('currency-rate')?.value);
+        if(source===target && source==='CNY'){output.textContent='人民币同币种转账请在聊天中发送，保留待领取流程。';return;}
+        const recipient=state.direction==='user-to-role'?roleName(selectedRole()):'用户';
+        const amount=core().amountToMinor(field.value,source),rate=source===target?10 ** core().SCALE:core().rateToScaled(byId('currency-rate')?.value);
         const received=core().convertMinor(amount,source,target,rate);
-        output.textContent=received>0?'转出 '+core().formatMinor(amount,source)+' '+source+' → '+roleName(selectedRole())+' 收到 '+core().formatMinor(received,target)+' '+target+'；确认后直接到账。':'1 '+source+' = 汇率 × '+target+'；按所选币种精度填写金额，确认后直接到账。';
+        output.textContent=received>0?'转出 '+core().formatMinor(amount,source)+' '+source+' → '+recipient+' 收到 '+core().formatMinor(received,target)+' '+target+'；确认后直接到账。':source===target?'同币种等额转入'+recipient+'账户，无需汇率；确认后直接到账。':'1 '+source+' = 汇率 × '+target+'；按所选币种精度填写金额，确认后直接到账。';
     }
     async function refreshRate(){
+        rateController?.abort();referenceQuote=null;
         const generation=++rateGeneration,[source,target]=ratePair(),field=byId('currency-rate'),info=byId('currency-rate-info');
         if(!field||!info)return;
+        field.disabled=source===target||provider()==='ecb';
+        byId('currency-fetch-rate').disabled=source===target||provider()!=='ecb';byId('currency-save-rate').disabled=source===target||provider()==='ecb';
         field.value='';info.textContent='正在读取已保存汇率…';preview();
         if(source===target){info.textContent='同币种无需汇率。';return;}
+        if(provider()==='ecb'){
+            try{
+                const cached=(await dexieDB.globalSettings.get(referenceKey(source,target)))?.value;
+                if(generation!==rateGeneration)return;
+                showReference(cached,source,target);
+            }catch{if(generation===rateGeneration)info.textContent='缓存读取失败，可重新获取或切换手动汇率。';}
+            return;
+        }
         try{
             const saved=(await dexieDB.globalSettings.get(rateKey(source,target)))?.value;
             if(generation!==rateGeneration)return;
             if(rateValid(saved,source,target)){
                 field.value=saved.rate;info.textContent='本机手动保存 · '+new Date(saved.savedAt).toLocaleString('zh-CN')+' · 非实时行情。汇率不随备份导出，恢复后请核对。';
             }else{
-                info.textContent='此币种对尚未配置汇率，也未接入实时提供商。手填后可保存，下次自动使用。';
+                info.textContent='此币种对尚未配置手动汇率。手填后可保存，或主动选择现代参考汇率。';
             }
         }catch{if(generation===rateGeneration)info.textContent='保存的汇率暂时无法读取，可手动填写本次汇率。';}
         if(generation===rateGeneration)preview();
+    }
+    function showReference(row,source,target){
+        const quote=core().referenceRate(row,source,target),info=byId('currency-rate-info');
+        referenceQuote=quote&&!quote.expired?{...quote,sourceCurrency:source,targetCurrency:target}:null;
+        byId('currency-rate').value=referenceQuote?.rate||'';
+        info.textContent=quote?'Frankfurter / ECB · 报价日期 '+quote.date+' · '+(quote.expired?'已过期，未应用；请重新获取或切换手动汇率。':'参考价，非实时行情；最多保留 4 天。'):'尚无有效参考报价，请获取或切换手动汇率。';
+        preview();
+    }
+    async function fetchRate(){
+        if(provider()!=='ecb')return;
+        const [source,target]=ratePair();if(source===target)return;
+        rateController?.abort();const controller=new AbortController();rateController=controller;
+        const generation=++rateGeneration,button=byId('currency-fetch-rate');button.disabled=true;
+        const timer=setTimeout(()=>controller.abort(),10000);
+        try{
+            const response=await fetch('https://api.frankfurter.dev/v2/rate/'+source.toLowerCase()+'/'+target.toLowerCase()+'?providers=ecb',{signal:controller.signal,credentials:'omit',referrerPolicy:'no-referrer'});
+            if(!response.ok)throw Error('RATE_UNAVAILABLE');
+            const row=await response.json();if(!core().referenceRate(row,source,target))throw Error('INVALID_RATE');
+            if(generation!==rateGeneration)return;
+            await dexieDB.globalSettings.put({key:referenceKey(source,target),value:row});
+            if(generation===rateGeneration)showReference(row,source,target);
+        }catch{
+            if(generation===rateGeneration){
+                const quote=referenceQuote;
+                if(quote&&Date.now()-Date.parse(quote.date+'T00:00:00Z')>4*86400000){referenceQuote=null;byId('currency-rate').value='';}
+                byId('currency-rate-info').textContent='获取失败；'+(referenceQuote?'保留缓存 Frankfurter / ECB · '+referenceQuote.date+'，非实时行情。':'无有效报价，可切换手动汇率。');
+            }
+        }finally{clearTimeout(timer);if(generation===rateGeneration)button.disabled=false;}
     }
     // This device preference is scoped to the current database; it never changes transaction snapshots.
     async function storeRate(source,target,rate){
@@ -132,8 +175,8 @@
             const code = sending ? item.fromCurrency : item.toCurrency;
             const other = sending ? `→ ${escape(roleName(role))}` : `← ${escape(roleName(role))}`;
             const received = `${core().formatMinor(sending ? item.targetAmountMinor : item.sourceAmountMinor, sending ? item.toCurrency : item.fromCurrency)}`;
-            return `<li><span>${other} · ${escape(item.remark || '跨币种转账')}<small>${new Date(item.createdAt).toLocaleString('zh-CN')}</small></span><strong>${sending ? '-' : '+'}${core().formatMinor(amount, code)}<small>${sending ? '对方收到 ' : '对方发送 '}${received}</small></strong></li>`;
-        }).join('') : '<li class="currency-empty">暂无跨币种转账记录</li>';
+            return `<li><span>${other} · ${escape(item.remark || '转账')}<small>${new Date(item.createdAt).toLocaleString('zh-CN')}</small></span><strong>${sending ? '-' : '+'}${core().formatMinor(amount, code)}<small>${sending ? '对方收到 ' : '对方发送 '}${received}</small></strong></li>`;
+        }).join('') : '<li class="currency-empty">暂无转账记录</li>';
     }
     let renderGeneration=0;
     async function render(preservePair=false){
@@ -167,10 +210,11 @@
         if(transferring)return;
         const role=selectedRole();if(!role)return status('请先选择一个角色');
         const userToRole=state.direction==='user-to-role',fromOwnerId=userToRole?userOwnerId:String(role.id),toOwnerId=userToRole?String(role.id):userOwnerId;
-        const [sourceCurrency,targetCurrency]=ratePair(),rawAmount=byId('currency-amount')?.value||'',rawRate=(byId('currency-rate')?.value||'').trim();
+        const [sourceCurrency,targetCurrency]=ratePair(),rawAmount=byId('currency-amount')?.value||'',rawRate=sourceCurrency===targetCurrency?'1':(byId('currency-rate')?.value||'').trim();
         const amountMinor=core().amountToMinor(rawAmount,sourceCurrency),rateScaled=core().rateToScaled(rawRate);
-        if(sourceCurrency===targetCurrency)return status('此面板用于不同币种转账，请选择不同的源币种和目标币种。');
+        if(sourceCurrency===targetCurrency && sourceCurrency==='CNY')return status('人民币同币种转账请在聊天中发送，保留待领取流程。');
         if(amountMinor==null||amountMinor<=0)return status('金额格式无效，请按当前币种精度填写');
+        if(sourceCurrency!==targetCurrency&&provider()==='ecb'&&(!referenceQuote||referenceQuote.sourceCurrency!==sourceCurrency||referenceQuote.targetCurrency!==targetCurrency||referenceQuote.rate!==rawRate||Date.now()-Date.parse(referenceQuote.date+'T00:00:00Z')>4*86400000))return status('参考报价缺失或已过期，请重新获取或切换手动汇率');
         if(rateScaled==null)return status('汇率尚未配置，请手填一次并保存');
         const input={kind:'exchange',ownerId:fromOwnerId,targetOwnerId:toOwnerId,sourceCurrency,targetCurrency,amountMinor,rateScaled,rate:rawRate,remark:byId('currency-remark')?.value||''};
         const fingerprint=JSON.stringify(input);if(pendingTransfer?.fingerprint!==fingerprint)pendingTransfer={fingerprint,idempotencyKey:crypto.randomUUID()};
@@ -179,9 +223,9 @@
             const response=await global.WalletSystem.command({...input,idempotencyKey:pendingTransfer.idempotencyKey});
             if(!response.ok)return status(response.reason||response.error.code);
             pendingTransfer=null;byId('currency-amount').value='';byId('currency-remark').value='';
-            let saved=true;try{await storeRate(sourceCurrency,targetCurrency,rawRate);}catch{saved=false;}
+            let saved=true;try{if(sourceCurrency!==targetCurrency&&provider()==='manual')await storeRate(sourceCurrency,targetCurrency,rawRate);}catch{saved=false;}
             await render(true);global.renderPiggyBankScreen?.();
-            status('转账成功，对方收到 '+core().formatMinor(response.data.targetAmountMinor,targetCurrency)+' '+targetCurrency+(saved?'；汇率已保存复用。':'；汇率未能保存，下次需重新填写。'));
+            status('转账成功，对方收到 '+core().formatMinor(response.data.targetAmountMinor,targetCurrency)+' '+targetCurrency+(sourceCurrency===targetCurrency?'；同币种无需汇率。':provider()==='ecb'?'；参考汇率已固定于本笔交易。':saved?'；汇率已保存复用。':'；汇率未能保存，下次需重新填写。'));
         }catch{status('转账结果暂时无法确认，请核对流水后重试。');}
         finally{transferring=false;controls.forEach(({el,disabled})=>el.disabled=disabled);}
     }
@@ -195,8 +239,10 @@
         for(const id of ['currency-source','currency-target'])byId(id)?.addEventListener('change',()=>void refreshRate());
         byId('currency-rate')?.addEventListener('input',()=>{rateGeneration++;byId('currency-rate-info').textContent='手动输入 · 本次确认转账后保存；非实时行情';preview();});
         byId('currency-amount')?.addEventListener('input',preview);
+        byId('currency-rate-provider')?.addEventListener('change',()=>void refreshRate());
+        byId('currency-fetch-rate')?.addEventListener('click',()=>void fetchRate());
         byId('currency-save-rate')?.addEventListener('click',()=>void saveRate());
         void render();
     }
-    global.CurrencyTransfer = { setup, render, open, transfer, saveRate, refreshRate, ensureUserWallet, ensureRoleWallet, get state() { return state; } };
+    global.CurrencyTransfer = { setup, render, open, transfer, saveRate, refreshRate, fetchRate, ensureUserWallet, ensureRoleWallet, get state() { return state; } };
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -20,6 +20,7 @@
 #timetable-screen button:focus-visible { outline: 2px solid currentColor; outline-offset: -2px; }
 #timetable-screen article { padding: 12px 0; border-bottom: 1px solid #eee; overflow-wrap: anywhere; }
 #timetable-screen fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
+#timetable-screen textarea { box-sizing: border-box; width: 100%; max-width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 8px; background: transparent; color: inherit; font: inherit; resize: vertical; }
 #timetable-screen [hidden] { display: none; }
 body.night-mode-active #timetable-screen { background: #1c1c1e; color: #e5e5e7; color-scheme: dark; }
 body.night-mode-active #timetable-screen :is(section, details) { background: #1c1c1e; }

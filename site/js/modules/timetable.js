@@ -90,6 +90,42 @@
             return record;
         });
     }
+    async function previewCourseImport(snapshotIdValue, rows) {
+        if (typeof snapshotIdValue !== 'string' || !snapshotIdValue) throw new Error('请先新建或选择手工学期，再导入课程');
+        const { database, snapshots, adjustments } = tables();
+        return database.transaction('r', snapshots, adjustments, async () => {
+            const snapshot = await snapshots.get(snapshotIdValue);
+            if (snapshot?.provider !== 'manual') throw new Error('请先新建或选择手工学期，再导入课程');
+            const edits = await adjustments.where('snapshotId').equals(snapshot.id).toArray();
+            const existing = [];
+            for (let week = 1; week <= snapshot.manualConfig.weekCount; week++) {
+                for (const day of snapshot.weekDates[week]) existing.push(...core().coursesForDay(snapshot.courses, edits, week, day.weekday, { date: day.date }).courses.map(course => ({ ...course, weeks: [week] })));
+            }
+            // Merge effective occurrences so repeated imports can be recognized across weeks.
+            const merged = new Map();
+            for (const course of existing) {
+                const key = JSON.stringify([course.name, course.weekday, course.sections, course.teacher, course.location, course.startTime, course.endTime]);
+                if (merged.has(key)) merged.get(key).weeks.push(...course.weeks);
+                else merged.set(key, { ...course });
+            }
+            for (const course of merged.values()) course.weeks = [...new Set(course.weeks)].sort((a,b) => a-b);
+            return { ...core().previewImport(snapshot, rows, [...merged.values()]), snapshotId: snapshot.id, baseline: JSON.stringify([snapshot, edits]) };
+        });
+    }
+
+    async function importCourses(snapshotIdValue, rows, baseline) {
+        const { database, snapshots, adjustments } = tables();
+        return database.transaction('rw', snapshots, adjustments, async () => {
+            const preview = await previewCourseImport(snapshotIdValue, rows);
+            if (preview.baseline !== baseline) throw new Error('课表已变化，请重新预览后确认');
+            if (!preview.courses.length) throw new Error('没有可导入的课程');
+            for (const course of preview.courses) await saveAdjustment(snapshotIdValue, {
+                id: `adjustment:${global.crypto.randomUUID()}`, type: 'add', course: { ...course, id: `manual:${global.crypto.randomUUID()}` },
+            }, { expectedRevision: 0 });
+            return preview.courses.length;
+        });
+    }
+
     async function getRoleShare(roleId) {
         const matches = (await tables().states.toArray()).flatMap(state => core().normalizeShares(state.roleShares)
             .filter(share => share.roleId === String(roleId)).map(share => ({ ...share, provider: state.provider, scopeKey: state.scopeKey })));
@@ -453,6 +489,6 @@
         saveAdjustment, deleteAdjustment, listAdjustments, getEffectiveWeek, getEffectiveDay, getEffectiveDate, schoolDate,
         listChanges, acknowledgeChanges, disconnect, clearScope,
         getRoleShare, setRoleShare, prepareChatContext, getCalendarDays,
-        createManualSemester,
+        createManualSemester, previewCourseImport, importCourses,
     });
 })(window);

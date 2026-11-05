@@ -99,9 +99,11 @@
         const sourceCurrency = currency(options.sourceCurrency);
         const targetCurrency = currency(options.targetCurrency);
         const sourceAmountMinor = Number(options.sourceAmountMinor);
-        const rateScaled = Number(options.rateScaled);
+        const sameCurrency = sourceCurrency === targetCurrency;
+        const rateScaled = sameCurrency ? 10 ** SCALE : Number(options.rateScaled);
         if (!sourceWallet || !targetWallet || sourceWallet === targetWallet) return { ok: false, reason: '转账账户无效' };
-        if (sourceCurrency === targetCurrency) return { ok: false, reason: '请选择不同的源币种和目标币种' };
+        if (!isSupported(options.sourceCurrency) || !isSupported(options.targetCurrency)) return { ok: false, reason: '不支持的币种' };
+        if (sameCurrency && sourceCurrency === 'CNY') return { ok: false, reason: '人民币同币种转账请使用聊天待领取入口' };
         if (!Number.isSafeInteger(sourceAmountMinor) || sourceAmountMinor <= 0) return { ok: false, reason: '转账金额无效' };
         if (!Number.isSafeInteger(rateScaled) || rateScaled <= 0) return { ok: false, reason: '汇率无效' };
         const targetAmountMinor = convertMinor(sourceAmountMinor, sourceCurrency, targetCurrency, rateScaled);
@@ -118,7 +120,7 @@
         const base = {
             id: recordId, fromOwnerId: String(options.fromOwnerId || ''), toOwnerId: String(options.toOwnerId || ''),
             fromCurrency: sourceCurrency, toCurrency: targetCurrency, sourceAmountMinor, targetAmountMinor,
-            amountMinor: sourceAmountMinor, receivedMinor: targetAmountMinor, rate: String(options.rate || ''), rateScale: SCALE,
+            amountMinor: sourceAmountMinor, receivedMinor: targetAmountMinor, rate: sameCurrency ? '1' : String(options.rate || ''), rateScale: SCALE,
             remark: String(options.remark || '').trim().slice(0, 300), createdAt: now,
         };
         sourceWallet.transactions = Array.isArray(sourceWallet.transactions) ? sourceWallet.transactions : [];
@@ -127,6 +129,14 @@
         targetWallet.transactions.unshift({ ...base, type: 'receive' });
         return { ok: true, recordId, sourceAmountMinor, targetAmountMinor, sourceCurrency, targetCurrency };
     }
+    function referenceRate(value, source, target, now = Date.now()) {
+        if (!isSupported(source) || !isSupported(target) || value?.base !== source || value?.quote !== target
+            || !/^\d{4}-\d{2}-\d{2}$/.test(value?.date || '') || typeof value.rate !== 'number' || !Number.isFinite(value.rate)) return null;
+        const time = Date.parse(value.date + 'T00:00:00Z');
+        if (!Number.isFinite(time) || new Date(time).toISOString().slice(0,10) !== value.date || time > now) return null;
+        const rate = value.rate.toFixed(SCALE);
+        return rateToScaled(rate) ? {rate, date:value.date, expired:now-time>4*86400000} : null;
+    }
     function listCurrencies() { return Object.values(CURRENCIES).map(item => ({ ...item })); }
-    global.CurrencyCore = { SCALE, CURRENCIES, isSupported, currency, meta, parseDecimal, amountToMinor, formatMinor, rateToScaled, convertMinor, emptyWallet, normalizeWallet, getBalance, setBalance, applyTransfer, listCurrencies };
+    global.CurrencyCore = { SCALE, CURRENCIES, isSupported, currency, meta, parseDecimal, amountToMinor, formatMinor, rateToScaled, convertMinor, emptyWallet, normalizeWallet, getBalance, setBalance, applyTransfer, listCurrencies, referenceRate };
 })(typeof window !== 'undefined' ? window : globalThis);

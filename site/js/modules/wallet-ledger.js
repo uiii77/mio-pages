@@ -28,7 +28,8 @@
             if(prior){if(prior.kind!=='income'||prior.receipt.deltaMinor!==input.amountMinor)return failure('IDEMPOTENCY_CONFLICT');return {ok:true,data:prior.receipt};}
             result=await api.postIncome({sourceAccountId:source.id,expectedSourceVersion:source.version,amountMinor:input.amountMinor,reason:input.remark||'用户存入',idempotencyKey:input.idempotencyKey});
         }else if(input.kind==='exchange'){
-            if(!source)return failure('INVALID_ACCOUNT');
+            if(!source || source.ownerId!==ownerId || input.sourceCurrency && source.currency!==input.sourceCurrency)return failure('INVALID_ACCOUNT');
+            if(source.currency===input.targetCurrency)input={...input,rate:'1',rateScaled:10 ** CurrencyCore.SCALE};
             const targetId=JSON.stringify(['wallet',input.targetOwnerId,input.targetCurrency]);
             if(prior){const receipt=prior.receipt;if(prior.kind!=='exchange'||receipt.sourceAccountId!==sourceId||receipt.targetAccountId!==targetId||receipt.amountMinor!==input.amountMinor||receipt.rateSnapshot?.rateScaled!==CurrencyCore.rateToScaled(input.rate)||(JSON.parse(prior.requestFingerprint).reason||'')!==(input.remark||''))return failure('IDEMPOTENCY_CONFLICT');return {ok:true,data:receipt};}
             try{result=await dexieDB.transaction('rw',Object.keys(EconomySchema.runtimeTables).map(key=>dexieDB[key]),async()=>{

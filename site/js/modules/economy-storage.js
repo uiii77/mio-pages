@@ -143,8 +143,13 @@
                         if(kind==='exchange') {
                             const quote=global.EconomyCore.quoteExchange(request.amountMinor,source.currency,target.currency,request.rate);
                             if(!quote.ok)return quote;
-                            const from=await system(source.currency,'exchange'),to=await system(target.currency,'exchange');
-                            const result=project([source,target,from,to],[posting(source,-request.amountMinor),posting(from,request.amountMinor),posting(to,-quote.data.targetAmountMinor),posting(target,quote.data.targetAmountMinor)]);
+                            let result;
+                            if(source.currency===target.currency){
+                                result=project([source,target],[posting(source,-request.amountMinor),posting(target,request.amountMinor)]);
+                            }else{
+                                const from=await system(source.currency,'exchange'),to=await system(target.currency,'exchange');
+                                result=project([source,target,from,to],[posting(source,-request.amountMinor),posting(from,request.amountMinor),posting(to,-quote.data.targetAmountMinor),posting(target,quote.data.targetAmountMinor)]);
+                            }
                             if(!result.ok)return result;
                             receipt={...receipt,sourceAccountId:source.id,targetAccountId:target.id,rateSnapshot:quote.data,amountMinor:request.amountMinor,targetAmountMinor:quote.data.targetAmountMinor};
                         }else{

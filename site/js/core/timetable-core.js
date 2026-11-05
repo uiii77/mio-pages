@@ -190,6 +190,58 @@
         }
     }
 
+    // Portable imports contain course data only: no identities, permissions or school state.
+    function parseImport(text) {
+        const source = String(text || '').replace(/^\uFEFF/, '').trim();
+        if (!source || source.length > 1048576) throw new Error('请选择非空且不超过 1 MB 的课表文件');
+        let rows;
+        if (/^[\[{]/.test(source)) {
+            const value = JSON.parse(source);
+            rows = Array.isArray(value) ? value : value.courses;
+        } else {
+            const records = []; let row = [], cell = '', quoted = false;
+            for (let i = 0; i < source.length; i++) {
+                const c = source[i];
+                if (c === '"') { if (quoted && source[i + 1] === '"') { cell += '"'; i++; } else quoted = !quoted; }
+                else if (!quoted && (c === ',' || c === '\n')) { row.push(cell); cell = ''; if (c === '\n') { records.push(row); row = []; } }
+                else if (c !== '\r') cell += c;
+            }
+            if (quoted) throw new Error('CSV 引号未闭合');
+            row.push(cell); records.push(row);
+            const aliases = { '课程名称': 'name', '教师': 'teacher', '教室': 'location', '星期': 'weekday', '节次': 'sections', '教学周': 'weeks', '开始时间': 'startTime', '结束时间': 'endTime' };
+            const headers = records.shift().map(key => aliases[key.trim()] || key.trim());
+            if (new Set(headers).size !== headers.length || !['name', 'weekday', 'sections', 'weeks'].every(key => headers.includes(key))) throw new Error('CSV 须包含课程名称、星期、节次、教学周列，且列名不重复');
+            rows = records.filter(record => record.some(value => value.trim())).map(record => {
+                if (record.length !== headers.length) throw new Error('CSV 列数不一致；包含逗号的内容请用双引号包围');
+                return Object.fromEntries(headers.map((key, index) => [key, record[index]]));
+            });
+        }
+        if (!Array.isArray(rows) || !rows.length || rows.length > 500) throw new Error('每次导入须包含 1 至 500 条课程');
+        return rows.map(row => Object.fromEntries([...PATCH_FIELDS].filter(key => Object.hasOwn(row || {}, key)).map(key => [key, row[key]])));
+    }
+
+    function validateCourseInput(snapshot, value) {
+        validateManualAdjustment({ ...snapshot, provider: 'manual', manualConfig: snapshot.manualConfig || { weekCount: MAX_WEEK, sectionCount: MAX_SECTION } }, { type: 'add', course: value });
+        const course = normalizeCourse(value, { provider: snapshot.provider, semester: snapshot.semester, scopeKey: snapshot.scopeKey });
+        if (!!course.startTime !== !!course.endTime || course.startTime && course.startTime >= course.endTime) throw new Error('请同时填写起止时间，结束时间须晚于开始时间');
+        return course;
+    }
+
+    function previewImport(snapshot, rows, existing = []) {
+        const accepted = [], results = [];
+        for (const [index, row] of rows.entries()) {
+            try {
+                const course = validateCourseInput(snapshot, row);
+                const overlaps = [...existing, ...accepted].filter(old => old.weekday === course.weekday && old.weeks.some(w => course.weeks.includes(w)) && (old.sections.some(s => course.sections.includes(s)) || old.startTime && course.startTime && old.startTime < course.endTime && course.startTime < old.endTime));
+                const duplicate = overlaps.some(old => old.name === course.name && old.teacher === course.teacher && old.location === course.location && old.startTime === course.startTime && old.endTime === course.endTime && sameValue(old.sections, course.sections) && sameValue(old.weeks, course.weeks));
+                const status = duplicate ? 'duplicate' : overlaps.length ? 'conflict' : 'ready';
+                results.push({ index, course, status, message: duplicate ? '重复，跳过' : overlaps.length ? `时间冲突：${overlaps.map(c => c.name).join('、')}；请修改后重试` : '可导入' });
+                if (status === 'ready') accepted.push(course);
+            } catch (error) { results.push({ index, status: 'invalid', message: error.message }); }
+        }
+        return { courses: accepted, rows: results };
+    }
+
     function diffSnapshots(previousValue, nextValue) {
         const previous = normalizeSnapshot(previousValue);
         const next = normalizeSnapshot(nextValue);
@@ -328,7 +380,7 @@
         VERSION, MAX_WEEK, MAX_SECTION, CHANGE_FIELDS,
         clean, stableHash, parseWeeks, parseSections, normalizeWeekday, normalizeTime,
         normalizeCourse, normalizeSnapshot, diffSnapshots, normalizeAdjustment,
-        createManualSnapshot, validateManualAdjustment,
+        createManualSnapshot, validateManualAdjustment, validateCourseInput, parseImport, previewImport,
         applyAdjustments, coursesForWeek, coursesForDay, resolveDate, normalizeShares, summaryForChat,
     });
 })(typeof window !== 'undefined' ? window : globalThis);

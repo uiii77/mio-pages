@@ -25,7 +25,7 @@
             const facts=response.products.slice(0,6).flatMap(product=>{const normalized=CatalogCore.normalize('openfoodfacts',{product},{region:'unknown',retrievedAt:Date.now()});return normalized.ok?normalized.data:[];});return {ok:true,data:facts};
         }
         if(!CatalogCore.barcode(request.barcode))return fail('INVALID_BARCODE');
-        const response=await json('https://world.openfoodfacts.org/api/v3.6/product/'+request.barcode+'?fields=code,product_name,product_name_zh,brands,quantity,last_modified_t');
+        const response=await json('https://world.openfoodfacts.org/api/v3.6/product/'+request.barcode+'?fields=code,product_name,product_name_zh,brands,quantity,last_modified_t',{signal:request.signal});
         return CatalogCore.normalize('openfoodfacts',response,{region:'unknown',retrievedAt:Date.now()});
     });
     register('openstreetmap',async request=>{
@@ -63,7 +63,9 @@
                     await database.globalSettings.put({key:rateKey,value:now});return true;
                 });
                 if(!allowed)return fail('SOURCE_RATE_LIMITED',true);
-                const result=await providers.get(provider)(captured);return result.ok?importFacts(result.data):result;
+                const result=await providers.get(provider)(captured);
+                if(captured.signal?.aborted)return fail('SOURCE_CANCELLED');
+                return result.ok?importFacts(result.data):result;
             }
             catch(_){return fail('SOURCE_UNAVAILABLE',true);}finally{inFlight=false;}
         }

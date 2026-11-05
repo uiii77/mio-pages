@@ -17,9 +17,9 @@
     function quoteExchange(amountMinor, sourceCurrency, targetCurrency, rate) {
         if (!core().isSupported(sourceCurrency) || !core().isSupported(targetCurrency)) return fail('UNSUPPORTED_CURRENCY');
         const from = core().currency(sourceCurrency), to = core().currency(targetCurrency);
-        const rateScaled = core().rateToScaled(rate);
+        const rateScaled = from === to ? 10 ** core().SCALE : core().rateToScaled(rate);
         if (!minor(amountMinor) || amountMinor === 0 || rateScaled === null) return fail('INVALID_AMOUNT');
-        if (from === to) return fail('INVALID_CURRENCY_PAIR');
+        if (from === to && from === 'CNY') return fail('INVALID_CURRENCY_PAIR');
         const targetAmountMinor = core().convertMinor(amountMinor, from, to, rateScaled);
         if (!minor(targetAmountMinor) || targetAmountMinor === 0) return fail('INVALID_AMOUNT');
         return ok({ sourceCurrency: from, targetCurrency: to, sourceAmountMinor: amountMinor,
