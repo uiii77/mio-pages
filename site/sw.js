@@ -20,7 +20,9 @@ self.addEventListener('message',event=>{
     event.waitUntil((async()=>{
         const port=event.ports[0],shell=await readShell();
         if(!shell.manifest.assets.includes('js/modules/wallet-cutover.js')){port.postMessage({ok:false,protocol:0});return;}
-        const pages=await self.clients.matchAll({type:'window',includeUncontrolled:true});
+        // Other Mio deployments can share the origin but own different storage and clients.
+        const pages=(await self.clients.matchAll({type:'window',includeUncontrolled:true}))
+            .filter(page=>page.url.startsWith(OVO_SCOPE));
         const replies=await Promise.all(pages.map(page=>new Promise(resolve=>{
             const channel=new MessageChannel(),timer=setTimeout(()=>{channel.port1.close();resolve(null);},5000);
             channel.port1.onmessage=message=>{clearTimeout(timer);channel.port1.close();resolve(message.data);};
