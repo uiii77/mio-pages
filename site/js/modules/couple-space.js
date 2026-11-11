@@ -41,7 +41,7 @@
         if(global.FeatureApiRegistry?.sourceLabel)return global.FeatureApiRegistry.sourceLabel(result);
         if (result?.configured) return result.enabled ? `已配置 · ${result.config?.model || '默认模型'}` : '已关闭';
         if (result?.reason === 'disabled') return '已关闭';
-        return '未配置；当前版本不会自动调用';
+        return '未配置';
     }
 
     function renderRoles() {
@@ -81,14 +81,15 @@
         const detail = byId('couple-space-detail');
         if (detail) {
             const details = {
-                none: '还没有建立空间。发出邀请后，由你确认接受或拒绝。',
-                invited: '邀请已记录在本机，等待你确认对方是否接受。',
-                active: '空间正在使用中，可以维护共同内容。',
-                rejected: '这次邀请已标记为拒绝；可以重新发起邀请。',
-                paused: '空间已暂停，历史仍保留；恢复后才能编辑共同内容。',
-                ended: '关系已解除，历史仍保留；重新开始需要发起新的邀请。'
+                none: '发出邀请，建立你们的空间。',
+                invited: '请选择接受或拒绝邀请。',
+                active: '',
+                rejected: '邀请已拒绝，可以重新邀请。',
+                paused: '空间已暂停，内容保留。',
+                ended: '关系已解除，内容保留。'
             };
             detail.textContent = details[space.status] || '';
+            detail.hidden = !detail.textContent;
         }
         const buttons = {
             invite: byId('couple-space-invite-btn'), accept: byId('couple-space-accept-btn'), reject: byId('couple-space-reject-btn'),
@@ -107,7 +108,10 @@
         if (form) form.classList.toggle('is-readonly', !editable);
         ['couple-space-item-kind', 'couple-space-item-title', 'couple-space-item-date', 'couple-space-item-owner', 'couple-space-item-status', 'couple-space-item-body', 'couple-space-item-save-btn'].forEach(id => { const element = byId(id); if (element) element.disabled = !editable; });
         const hint = byId('couple-space-edit-hint');
-        if (hint) hint.textContent = editable ? '共同内容仅由你手动保存；本版本不会自动让角色写入。' : '空间暂停或解除后只读，历史不会自动删除。';
+        if (hint) {
+            hint.textContent = space.status === 'paused' ? '恢复空间后可编辑。' : '建立空间后可添加内容。';
+            hint.hidden = editable;
+        }
     }
 
     function renderForm() {
@@ -267,7 +271,7 @@
         const next=global.FeatureApiSettings.saveRegistryFeature(binding(),'coupleSpace','couple-space-api',apiConfigId());
         await global.FeatureApiSettings.persistRegistry(next);
         renderApi();
-        notify('情侣空间 API 设置已保存；当前版本不会自动调用');
+        notify('API 设置已保存');
     }
 
     function openDiary() {

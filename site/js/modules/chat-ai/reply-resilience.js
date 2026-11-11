@@ -479,7 +479,10 @@
                 if (currentPage > 1 && typeof renderMessages === 'function') renderMessages(false, false);
             }
             const input = document.getElementById('message-input');
-            if (input && session.inputDraft) input.value = session.inputDraft;
+            if (input && session.inputDraft) {
+                input.value = session.inputDraft;
+                if (typeof window.updateChatComposer === 'function') window.updateChatComposer();
+            }
             requestAnimationFrame(() => requestAnimationFrame(() => {
                 const area = document.getElementById('message-area');
                 if (!area) return;

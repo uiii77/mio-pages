@@ -403,6 +403,13 @@ body.night-mode-active #chat-settings-screen [data-period-sharing-row] .kkt-item
 }
 
 /* 沿用原 OvO：白底列表、主色分组标题、深色选项与灰色箭头。 */
+#chat-settings-screen .settings-group-heading { flex: 1; min-width: 0; }
+#chat-settings-screen .kkt-item-label:has(> p) { display: block; min-width: 0; flex: 1; }
+#chat-settings-screen .kkt-item-label > p { margin: 4px 0 0; }
+#chat-settings-screen .kkt-item:has(> .kkt-item-label > p) { gap: 12px; }
+#chat-settings-screen .kkt-item:has(> .kkt-item-label > p) > .kkt-item-control { flex-shrink: 0; }
+body.night-mode-active #chat-settings-screen .kkt-profile-name { color: var(--global-title-color, #e0e0e0); }
+
 #chat-settings-screen .memory-center-heading .kkt-item-label {
     color: var(--primary-color);
     font-weight: bold;

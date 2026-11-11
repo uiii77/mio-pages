@@ -434,8 +434,16 @@ function setupChatSettings() {
         });
     });
 
+    // 只保存本次页面会话的阅读位置，不写入角色数据或重新加载表单。
+    const settingsScrollPositions = new Map();
+    const settingsPositionKey = tabId => `${currentChatType}:${currentChatId}:${tabId}`;
+    const rememberExtensionScroll = () => settingsScrollPositions.set(settingsPositionKey('setting-tab-ext'), chatSettingsScreen.querySelector('main').scrollTop);
+    const restoreExtensionScroll = () => { chatSettingsScreen.querySelector('main').scrollTop = settingsScrollPositions.get(settingsPositionKey('setting-tab-ext')) || 0; };
     tabs.forEach(tab => {
         tab?.addEventListener('click', () => {
+            const scroller = tab.closest('#chat-settings-screen')?.querySelector('main');
+            const previousTab = chatSettingsScreen?.querySelector('.settings-tab-item.active')?.dataset.tab;
+            if (scroller && previousTab) settingsScrollPositions.set(settingsPositionKey(previousTab), scroller.scrollTop);
             // 移除所有 active 类
             tabs.forEach(t => t.classList.remove('active'));
             contents.forEach(c => c.classList.remove('active'));
@@ -458,6 +466,7 @@ function setupChatSettings() {
             if (avatarPanel) avatarPanel.style.display = 'none';
             if (advancedPanel) advancedPanel.style.display = 'none';
             if (extTab) extTab.style.display = '';
+            if (scroller) scroller.scrollTop = settingsScrollPositions.get(settingsPositionKey(targetId)) || 0;
         });
     });
 
@@ -466,6 +475,7 @@ function setupChatSettings() {
     const advancedBack = document.querySelector('[data-role-advanced-settings-back]');
     if (advancedEntry && advancedPanel) {
         advancedEntry.addEventListener('click', () => {
+            rememberExtensionScroll();
             const extTab = document.getElementById('setting-tab-ext');
             if (extTab) extTab.style.display = 'none';
             advancedPanel.style.display = 'block';
@@ -476,6 +486,7 @@ function setupChatSettings() {
             advancedPanel.style.display = 'none';
             const extTab = document.getElementById('setting-tab-ext');
             if (extTab) extTab.style.display = '';
+            restoreExtensionScroll();
         });
     }
 
@@ -484,6 +495,7 @@ function setupChatSettings() {
     const avatarSystemBack = document.getElementById('setting-avatar-system-back');
     if (avatarSystemEntry && avatarSystemPanel) {
         avatarSystemEntry?.addEventListener('click', () => {
+            rememberExtensionScroll();
             if (document.getElementById('setting-tab-ext')) document.getElementById('setting-tab-ext').style.display = 'none';
             avatarSystemPanel.style.display = 'block';
         });
@@ -492,6 +504,7 @@ function setupChatSettings() {
         avatarSystemBack?.addEventListener('click', () => {
             avatarSystemPanel.style.display = 'none';
             if (document.getElementById('setting-tab-ext')) document.getElementById('setting-tab-ext').style.display = '';
+            restoreExtensionScroll();
         });
     }
     

@@ -1590,7 +1590,8 @@
     align-items: center;
 }
 
-.message-input-area input {
+.message-input-area input,
+.message-input-area #message-input {
     width: 100%;
     border: none;
     padding: 8px 12px;
@@ -1602,9 +1603,24 @@
     height: 36px;
 }
 
-.message-input-area input:focus {
+.message-input-area input:focus,
+.message-input-area #message-input:focus {
     outline: none;
     background-color: #ebebeb;
+}
+
+#message-input-default { align-items: flex-end; }
+#message-input-default .input-wrapper { min-width: 0; }
+#message-input-default > .icon-btn { margin-bottom: 2px; }
+#message-input-default .input-inner-btn { bottom: 4px; }
+.message-input-area #message-input {
+    box-sizing: border-box;
+    min-height: 36px;
+    max-height: min(136px, 30dvh);
+    font-family: inherit;
+    line-height: 1.25;
+    resize: none;
+    overflow-y: auto;
 }
 
 .message-input-area .icon-btn {

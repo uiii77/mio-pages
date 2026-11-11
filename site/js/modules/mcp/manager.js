@@ -2079,7 +2079,7 @@
   function injectPermissionContainers() {
     const extension = document.getElementById('setting-tab-ext');
     if (extension && !document.getElementById('chat-mcp-settings')) {
-      extension.insertAdjacentHTML('beforeend', '<div class="kkt-group" style="margin-top:15px;"><div style="margin-bottom:10px; padding-top:5px; padding-left:8px;"><div class="kkt-item-label" style="font-weight:bold; color:var(--primary-color);">MCP 工具权限</div></div><div class="kkt-item" style="display:block"><div id="chat-mcp-settings" style="width:100%"></div></div></div>');
+      extension.insertAdjacentHTML('beforeend', '<details open class="kkt-group role-settings-section" style="margin-top:15px;"><summary style="margin-bottom:10px; padding-top:5px; padding-left:8px;"><div class="settings-group-heading"><div class="kkt-item-label" style="font-weight:bold; color:var(--primary-color);">MCP 工具权限</div></div></summary><div class="kkt-item" style="display:block"><div id="chat-mcp-settings" style="width:100%"></div></div></details>');
     }
     const groupForm = document.getElementById('group-settings-form');
     if (groupForm && !document.getElementById('group-mcp-settings')) {

@@ -32,6 +32,17 @@ function arrangeChatExpansionItems() {
     Array.from(grid.children).filter(item => !order.includes(item.id)).forEach(item => grid.appendChild(item));
 }
 
+function updateChatComposer() {
+    if (!messageInput.getClientRects().length) return;
+    const scrollTop = messageArea.scrollTop;
+    const atBottom = messageArea.scrollHeight - scrollTop - messageArea.clientHeight < 40;
+    document.getElementById('send-message-btn').style.display = messageInput.value.trim() ? 'flex' : 'none';
+    messageInput.style.height = 'auto';
+    messageInput.style.height = `${messageInput.scrollHeight}px`;
+    // Match the height change immediately instead of starting the chat's smooth-scroll animation.
+    messageArea.scrollTo({ top: atBottom ? messageArea.scrollHeight : scrollTop, behavior: 'instant' });
+}
+
 function setupChatRoom() {
     document.getElementById('chat-calendar-btn')?.addEventListener('click', () => { showPanel('none'); switchScreen('health-screen'); });
     document.getElementById('chat-records-search-btn')?.addEventListener('click', () => SearchSystem.openCurrent());
@@ -458,9 +469,22 @@ function setupChatRoom() {
             messageInput.focus();
         }, 50);
     });
-    messageInput.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter' && !e.isComposing) sendMessage();
+    messageInput.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter' || e.isComposing || e.keyCode === 229 || e.shiftKey) return;
+        // Touch keyboards keep Enter for newlines; desktop retains quick send.
+        if (!e.ctrlKey && !e.metaKey && window.matchMedia('(pointer: coarse)').matches) return;
+        e.preventDefault();
+        if (!e.repeat) sendMessage();
     });
+    messageInput.addEventListener('input', updateChatComposer);
+    let composerWidth = 0;
+    new ResizeObserver(entries => {
+        const width = entries[0].contentRect.width;
+        if (width !== composerWidth) {
+            composerWidth = width;
+            updateChatComposer();
+        }
+    }).observe(messageInput.parentElement);
 
     // 监听输入框聚焦事件：自动收起底部面板，避免与键盘冲突
     messageInput.addEventListener('focus', () => {
@@ -970,10 +994,11 @@ function openChatRoom(chatId, type, navigationOptions) {
 async function sendMessage() {
     const text = messageInput.value.trim();
     if (!text) return;
-    messageInput.value = '';
     const chat = (currentChatType === 'private') ? db.characters.find(c => c.id === currentChatId) : db.groups.find(g => g.id === currentChatId);
 
     if (!chat) return;
+    messageInput.value = '';
+    messageInput.dispatchEvent(new Event('input', { bubbles: true }));
     if (!chat.history) chat.history = [];
 
     if (db.apiSettings && db.apiSettings.timePerceptionEnabled) {
