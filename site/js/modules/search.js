@@ -9,9 +9,17 @@ const SearchSystem = {
         this.panel = document.getElementById('search-history-screen');
         this.home = this.panel.parentElement;
         document.getElementById('chat-list-history-search').onclick = () => openChatDirectorySearch(false);
-        document.getElementById('chat-room-history-search').onclick = () => {
-            document.getElementById('delete-chunk-modal').classList.remove('visible');
-            this.open({chatType:currentChatType,chatId:currentChatId});
+        document.getElementById('chat-room-history-search').onclick = () => this.openCurrent();
+        for (const edge of ['top','bottom']) document.getElementById('chat-history-'+edge).onclick = () => {
+            showPanel('none');
+            const chat=MessageReference.getChat(db,currentChatType,currentChatId);
+            const messages=(chat?.history||[]).filter(message=>this.searchable(message,chat)&&!message.isStatusUpdate);
+            const message=edge==='top'?messages[0]:messages.at(-1);
+            if(message&&this.navigation?.fromSearch){
+                const {origin,returnScreen}=this.navigation;
+                this.navigation={refs:[],index:0,origin,returnScreen,fromSearch:false};
+            }
+            if(!message||!MessageReference.locate(currentChatType,currentChatId,message.id))showToast('没有可定位的消息');
         };
         document.getElementById('search-scope-select').onclick = () => this.openScopeModal();
         ['search-ignore-status','search-type-filter','search-sender-filter','search-date-from','search-date-to'].forEach(id => {
@@ -20,13 +28,17 @@ const SearchSystem = {
         const tools = document.createElement('div'); tools.className = 'search-history-tools';
         const media = document.createElement('div'); media.className = 'search-media-tabs'; media.setAttribute('aria-label','历史消息分类');
         for (const [value,label] of [['all','全部'],['image','图片'],['video','视频'],['audio','语音'],['file','文件']]) {
-            const button = this.button(label, () => { document.getElementById('search-type-filter').value = value; void this.performSearch(); });
+            const button = this.button(label, () => { document.getElementById('search-type-filter').value = value; this.detailGroup=null; this.resultLimit=50; void this.performSearch(); });
             button.dataset.type = value; media.append(button);
         }
         const date = document.createElement('label'); date.className = 'search-date-jump'; date.textContent = '按日期查找';
         const input = document.createElement('input'); input.type = 'date'; input.id = 'search-jump-date'; input.setAttribute('aria-label','定位日期');
-        date.append(input, this.button('定位', () => this.jumpDate())); tools.append(media,date);
-        this.panel.insertBefore(tools,document.querySelector('.search-advanced-filters'));
+        date.append(input, this.button('定位', () => this.jumpDate()));
+        const toggle=this.button('筛选',()=>this.setFiltersOpen(document.getElementById('search-filters').hidden));
+        toggle.id='search-filters-toggle';toggle.setAttribute('aria-controls','search-filters');toggle.setAttribute('aria-expanded','false');
+        tools.append(media,toggle);
+        const filters=document.getElementById('search-filters');filters.append(date);
+        this.panel.insertBefore(tools,filters);
         const audioOption = new Option('全部语音','audio'); document.getElementById('search-type-filter').append(audioOption);
         const search = document.getElementById('search-history-input');
         search.addEventListener('input', () => { clearTimeout(this.searchTimer); this.generation++; this.resultLimit=50; this.detailGroup=null; this.searchTimer = setTimeout(() => this.performSearch(),220); });
@@ -43,6 +55,16 @@ const SearchSystem = {
         button.onclick = action; return button;
     },
     name(chat) { return chat.remarkName || chat.realName || chat.name || '未命名聊天'; },
+    openCurrent() {
+        showPanel('none');
+        if(this.showing){document.getElementById('search-history-input').focus();return;}
+        this.open({chatType:currentChatType,chatId:currentChatId});
+    },
+    setFiltersOpen(open) {
+        document.getElementById('search-filters').hidden=!open;
+        document.getElementById('search-filters-toggle').setAttribute('aria-expanded',String(open));
+        if(this.showing)this.persist();
+    },
     targets() {
         if (this.currentScope === 'all') return [...(db.characters||[]).map(chat=>({chat,type:'private'})),...(db.groups||[]).map(chat=>({chat,type:'group'}))];
         const chat = MessageReference.getChat(db,this.currentScope.chatType,this.currentScope.chatId);
@@ -59,6 +81,7 @@ const SearchSystem = {
         for (const [id,key] of [['search-history-input','keyword'],['search-type-filter','type'],['search-sender-filter','sender'],['search-date-from','dateFrom'],['search-date-to','dateTo']]) document.getElementById(id).value = filters[key] || (['type','sender'].includes(key)?'all':'');
         document.getElementById('search-ignore-status').checked = saved?.ignoreStatus !== false;
         document.getElementById('search-jump-date').value = saved?.jumpDate || '';
+        this.setFiltersOpen(!!saved?.filtersOpen);
         this.present();
         void this.performSearch().then(() => { document.getElementById('search-results-container').scrollTop = saved?.scroll || 0; });
         if (!saved) document.getElementById('search-history-input').focus();
@@ -111,6 +134,7 @@ const SearchSystem = {
     async performSearch(keyword) {
         const generation = ++this.generation, filters = this.getFilters(keyword);
         if (!this.showing) return;
+        document.getElementById('search-filters-toggle').classList.toggle('has-filters',filters.sender!=='all'||!!filters.dateFrom||!!filters.dateTo||!document.getElementById('search-ignore-status').checked);
         this.panel.querySelectorAll('.search-media-tabs button').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.type===filters.type)));
         if (!this.hasCriteria(filters) && this.currentScope === 'all') { this.currentResults=[]; this.renderPlaceholder('搜索所有角色与群聊，或选择消息分类'); this.persist(); return; }
         if (filters.dateFrom && filters.dateTo && filters.dateFrom > filters.dateTo) { this.currentResults=[]; this.renderPlaceholder('开始日期不能晚于结束日期'); return; }
@@ -227,7 +251,7 @@ const SearchSystem = {
     },
     openScopeModal(){const modal=document.getElementById('search-scope-modal'),list=document.getElementById('search-scope-list');list.replaceChildren();const add=(scope,name)=>list.append(this.button(name,()=>{this.currentScope=scope;this.detailGroup=null;this.resultLimit=50;this.updateScopeUI();modal.classList.remove('visible');void this.performSearch();}));add('all','全部角色与群聊');for(const [type,rows]of [['private',db.characters||[]],['group',db.groups||[]]])for(const chat of rows)add({chatType:type,chatId:chat.id},this.name(chat)+(type==='group'?' · 群聊':''));modal.classList.add('visible');},
     updateScopeUI(){const chat=this.currentScope==='all'?null:MessageReference.getChat(db,this.currentScope.chatType,this.currentScope.chatId);document.querySelector('#search-scope-select span').textContent=chat?'范围：'+this.name(chat):'范围：全部角色与群聊';const select=document.getElementById('search-sender-filter');select.replaceChildren(new Option('全部发送者','all'),new Option('我','user'),new Option('角色 / 群成员','assistant'));if(chat&&this.currentScope.chatType==='group')for(const member of chat.members||[])select.append(new Option(member.groupNickname||member.realName||member.name||'群成员','member:'+member.id));},
-    persist(){try{const nav=this.navigation;sessionStorage.setItem(this.sessionKey,JSON.stringify({scope:this.currentScope,filters:this.getFilters(),jumpDate:document.getElementById('search-jump-date').value,ignoreStatus:document.getElementById('search-ignore-status').checked,origin:this.origin,returnScreen:this.returnScreen,detailGroup:this.detailGroup,resultLimit:Math.min(this.resultLimit||50,500),scroll:this.showing?document.getElementById('search-results-container').scrollTop:this.resultScroll||0,showing:this.showing,navigation:nav?{...nav,refs:[]}:null}));}catch{}},
+    persist(){try{const nav=this.navigation;sessionStorage.setItem(this.sessionKey,JSON.stringify({scope:this.currentScope,filters:this.getFilters(),filtersOpen:!document.getElementById('search-filters').hidden,jumpDate:document.getElementById('search-jump-date').value,ignoreStatus:document.getElementById('search-ignore-status').checked,origin:this.origin,returnScreen:this.returnScreen,detailGroup:this.detailGroup,resultLimit:Math.min(this.resultLimit||50,500),scroll:this.showing?document.getElementById('search-results-container').scrollTop:this.resultScroll||0,showing:this.showing,navigation:nav?{...nav,refs:[]}:null}));}catch{}},
     clearSession(){try{sessionStorage.removeItem(this.sessionKey);}catch{}},
     restoreSession(){let saved;try{saved=JSON.parse(sessionStorage.getItem(this.sessionKey)||'null');}catch{}if(!saved||(!saved.showing&&!saved.navigation))return;if(saved.origin && MessageReference.getChat(db,saved.origin.chatType,saved.origin.chatId)){openChatRoom(saved.origin.chatId,saved.origin.chatType);ChatHistoryViewport.restore(saved.origin);}this.open(saved.scope,saved);if(!saved.showing&&saved.navigation?.target){const target=saved.navigation.target;this.performSearch().then(()=>{this.navigation={...saved.navigation,refs:this.flattened()};this.navigation.index=this.navigation.refs.findIndex(r=>r.chatType===target.chatType&&r.chatId===target.chatId&&r.messageId===target.messageId);MessageReference.locate(target.chatType,target.chatId,target.messageId);});}},
     highlightKeyword(content,keyword){if(!keyword)return this.escapeHtml(content);const pattern=String(keyword).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');return String(content).split(new RegExp('('+pattern+')','gi')).map((part,index)=>index%2?'<mark class="keyword-highlight">'+this.escapeHtml(part)+'</mark>':this.escapeHtml(part)).join('');},

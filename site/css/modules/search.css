@@ -502,3 +502,40 @@
 .quoted-message[role=button]{cursor:pointer}
 #search-history-screen button:focus-visible,.quoted-message[role=button]:focus-visible,#chat-history-navigation button:focus-visible{outline:2px solid var(--primary-color,#a5c1d6);outline-offset:2px}
 @media(max-height:560px){.search-history-tools{padding:5px 12px;gap:4px}#search-history-screen .search-advanced-filters{padding:4px 12px}.search-header{padding:6px 12px}}
+
+/* Keep search one tap away; secondary filters share the existing panel. */
+#search-history-screen {--search-surface:#fff;--search-muted:#f3f4f5;--search-border:#eceef0;--search-text:#333;--search-secondary:#78818a;color:var(--search-text);min-height:0;}
+#search-history-screen .search-header {flex-shrink:0;background:var(--search-surface);border-color:var(--search-border);}
+#search-history-screen .search-input-wrapper {background:var(--search-muted);}
+#search-history-screen .search-input-wrapper input {color:var(--search-text);min-height:28px;background:transparent!important;}
+#search-history-screen .search-cancel-btn {color:var(--search-text);min-height:40px;flex-shrink:0;}
+#search-history-screen .search-history-tools {display:flex;align-items:center;gap:8px;padding:0 14px 10px;background:var(--search-surface);border-bottom:1px solid var(--search-border);}
+#search-history-screen .search-media-tabs {flex:1;min-width:0;gap:2px;}
+#search-history-screen .search-media-tabs button {min-height:40px;padding:8px 10px;background:none;color:var(--search-secondary);border-radius:10px;}
+#search-history-screen .search-media-tabs button[aria-pressed=true] {background:var(--search-muted);color:var(--search-text);font-weight:600;}
+#search-filters-toggle {border:0;border-left:1px solid var(--search-border);background:none;color:var(--search-secondary);font:inherit;font-size:12px;padding:8px 0 8px 12px;min-height:40px;cursor:pointer;flex-shrink:0;}
+#search-filters-toggle[aria-expanded=true] {color:var(--search-text);font-weight:600;}
+#search-filters-toggle.has-filters::after {content:'';display:inline-block;width:5px;height:5px;background:var(--primary-color);border-radius:50%;margin-left:4px;vertical-align:middle;}
+#search-filters {flex-shrink:0;max-height:45%;overflow:auto;background:var(--search-surface);border-bottom:1px solid var(--search-border);}
+#search-filters[hidden] {display:none!important;}
+#search-filters .search-filter-bar,#search-filters .search-advanced-filters {background:var(--search-surface);border:0;}
+#search-filters .search-scope-select {border:0;font:inherit;font-size:12px;background:var(--search-muted);color:var(--search-text);min-height:36px;}
+#search-filters .search-option-toggle>span {color:var(--search-secondary)!important;}
+#search-filters .search-advanced-filters :is(select,input,label) {color:var(--search-text);background:var(--search-surface);border-color:var(--search-border);}
+#search-filters .search-date-jump {padding:8px 15px 12px;color:var(--search-secondary);}
+#search-filters .search-date-jump input {background:var(--search-surface);color:var(--search-text);border-color:var(--search-border);}
+#search-history-screen .search-content {min-height:0;background:var(--search-surface);}
+#search-history-screen :is(.search-detail-header,.search-result-item,.search-stat-header,.search-group-item,.search-result-list,.scope-modal-content) {background:var(--search-surface);border-color:var(--search-border);color:var(--search-text);}
+#search-history-screen .search-result-item {padding:14px 16px;}
+#search-history-screen .search-result-content {color:var(--search-text);}
+#search-history-screen :is(.search-result-header,.search-result-translation,.search-placeholder) {color:var(--search-secondary);}
+#search-history-screen .search-result-content {display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;}
+#search-history-screen .search-result-open {min-height:44px;}
+#search-history-screen .search-detail-header strong {font-size:12px;font-weight:400;color:var(--search-secondary);}
+body.night-mode-active #search-history-screen {--search-surface:#202020;--search-muted:#303030;--search-border:#383838;--search-text:#e4e4e4;--search-secondary:#aaa;background:var(--search-surface);color-scheme:dark;}
+body.night-mode-active #chat-history-navigation {background:#202020;border-color:#383838;}
+body.night-mode-active #chat-history-navigation :is(button,span) {color:#ddd;}
+body.night-mode-active #chat-history-navigation button {background:#303030;}
+body.night-mode-active .chat-record-shortcuts {background:#252525;border-color:#444;}
+body.night-mode-active .chat-record-shortcuts button {color:#ddd;border-color:#444;}
+@media(max-width:360px){#search-history-screen .search-history-tools{padding-inline:10px;gap:4px}#search-history-screen .search-media-tabs button{padding-inline:8px}#search-filters-toggle{padding-left:8px}}

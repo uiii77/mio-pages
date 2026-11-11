@@ -22,7 +22,7 @@ function arrangeChatExpansionItems() {
         'capture-btn', 'memory-journal-btn', 'char-gallery-manage-btn', 'memory-table-btn',
         'chat-trpg-btn', 'reading-btn', 'listen-together-btn', 'watch-together-btn',
         'collaboration-btn', 'exchange-diary-btn', 'reminder-btn', 'node-system-btn',
-        'delete-history-btn',
+        'peek-btn', 'delete-history-btn',
         'time-skip-btn', 'vector-memory-btn', 'shop-btn', 'msg-version-btn', 'group-poke-expansion-btn',
     ];
     order.forEach(id => {
@@ -34,7 +34,8 @@ function arrangeChatExpansionItems() {
 
 function setupChatRoom() {
     document.getElementById('chat-calendar-btn')?.addEventListener('click', () => { showPanel('none'); switchScreen('health-screen'); });
-    document.getElementById('chat-records-search-btn')?.addEventListener('click', () => { switchScreen('chat-room-screen'); openDeleteChunkModal(); });
+    document.getElementById('chat-records-search-btn')?.addEventListener('click', () => { switchScreen('chat-room-screen'); SearchSystem.openCurrent(); });
+    document.getElementById('peek-btn')?.addEventListener('click', () => showPanel('none'));
     for(const id of ['chat-calendar-btn','chat-records-search-btn'])document.getElementById(id)?.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();event.currentTarget.click();}});
     document.getElementById('chat-trpg-btn')?.addEventListener('click', () => {
         showPanel('none'); window.TrpgPlayUI?.open();
