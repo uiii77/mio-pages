@@ -34,20 +34,18 @@
         const indicator = document.getElementById('typing-indicator');
         if (!indicator) return;
         let bar = document.getElementById('chat-task-status');
-        if (!bar) { bar = document.createElement('div'); bar.id = 'chat-task-status'; bar.className = 'chat-task-status'; bar.setAttribute('role', 'status'); indicator.after(bar); }
         const relevant = [...records.values()].filter(task => task.chatId === currentChatId && task.chatType === currentChatType && scopeMatches(task) && !['completed', 'cancelled', 'abandoned'].includes(task.state));
-        bar.replaceChildren(); bar.hidden = !relevant.length;
         const running = relevant.find(task => RUNNING_STATES.has(task.state));
         const queued = relevant.find(task => task.state === 'queued');
-        const failed = relevant.find(task => ['interrupted', 'failed', 'stalled'].includes(task.state));
+        if (!running && !queued) { bar?.remove(); return; }
+        if (!bar) { bar = document.createElement('div'); bar.id = 'chat-task-status'; bar.className = 'chat-task-status'; bar.setAttribute('role', 'status'); indicator.after(bar); }
+        bar.replaceChildren();
         const text = document.createElement('span');
-        text.textContent = running ? `正在回复${queued ? ' · 新输入已排队' : ''}` : queued ? '等待回复' : '上次任务未完成';
-        if (failed && !running && !queued) { text.title = failed.error?.message || ''; text.textContent = `未完成：${failed.error?.message || '请重试'}`; }
+        text.textContent = running ? `正在回复${queued ? ' · 新输入已排队' : ''}` : '等待回复';
         bar.append(text);
-        const action = (label, work) => { const button = document.createElement('button'); button.type = 'button'; button.textContent = label; button.onclick = () => void work().catch(error => typeof showToast === 'function' && showToast(error.message)); bar.append(button); };
+        const action = (label, work) => { const button = document.createElement('button'); button.type = 'button'; button.textContent = label; button.onclick = () => void work().catch(error => { console.error('Reply task action failed:', error); if (typeof showToast === 'function') showToast('操作失败，请重试'); }); bar.append(button); };
         if (running) action('停止', () => cancelTask(running.id));
         if (queued) action('取消排队', () => cancelTask(queued.id));
-        if (failed && !running && !queued) { action('重试', () => retryTask(failed.id)); action('取消', () => cancelTask(failed.id)); }
         if (typeof getReplyBtn !== 'undefined') getReplyBtn.disabled = false;
     }
 
@@ -121,7 +119,12 @@
             const name = `mio-chat-${typeof dexieDB !== 'undefined' ? dexieDB.name : ''}-${laneOf(task)}`;
             const result = navigator.locks?.request ? await navigator.locks.request(name, { signal: job.controller.signal }, run) : await run();
             job.resolve(result);
-        } catch (error) { await fail(task, error, error.name === 'AbortError').catch(() => {}); job.resolve(false); }
+        } catch (error) {
+            await fail(task, error, error.name === 'AbortError').catch(() => {});
+            console.error('Reply task failed:', error);
+            if (!task.isBackground && error.name !== 'AbortError' && typeof showToast === 'function') showToast('回复失败，请重试');
+            job.resolve(false);
+        }
     }
 
     async function cancelTask(id) {

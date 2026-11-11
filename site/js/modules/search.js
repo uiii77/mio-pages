@@ -10,17 +10,6 @@ const SearchSystem = {
         this.home = this.panel.parentElement;
         document.getElementById('chat-list-history-search').onclick = () => openChatDirectorySearch(false);
         document.getElementById('chat-room-history-search').onclick = () => this.openCurrent();
-        for (const edge of ['top','bottom']) document.getElementById('chat-history-'+edge).onclick = () => {
-            showPanel('none');
-            const chat=MessageReference.getChat(db,currentChatType,currentChatId);
-            const messages=(chat?.history||[]).filter(message=>this.searchable(message,chat)&&!message.isStatusUpdate);
-            const message=edge==='top'?messages[0]:messages.at(-1);
-            if(message&&this.navigation?.fromSearch){
-                const {origin,returnScreen}=this.navigation;
-                this.navigation={refs:[],index:0,origin,returnScreen,fromSearch:false};
-            }
-            if(!message||!MessageReference.locate(currentChatType,currentChatId,message.id))showToast('没有可定位的消息');
-        };
         document.getElementById('search-scope-select').onclick = () => this.openScopeModal();
         ['search-ignore-status','search-type-filter','search-sender-filter','search-date-from','search-date-to'].forEach(id => {
             document.getElementById(id).addEventListener('change', () => { this.detailGroup = null; this.resultLimit = 50; void this.performSearch(); });

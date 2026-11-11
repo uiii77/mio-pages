@@ -3048,13 +3048,6 @@
 #peek-btn.expansion-item {border:0;padding:0;background:none;font:inherit;color:inherit;}
 #peek-btn .expansion-item-icon svg {fill:none;}
 #chat-room-screen>.content {position:relative;min-height:0;}
-#chat-room-screen #message-area {padding-bottom:58px;}
-.chat-record-shortcuts {position:absolute;right:12px;bottom:10px;display:flex;align-items:center;padding:2px;border:1px solid var(--border-color,#e7e7e7);border-radius:18px;background:var(--chat-bottom-bar-bg,#fff);box-shadow:0 2px 8px #00000008;z-index:3;}
-.chat-record-shortcuts button {border:0;background:none;color:var(--text-color,#333);font:inherit;font-size:12px;min-height:36px;padding:0 12px;border-radius:15px;cursor:pointer;}
-.chat-record-shortcuts button+button {border-left:1px solid var(--border-color,#eee);border-top-left-radius:0;border-bottom-left-radius:0;}
-.chat-record-shortcuts button:active {background:var(--accent-color,#edf2f4);}
-.chat-record-shortcuts button:focus-visible,#peek-btn:focus-visible {outline:2px solid var(--primary-color);outline-offset:2px;}
-#chat-room-screen.multi-select-active .chat-record-shortcuts {display:none;}
 body.night-mode-active #delete-chunk-preview-box {background:#222!important;border-color:#444!important;color:#ddd;}
 body.night-mode-active #delete-chunk-modal .btn-neutral {background:#353535!important;color:#e4e4e4!important;}
 body.night-mode-active #delete-chunk-modal label {color:#ccc;}
@@ -3081,3 +3074,5 @@ body.night-mode-active #delete-chunk-modal label {color:#ccc;}
     cursor: pointer;
 }
 .chat-task-status button:focus-visible { outline: 2px solid currentColor; }
+
+#peek-btn:focus-visible {outline:2px solid var(--primary-color);outline-offset:2px;}

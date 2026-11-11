@@ -536,6 +536,4 @@ body.night-mode-active #search-history-screen {--search-surface:#202020;--search
 body.night-mode-active #chat-history-navigation {background:#202020;border-color:#383838;}
 body.night-mode-active #chat-history-navigation :is(button,span) {color:#ddd;}
 body.night-mode-active #chat-history-navigation button {background:#303030;}
-body.night-mode-active .chat-record-shortcuts {background:#252525;border-color:#444;}
-body.night-mode-active .chat-record-shortcuts button {color:#ddd;border-color:#444;}
 @media(max-width:360px){#search-history-screen .search-history-tools{padding-inline:10px;gap:4px}#search-history-screen .search-media-tabs button{padding-inline:8px}#search-filters-toggle{padding-left:8px}}

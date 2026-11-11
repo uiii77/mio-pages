@@ -385,7 +385,7 @@ async function getAiReply(chatId, chatType, isBackground = false, isSummary = fa
         return window.ReplyResilience.enqueue({ chatId, chatType, isBackground, isSummary, recoveryTaskId: replyOptions.recoveryTaskId, queueOptions },
             (task, signal) => getAiReply(chatId, chatType, isBackground, isSummary, isCharBlockedMonologue, isPhoneControlRevokeAttempt,
                 { ...replyOptions, queueBypass: true, queueTaskId: task.id, inputMessageId: task.userMessageId, signal }))
-            .catch(error => { if (!isBackground) showToast(error.message || '任务保存失败，未调用模型'); return false; });
+            .catch(error => { console.error('Reply task could not be queued:', error); if (!isBackground) showToast('回复失败，请重试'); return false; });
     }
     if (window.StatusStorage?.isChatLocked(chatType, chatId)) {
         if (!isBackground) showToast('此会话正在整理状态栏数据，请在操作完成后再调用');
@@ -1295,11 +1295,11 @@ async function getAiReply(chatId, chatType, isBackground = false, isSummary = fa
         } else if (error.name === 'AbortError') {
             if (!isBackground && typeof showToast === 'function') showToast('已暂停调用');
         } else if (error.name === 'TimeoutError') {
-            if (!isBackground && typeof showToast === 'function') showToast(error.message || '回复等待超时，请重试');
-            else console.error('Background Auto-Reply Timeout:', error);
+            console.error('Chat reply timed out:', error);
+            if (!isBackground && typeof showToast === 'function') showToast('回复超时，请重试');
         } else if (error.name !== 'FollowUpCancelledError') {
-            if (!isBackground) showApiError(error);
-            else console.error("Background Auto-Reply Error:", error);
+            console.error('Chat reply failed:', error);
+            if (!isBackground && typeof showToast === 'function') showToast('回复失败，请重试');
         }
         return false;
     } finally {
