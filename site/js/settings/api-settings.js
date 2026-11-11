@@ -483,18 +483,20 @@ function setupApiNodeManager() {
         capabilities: Array.from(document.querySelectorAll('input[name="api-node-capability"]')).map(input => input.checked)
     });
     const close = async (force = false, savedNode = null) => {
+        if (!editorScreen.classList.contains('active')) return;
         if (!force && editorScreen.classList.contains('active') && snapshotEditor() !== editorSnapshot) {
             if (typeof customConfirm !== 'function') return showToast('请先保存节点或使用页面内取消按钮');
             const discard = await customConfirm('当前节点有尚未保存的修改，确定放弃并返回吗？', '放弃修改');
             if (!discard) return;
         }
         setStatus('');
-        if (typeof switchScreen === 'function') switchScreen(roleEditorContext?.returnScreen || 'api-settings-screen');
+        MioNavigation.returnTo(roleEditorContext?.returnScreen || 'api-settings-screen');
         const callback = roleEditorContext?.onClose;
         roleEditorContext = null;
         if (callback) callback(savedNode);
     };
     const open = (node, context = null) => {
+        if (editorScreen.classList.contains('active')) return;
         roleEditorContext = context;
         form.reset();
         document.getElementById('api-node-owner-id').value = node?.ownerCharacterId || context?.ownerCharacterId || '';

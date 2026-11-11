@@ -59,9 +59,11 @@ function setupChatSettings() {
     
     document.getElementById('chat-settings-btn')?.addEventListener('click', () => {
         if (currentChatType === 'private') {
+            if (document.getElementById('chat-settings-screen')?.classList.contains('active')) return;
             loadSettingsToSidebar();
             switchScreen('chat-settings-screen');
         } else if (currentChatType === 'group') {
+            if (document.getElementById('group-settings-screen')?.classList.contains('active')) return;
             loadGroupSettingsToSidebar();
             switchScreen('group-settings-screen');
         }
@@ -92,15 +94,15 @@ function setupChatSettings() {
     });
 
     document.getElementById('chat-scroll-to-top-current-btn')?.addEventListener('click', () => {
-        switchScreen('chat-room-screen');
-        setTimeout(() => {
+        MioNavigation.returnTo('chat-room-screen');
+        requestAnimationFrame(() => {
             const area = document.getElementById('message-area');
             if (area) area.scrollTop = 0;
-        }, 80);
+        });
     });
     document.getElementById('chat-scroll-to-top-all-btn')?.addEventListener('click', () => {
-        switchScreen('chat-room-screen');
-        setTimeout(() => {
+        MioNavigation.returnTo('chat-room-screen');
+        requestAnimationFrame(() => {
             const chat = (typeof currentChatType !== 'undefined' && currentChatType === 'private')
                 ? db.characters.find(c => c.id === currentChatId)
                 : db.groups.find(g => g.id === currentChatId);
@@ -111,19 +113,19 @@ function setupChatSettings() {
                 const area = document.getElementById('message-area');
                 if (area) area.scrollTop = 0;
             }
-        }, 80);
+        });
     });
     document.getElementById('chat-scroll-to-bottom-btn')?.addEventListener('click', () => {
-        switchScreen('chat-room-screen');
-        setTimeout(() => {
+        MioNavigation.returnTo('chat-room-screen');
+        requestAnimationFrame(() => {
             const area = document.getElementById('message-area');
             if (area) area.scrollTop = area.scrollHeight;
-        }, 80);
+        });
     });
 
     const scrollToTopOrBottomGroup = (mode) => {
-        switchScreen('chat-room-screen');
-        setTimeout(() => {
+        MioNavigation.returnTo('chat-room-screen');
+        requestAnimationFrame(() => {
             const area = document.getElementById('message-area');
             if (!area) return;
             if (mode === 'bottom') {
@@ -143,7 +145,7 @@ function setupChatSettings() {
             } else {
                 area.scrollTop = 0;
             }
-        }, 80);
+        });
     };
     const groupTopCurrentBtn = document.getElementById('group-chat-scroll-to-top-current-btn');
     const groupTopAllBtn = document.getElementById('group-chat-scroll-to-top-all-btn');
@@ -342,7 +344,11 @@ function setupChatSettings() {
         if (characterId !== undefined && characterId !== null && characterId !== currentChatId) {
             return { ...route, opened: false, reason: 'character-not-active' };
         }
-        if (typeof loadSettingsToSidebar === 'function') loadSettingsToSidebar();
+        const alreadyOpen = document.getElementById('chat-settings-screen')?.classList.contains('active');
+        if (alreadyOpen && activeCharacterSettingsRoute?.section === route.section && activeCharacterSettingsRoute?.focusId === route.focusId) {
+            return { ...activeCharacterSettingsRoute, opened: true };
+        }
+        if (!alreadyOpen && typeof loadSettingsToSidebar === 'function') loadSettingsToSidebar();
         activeCharacterSettingsRoute = {
             ...route,
             characterId: currentChatId,
@@ -381,6 +387,16 @@ function setupChatSettings() {
     // 返回仍留在记忆中心，而不是跳出到聊天页，避免产生第二份设置状态。
     const chatSettingsBack = chatSettingsScreen?.querySelector('.app-header .back-btn');
     chatSettingsBack?.addEventListener('click', event => {
+        const subpageBack = advancedPanel?.style.display === 'block'
+            ? document.querySelector('[data-role-advanced-settings-back]')
+            : document.getElementById('setting-avatar-system-panel')?.style.display === 'block'
+                ? document.getElementById('setting-avatar-system-back') : null;
+        if (subpageBack) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            subpageBack.click();
+            return;
+        }
         const route = window.MioCharacterSettings?.getRoute?.();
         if (!route?.returnTarget) return;
         if (route.returnTarget === 'memory-center') {

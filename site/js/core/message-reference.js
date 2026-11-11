@@ -186,9 +186,9 @@
     function locate(chatType, chatId, messageId, dbValue) {
         const resolved = resolve(chatType, chatId, messageId, dbValue);
         if (!resolved) return false;
-        global.SearchSystem?.beforeLocate?.();
+        const navigationOptions = global.SearchSystem?.beforeLocate?.();
         global._pendingMessageLocation = { chatType, chatId: resolved.chat.id, messageId: resolved.message.id };
-        if (typeof global.openChatRoom === 'function') global.openChatRoom(resolved.chat.id, chatType);
+        if (typeof global.openChatRoom === 'function') global.openChatRoom(resolved.chat.id, chatType, navigationOptions);
         global.SearchSystem?.afterLocate?.(chatType, resolved.chat.id, resolved.message.id);
         return true;
     }

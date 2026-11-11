@@ -34,7 +34,7 @@ function arrangeChatExpansionItems() {
 
 function setupChatRoom() {
     document.getElementById('chat-calendar-btn')?.addEventListener('click', () => { showPanel('none'); switchScreen('health-screen'); });
-    document.getElementById('chat-records-search-btn')?.addEventListener('click', () => { switchScreen('chat-room-screen'); SearchSystem.openCurrent(); });
+    document.getElementById('chat-records-search-btn')?.addEventListener('click', () => SearchSystem.openCurrent());
     document.getElementById('peek-btn')?.addEventListener('click', () => showPanel('none'));
     for(const id of ['chat-calendar-btn','chat-records-search-btn'])document.getElementById(id)?.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();event.currentTarget.click();}});
     document.getElementById('chat-trpg-btn')?.addEventListener('click', () => {
@@ -790,14 +790,14 @@ function setupChatRoom() {
     if (typeof setupLocationSystem === 'function') setupLocationSystem();
 }
 
-function openChatRoom(chatId, type) {
+function openChatRoom(chatId, type, navigationOptions) {
     const chat = (type === 'private') ? db.characters.find(c => c.id === chatId) : db.groups.find(g => g.id === chatId);
     if (!chat) return;
 
     const requestedLocation = window._pendingMessageLocation;
     if (currentChatId === chatId && currentChatType === type && requestedLocation?.chatId === chatId && requestedLocation.chatType === type) {
         window._pendingMessageLocation = null;
-        switchScreen('chat-room-screen');
+        switchScreen('chat-room-screen', navigationOptions);
         if (!ChatHistoryViewport.locate(type, chatId, requestedLocation.messageId)) showToast('该记录已不存在或当前不可显示');
         return;
     }
@@ -943,7 +943,7 @@ function openChatRoom(chatId, type) {
 
     updateCustomBubbleStyle(chatId, chat.customBubbleCss, chat.useCustomBubbleCss);
     renderMessages(false, true);
-    switchScreen('chat-room-screen');
+    switchScreen('chat-room-screen', navigationOptions);
     if (window.ReplyResilience) window.ReplyResilience.scheduleSessionSave();
 
     // 角色拉黑用户时的输入区覆盖层：仅根据当前角色状态显示，不修改输入框，避免跨角色污染

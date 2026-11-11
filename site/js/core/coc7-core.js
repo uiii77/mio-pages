@@ -202,5 +202,43 @@
         next.events.push(event); next.revision++; next.updatedAt = event.at;
         return next;
     }
-    global.CoC7Core = Object.freeze({ VERSION, ATTRIBUTES, integer, die, expression, roll, percentile, check, card, campaign, apply, storyItem, visibleStory });
+    function recentPlayMessages(source, context) {
+        const saved = campaign(source), player = { viewer: 'player', playerId: 'local-user' };
+        if (!context || !['player', 'character'].includes(context.viewer) ||
+            (context.viewer === 'character' && !context.characterId) ||
+            (context.characterId && !saved.cards.some(card => card.characterId === context.characterId))) {
+            throw Error('请选择当前跑团的玩家或参与角色');
+        }
+        const messages = [];
+        for (let index = saved.events.length - 1; index >= 0 && messages.length < 12; index--) {
+            const event = saved.events[index];
+            if (!['dialogue', 'check', 'sanity', 'dice'].includes(event.kind)) continue;
+            if (event.audience) {
+                if (!global.TrpgStateCore.visible(event.audience, context) || !global.TrpgStateCore.visible(event.audience, player)) continue;
+            } else if (context.characterId && !saved.cards.some(card => card.id === event.cardId && card.characterId === context.characterId)) {
+                // Legacy rules records are visible locally; a role only receives its own card's results.
+                continue;
+            }
+            if (event.kind === 'dialogue') {
+                messages.push({ role: event.speaker === 'player' ? 'user' : 'assistant', content: event.content });
+                continue;
+            }
+            const record = { eventId: event.id, kind: event.kind, rulesVersion: event.rulesVersion };
+            if (event.kind === 'dice') {
+                Object.assign(record, { expression: text(event.roll.expression, 200), total: event.roll.total });
+            } else {
+                Object.assign(record, {
+                    cardId: event.cardId, name: saved.cards.find(card => card.id === event.cardId)?.name,
+                    key: event.key, result: event.roll.result, skill: event.check.skill,
+                    difficulty: event.check.difficulty, target: event.check.target,
+                    level: event.check.level, passed: event.check.passed,
+                });
+                for (const key of ['bonus', 'penalty']) if (Number.isInteger(event.roll[key]) && event.roll[key] >= 0 && event.roll[key] <= 2) record[key] = event.roll[key];
+                if (event.kind === 'sanity') Object.assign(record, { before: event.before, after: event.after, loss: event.loss.total, needsKeeperReview: !!event.needsKeeperReview });
+            }
+            messages.push({ role: 'user', content: '程序规则记录（已完成，沿用结果，不重掷）：\n' + JSON.stringify(record) });
+        }
+        return messages.reverse();
+    }
+    global.CoC7Core = Object.freeze({ VERSION, ATTRIBUTES, integer, die, expression, roll, percentile, check, card, campaign, apply, storyItem, visibleStory, recentPlayMessages });
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -26,12 +26,18 @@ const MioNavigation = window.MioNavigation = {
     frames: [], returning: false,
     capture(screen) {
         return { id: screen.id, chat: screen.id === 'chat-room-screen' ? window.ChatHistoryViewport?.capture() : null,
+            role: ['chat-settings-screen', 'group-settings-screen'].includes(screen.id) ? { id: currentChatId, type: currentChatType } : null,
             scroll: [...screen.querySelectorAll('.content, [data-navigation-scroll]')].map((node,index) => ({index,top:node.scrollTop})) };
     },
-    beforeSwitch(target) {
+    beforeSwitch(target, options = {}) {
         if (this.returning) return;
         const previous = document.querySelector('.phone-screen > .screen.active');
         if (!previous || previous.id === target) return;
+        // Search results and the located message are two views of one visit.
+        if (options.replace && this.frames.at(-1)?.target === previous.id) {
+            this.frames.at(-1).target = target;
+            return;
+        }
         if (['home-screen','chat-list-screen','contacts-screen','more-screen','phone-screen','moments-screen'].includes(target)) { this.frames=[]; return; }
         this.frames.push({target,origin:this.capture(previous)});
         if (this.frames.length > 40) this.frames.shift();
@@ -39,23 +45,43 @@ const MioNavigation = window.MioNavigation = {
     back(fallback) {
         const active = document.querySelector('.phone-screen > .screen.active')?.id;
         const frame = this.frames.at(-1);
-        if (!frame || frame.target !== active) { switchScreen(fallback || 'home-screen'); return; }
-        this.frames.pop(); this.returning=true;
+        if (frame && frame.target === active) {
+            this.frames.pop();
+            this.restore(frame.origin);
+        } else this.restore({ id: fallback || 'home-screen' });
+    },
+    returnTo(target) {
+        if (document.querySelector('.phone-screen > .screen.active')?.id === target) return;
+        const index = this.frames.findLastIndex(frame => frame.origin.id === target);
+        if (index < 0) { this.restore({ id: target }); return; }
+        const origin = this.frames[index].origin;
+        this.frames.splice(index);
+        this.restore(origin);
+    },
+    restore(origin) {
+        this.returning=true;
         try {
-            if (frame.origin.chat) {
+            if (origin.role) {
+                if ((currentChatId !== origin.role.id || currentChatType !== origin.role.type) && typeof openChatRoom === 'function') {
+                    openChatRoom(origin.role.id, origin.role.type);
+                }
+                currentChatId = origin.role.id;
+                currentChatType = origin.role.type;
+            }
+            if (origin.chat) {
                 switchScreen('chat-room-screen');
-                ChatHistoryViewport.restore(frame.origin.chat);
-            } else switchScreen(frame.origin.id);
+                ChatHistoryViewport.restore(origin.chat);
+            } else switchScreen(origin.id);
             requestAnimationFrame(() => {
-                const nodes = document.getElementById(frame.origin.id)?.querySelectorAll('.content, [data-navigation-scroll]');
-                frame.origin.scroll.forEach(item => { if(nodes?.[item.index]) nodes[item.index].scrollTop=item.top; });
+                const nodes = document.getElementById(origin.id)?.querySelectorAll('.content, [data-navigation-scroll]');
+                origin.scroll?.forEach(item => { if(nodes?.[item.index]) nodes[item.index].scrollTop=item.top; });
             });
         } finally { this.returning=false; }
     }
 };
 
 // 屏幕切换
-const switchScreen = (targetId) => {
+const switchScreen = (targetId, options = {}) => {
     // The shared music player survives in-app navigation, including returning to chat.
     const appearanceAlias = {
         'wallpaper-screen': 'wallpaper',
@@ -66,7 +92,7 @@ const switchScreen = (targetId) => {
         targetId = 'appearance-settings-screen';
     }
     if (!document.getElementById(targetId)) return;
-    MioNavigation.beforeSwitch(targetId);
+    MioNavigation.beforeSwitch(targetId, options);
     // 阅读会话与聊天共用 TTS 播放器；离开阅读器时停止当前段落，避免与聊天朗读串音。
     if (targetId !== 'reading-screen' && window.Reading?.stopSpeech) window.Reading.stopSpeech();
     // TRPG 播报与聊天/阅读共享 TTS 服务但保持会话边界；离开页面时取消当前队列。

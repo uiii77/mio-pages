@@ -45,7 +45,12 @@ const SearchSystem = {
         search.addEventListener('keydown', event => { if (event.key === 'Enter') { clearTimeout(this.searchTimer); void this.performSearch(); search.blur(); } });
         document.getElementById('search-cancel-btn').onclick = () => this.closeSearchScreen();
         document.getElementById('search-scope-modal').addEventListener('click', event => { if (event.target.id === 'search-scope-modal') event.target.classList.remove('visible'); });
-        document.addEventListener('keydown', event => { if (event.key === 'Escape' && this.showing) this.closeSearchScreen(); });
+        document.addEventListener('keydown', event => {
+            if (event.key !== 'Escape' || !this.showing) return;
+            const scope = document.getElementById('search-scope-modal');
+            if (scope.classList.contains('visible')) scope.classList.remove('visible');
+            else this.closeSearchScreen();
+        });
         document.querySelector('#chat-room-header-default .back-btn').addEventListener('click',event=>{if(this.showing){event.preventDefault();event.stopImmediatePropagation();this.closeSearchScreen();}else if(this.navigation){this.navigation=null;this.hideNavigation();this.clearSession();}},true);
         this.panel.addEventListener('scroll', () => this.persist(), true);
         setTimeout(() => this.restoreSession(),0);
@@ -71,9 +76,13 @@ const SearchSystem = {
         return chat ? [{chat,type:this.currentScope.chatType}] : [];
     },
     open(scope = 'all', saved = null) {
+        if (this.showing && !saved) { document.getElementById('search-history-input').focus(); return; }
         this.generation++; clearTimeout(this.searchTimer);
         this.origin = saved?.origin || ChatHistoryViewport.capture();
         this.returnScreen = saved?.returnScreen || document.querySelector('.phone-screen > .screen.active')?.id || 'chat-list-screen';
+        const source = document.getElementById(this.returnScreen);
+        this.returnContext = saved?.returnContext || (source && ['chat-settings-screen', 'group-settings-screen'].includes(source.id)
+            ? { ...MioNavigation.capture(source), tabId: source.querySelector('.settings-tab-item.active')?.dataset.tab } : null);
         this.currentScope = scope; this.detailGroup = saved?.detailGroup || null; this.navigation = saved?.navigation || null;
         this.resultLimit = saved?.resultLimit || 50;
         this.updateScopeUI();
@@ -88,27 +97,30 @@ const SearchSystem = {
     },
     present() {
         this.showing = true; this.hideNavigation();
-        if (this.currentScope !== 'all' && this.origin) {
+        if (this.origin) {
             const room = document.getElementById('chat-room-screen');
             this.panel.classList.remove('active'); room.append(this.panel);
             this.panel.classList.add('search-inline-panel');
             this.panel.style.setProperty('--search-header-height',document.getElementById('chat-room-header-default').offsetHeight+'px');
             if (!room.classList.contains('active')) switchScreen('chat-room-screen');
         } else {
-            this.home.append(this.panel); this.panel.classList.remove('search-inline-panel'); switchScreen('search-history-screen');
+            this.home.append(this.panel); this.panel.classList.remove('search-inline-panel');
+            switchScreen('search-history-screen', { replace: !!this.navigation?.fromSearch });
         }
         this.persist();
     },
     dismiss() {
         this.showing = false; this.generation++; clearTimeout(this.searchTimer);
         this.panel.querySelectorAll('audio,video').forEach(media=>media.pause());
-        this.panel.classList.remove('search-inline-panel','active'); this.home.append(this.panel);
+        // Keep the full-screen view active until switchScreen records its departure.
+        this.panel.classList.remove('search-inline-panel'); this.home.append(this.panel);
         document.getElementById('search-scope-modal').classList.remove('visible');
     },
     closeSearchScreen() {
+        if (!this.showing) return;
         this.dismiss(); this.navigation = null; this.hideNavigation();
-        if (this.origin) { switchScreen('chat-room-screen'); ChatHistoryViewport.restore(this.origin); }
-        else switchScreen(this.returnScreen === 'search-history-screen' ? 'chat-list-screen' : this.returnScreen);
+        if (this.origin) { MioNavigation.returnTo('chat-room-screen'); ChatHistoryViewport.restore(this.origin); }
+        else MioNavigation.returnTo(this.returnScreen === 'search-history-screen' ? 'chat-list-screen' : this.returnScreen);
         this.clearSession();
     },
     getFilters(keyword) {
@@ -218,8 +230,10 @@ const SearchSystem = {
         if(!MessageReference.locate(group.chatType,group.chatId,messageId))showToast('该消息已不存在或标识不唯一');
     },
     beforeLocate() {
+        const replace = this.showing && this.panel.classList.contains('active');
         if (!this.navigation) this.navigation={refs:[],index:0,origin:ChatHistoryViewport.capture(),returnScreen:document.querySelector('.phone-screen > .screen.active')?.id||'chat-list-screen',fromSearch:false};
         if(this.showing)this.dismiss();
+        return { replace };
     },
     afterLocate(chatType,chatId,messageId) {
         if(!this.navigation)return;
@@ -238,7 +252,7 @@ const SearchSystem = {
         nav.index=index;MessageReference.locate(ref.chatType,ref.chatId,ref.messageId);
     },
     hideNavigation(){document.getElementById('chat-history-navigation')?.remove();},
-    returnToOrigin(){const nav=this.navigation;this.navigation=null;this.hideNavigation();this.dismiss();this.clearSession();if(nav?.origin){switchScreen('chat-room-screen');ChatHistoryViewport.restore(nav.origin);}else switchScreen(nav?.returnScreen||'chat-list-screen');},
+    returnToOrigin(){const nav=this.navigation;this.navigation=null;this.hideNavigation();this.dismiss();this.clearSession();if(nav?.origin){MioNavigation.returnTo('chat-room-screen');ChatHistoryViewport.restore(nav.origin);}else MioNavigation.returnTo(nav?.returnScreen||'chat-list-screen');},
     onChatOpened(){if(!window._pendingMessageLocation){this.navigation=null;this.hideNavigation();if(!this.showing)this.clearSession();}},
     jumpDate(){
         const date=document.getElementById('search-jump-date').value;if(!date)return;
@@ -251,9 +265,26 @@ const SearchSystem = {
     },
     openScopeModal(){const modal=document.getElementById('search-scope-modal'),list=document.getElementById('search-scope-list');list.replaceChildren();const add=(scope,name)=>list.append(this.button(name,()=>{this.currentScope=scope;this.detailGroup=null;this.resultLimit=50;this.updateScopeUI();modal.classList.remove('visible');void this.performSearch();}));add('all','全部角色与群聊');for(const [type,rows]of [['private',db.characters||[]],['group',db.groups||[]]])for(const chat of rows)add({chatType:type,chatId:chat.id},this.name(chat)+(type==='group'?' · 群聊':''));modal.classList.add('visible');},
     updateScopeUI(){const chat=this.currentScope==='all'?null:MessageReference.getChat(db,this.currentScope.chatType,this.currentScope.chatId);document.querySelector('#search-scope-select span').textContent=chat?'范围：'+this.name(chat):'范围：全部角色与群聊';const select=document.getElementById('search-sender-filter');select.replaceChildren(new Option('全部发送者','all'),new Option('我','user'),new Option('角色 / 群成员','assistant'));if(chat&&this.currentScope.chatType==='group')for(const member of chat.members||[])select.append(new Option(member.groupNickname||member.realName||member.name||'群成员','member:'+member.id));},
-    persist(){try{const nav=this.navigation;sessionStorage.setItem(this.sessionKey,JSON.stringify({scope:this.currentScope,filters:this.getFilters(),filtersOpen:!document.getElementById('search-filters').hidden,jumpDate:document.getElementById('search-jump-date').value,ignoreStatus:document.getElementById('search-ignore-status').checked,origin:this.origin,returnScreen:this.returnScreen,detailGroup:this.detailGroup,resultLimit:Math.min(this.resultLimit||50,500),scroll:this.showing?document.getElementById('search-results-container').scrollTop:this.resultScroll||0,showing:this.showing,navigation:nav?{...nav,refs:[]}:null}));}catch{}},
+    persist(){try{const nav=this.navigation;sessionStorage.setItem(this.sessionKey,JSON.stringify({scope:this.currentScope,filters:this.getFilters(),filtersOpen:!document.getElementById('search-filters').hidden,jumpDate:document.getElementById('search-jump-date').value,ignoreStatus:document.getElementById('search-ignore-status').checked,origin:this.origin,returnScreen:this.returnScreen,returnContext:this.returnContext,detailGroup:this.detailGroup,resultLimit:Math.min(this.resultLimit||50,500),scroll:this.showing?document.getElementById('search-results-container').scrollTop:this.resultScroll||0,showing:this.showing,navigation:nav?{...nav,refs:[]}:null}));}catch{}},
     clearSession(){try{sessionStorage.removeItem(this.sessionKey);}catch{}},
-    restoreSession(){let saved;try{saved=JSON.parse(sessionStorage.getItem(this.sessionKey)||'null');}catch{}if(!saved||(!saved.showing&&!saved.navigation))return;if(saved.origin && MessageReference.getChat(db,saved.origin.chatType,saved.origin.chatId)){openChatRoom(saved.origin.chatId,saved.origin.chatType);ChatHistoryViewport.restore(saved.origin);}this.open(saved.scope,saved);if(!saved.showing&&saved.navigation?.target){const target=saved.navigation.target;this.performSearch().then(()=>{this.navigation={...saved.navigation,refs:this.flattened()};this.navigation.index=this.navigation.refs.findIndex(r=>r.chatType===target.chatType&&r.chatId===target.chatId&&r.messageId===target.messageId);MessageReference.locate(target.chatType,target.chatId,target.messageId);});}},
+    restoreSession(){
+        let saved;try{saved=JSON.parse(sessionStorage.getItem(this.sessionKey)||'null');}catch{}
+        if(!saved||(!saved.showing&&!saved.navigation))return;
+        if(saved.origin && MessageReference.getChat(db,saved.origin.chatType,saved.origin.chatId)){
+            openChatRoom(saved.origin.chatId,saved.origin.chatType);ChatHistoryViewport.restore(saved.origin);
+        } else if (saved.returnContext?.role) {
+            const {role,id,tabId} = saved.returnContext;
+            if (['chat-settings-screen','group-settings-screen'].includes(id) && MessageReference.getChat(db,role.type,role.id)) {
+                openChatRoom(role.id,role.type);
+                if (role.type === 'private') loadSettingsToSidebar(); else loadGroupSettingsToSidebar();
+                switchScreen(id);
+                document.getElementById(id)?.querySelector(`.settings-tab-item[data-tab="${CSS.escape(tabId || '')}"]`)?.click();
+                MioNavigation.restore(saved.returnContext);
+            }
+        }
+        this.open(saved.scope,saved);
+        if(!saved.showing&&saved.navigation?.target){const target=saved.navigation.target;this.performSearch().then(()=>{this.navigation={...saved.navigation,refs:this.flattened()};this.navigation.index=this.navigation.refs.findIndex(r=>r.chatType===target.chatType&&r.chatId===target.chatId&&r.messageId===target.messageId);MessageReference.locate(target.chatType,target.chatId,target.messageId);});}
+    },
     highlightKeyword(content,keyword){if(!keyword)return this.escapeHtml(content);const pattern=String(keyword).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');return String(content).split(new RegExp('('+pattern+')','gi')).map((part,index)=>index%2?'<mark class="keyword-highlight">'+this.escapeHtml(part)+'</mark>':this.escapeHtml(part)).join('');},
     escapeHtml(text){return String(text??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');}
 };

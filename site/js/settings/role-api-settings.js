@@ -270,6 +270,7 @@
         $('role-api-modal').classList.remove('visible'); return true;
     }
     function open(kind, args = {}) {
+        if ($('role-api-modal')?.classList.contains('visible')) return;
         const group = args.group || (kind === 'group' ? db.groups.find(item => item.id === currentChatId) : null);
         const target = args.member || group || args.target || (kind === 'role' ? db.characters.find(item => item.id === currentChatId) : null);
         if (kind !== 'bulk' && !target) return showToast('当前角色或群聊不存在');

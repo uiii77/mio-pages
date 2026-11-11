@@ -70,7 +70,7 @@
         const api=FeatureApiRegistry.resolve('trpg',{context:role,registry:db.apiFeatureRegistry});
         if(!api.enabled||!api.configured)throw Error('请先在 API 设置中配置并启用 TRPG 服务');
         const messages=[{role:'system',content:(roleId?`你扮演${roleName(roleId)}。`:'你担任故事引导者。')+'只使用已授权材料。不得泄露、猜测隐藏模组内容，不伪造骰点，不自行修改角色状态或知识权限。'+(tab==='free'?'自由交流，不推进剧情。':'描述当前行动的可见结果，给出下一步选择。')+'\n'+material.text},
-            ...current.events.filter(event=>event.kind==='dialogue'&&TrpgStateCore.visible(event.audience,context)&&TrpgStateCore.visible(event.audience,player)).slice(-12).map(event=>({role:event.speaker==='player'?'user':'assistant',content:event.content})),{role:'user',content:input}];
+            ...CoC7Core.recentPlayMessages(snapshot,context),{role:'user',content:input}];
         const config=api.config,endpoint=global.getApiConfigEndpoint?.(config,false)||`${String(config.url||'').replace(/\/$/,'')}/v1/chat/completions`,headers=global.getApiConfigHeaders?.(config)||{'Content-Type':'application/json',Authorization:`Bearer ${config.key||''}`};
         busy=true;controller=new AbortController();const pendingController=controller;
         const status=node('p','正在等待回应…'),cancel=node('button','取消回应');cancel.type='button';cancel.className='btn btn-secondary';cancel.onclick=()=>pendingController.abort();body.append(status,cancel);

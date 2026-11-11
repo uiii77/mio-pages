@@ -408,6 +408,31 @@ body.night-mode-active #chat-settings-screen [data-period-sharing-row] .kkt-item
     font-weight: bold;
 }
 
+/* 分组沿用互动设置的文字标题和右侧细箭头，不显示浏览器实心标记。 */
+:is(details.kkt-group, .interaction-setting-group, .api-nested-details, .api-archive-box) > summary {
+    list-style: none;
+    cursor: pointer;
+}
+:is(details.kkt-group, .interaction-setting-group, .api-nested-details, .api-archive-box) > summary::-webkit-details-marker { display: none; }
+:is(details.kkt-group, .interaction-setting-group, .api-nested-details, .api-archive-box) > summary::marker { content: ''; }
+:is(details.kkt-group, .interaction-setting-group, .api-nested-details, .api-archive-box) > summary:focus-visible {
+    outline: 2px solid var(--primary-color);
+    outline-offset: -3px;
+    border-radius: inherit;
+}
+body.night-mode-active :is(details.kkt-group, .interaction-setting-group, .api-nested-details, .api-archive-box) > summary {
+    color: var(--global-title-color, #e0e0e0) !important;
+    background-color: var(--panel-bg, #181818);
+}
+body.night-mode-active :is(details.kkt-group, .interaction-setting-group, .api-nested-details, .api-archive-box) > summary:focus-visible {
+    outline-color: var(--global-title-color, #e0e0e0);
+}
+:is(.role-settings-section, #setting-life-context-events-group, .api-node-advanced, .api-nested-details, .api-archive-box) > summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
 .interaction-subgroup { margin-bottom: 15px; }
 .interaction-subgroup > summary,
 .interaction-setting-group > summary {
@@ -421,15 +446,16 @@ body.night-mode-active #chat-settings-screen [data-period-sharing-row] .kkt-item
 }
 .interaction-subgroup > summary { color: var(--primary-color); font-weight: bold; }
 .interaction-setting-group > summary { color: #333; font-weight: 400; }
-.interaction-subgroup > summary::-webkit-details-marker,
-.interaction-setting-group > summary::-webkit-details-marker { display: none; }
+:is(.role-settings-section, #setting-life-context-events-group, .api-node-advanced, .api-nested-details, .api-archive-box) > summary::after,
 .interaction-subgroup > summary::after,
 .interaction-setting-group > summary::after {
     content: '›';
     color: #ccc;
     font-size: 16px;
     font-weight: 400;
+    flex: 0 0 auto;
 }
+:is(.role-settings-section, #setting-life-context-events-group, .api-node-advanced, .api-nested-details, .api-archive-box)[open] > summary::after,
 .interaction-subgroup[open] > summary::after,
 .interaction-setting-group[open] > summary::after { transform: rotate(90deg); }
 .interaction-subgroup[open] > summary { border-bottom: 1px solid #f5f5f5; }
