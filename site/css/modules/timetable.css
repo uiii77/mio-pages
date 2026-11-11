@@ -1,4 +1,4 @@
-#timetable-screen { font-family: var(--font-family); color: var(--text-color, #2a3032); background: #fff; font-size: calc(14px * var(--app-font-scale, 1)); }
+#timetable-screen { --tt-surface: #fff; --tt-field: #f8f8f8; --tt-line: #eee; --tt-muted: #777; font-family: var(--font-family); color: var(--text-color, #2a3032); background: #fff; font-size: calc(14px * var(--app-font-scale, 1)); }
 #timetable-screen main { flex: 1; min-height: 0; overflow: auto; padding: 15px 15px max(24px, env(safe-area-inset-bottom)); background: #f8f8f8; }
 #timetable-screen :is(section, details) { background: #fff; border-radius: 12px; padding: 16px; margin-bottom: 12px; }
 #timetable-screen :is(h2, h3, summary) { font-size: calc(15px * var(--app-font-scale, 1)); font-weight: 600; margin: 0 0 10px; }
@@ -11,7 +11,7 @@
 #timetable-screen button[aria-pressed="true"] { box-shadow: inset 0 0 0 1px currentColor; }
 #timetable-screen .tt-toggle { display: flex; align-items: center; gap: 8px; }
 #timetable-screen .tt-toggle input { display: inline-block; width: auto; margin: 0; accent-color: var(--accent-color, #8caaaa); }
-#timetable-screen .tt-note { color: #888; font-size: calc(12px * var(--app-font-scale, 1)); line-height: 1.6; overflow-wrap: anywhere; }
+#timetable-screen .tt-note { color: var(--tt-muted); font-size: calc(12px * var(--app-font-scale, 1)); line-height: 1.6; overflow-wrap: anywhere; }
 #timetable-screen .tt-connection-steps { margin: 16px 0; padding-left: 22px; font-size: calc(13px * var(--app-font-scale, 1)); line-height: 1.7; }
 #timetable-screen .tt-connection-steps li + li { margin-top: 8px; }
 #timetable-screen [data-tt="bridge-status"] { font-weight: 600; line-height: 1.6; }
@@ -21,8 +21,8 @@
 #timetable-screen article { padding: 12px 0; border-bottom: 1px solid #eee; overflow-wrap: anywhere; }
 #timetable-screen fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
 #timetable-screen textarea { box-sizing: border-box; width: 100%; max-width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 8px; background: transparent; color: inherit; font: inherit; resize: vertical; }
-#timetable-screen [hidden] { display: none; }
-body.night-mode-active #timetable-screen { background: #1c1c1e; color: #e5e5e7; color-scheme: dark; }
+#timetable-screen [hidden] { display: none !important; }
+body.night-mode-active #timetable-screen { --tt-surface: #1c1c1e; --tt-field: #262628; --tt-line: #38383a; --tt-muted: #aaa; background: #1c1c1e; color: #e5e5e7; color-scheme: dark; }
 body.night-mode-active #timetable-screen :is(section, details) { background: #1c1c1e; }
 body.night-mode-active #timetable-screen :is(main, input, select) { background: #262628; }
 body.night-mode-active #timetable-screen :is(input, select, article) { border-color: #38383a; }
@@ -58,15 +58,101 @@ body.night-mode-active #timetable-screen :is(input, select, article) { border-co
 #timetable-screen .tt-slots .tt-course strong { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.3; flex-shrink: 0; }
 #timetable-screen .tt-slots :is(.tt-course-place, .tt-badge) { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; flex-shrink: 0; }
 #timetable-screen .tt-section-column { position: sticky; left: 0; background: #fff; z-index: 1; }
-#timetable-screen dialog { width: min(520px, calc(100% - 24px)); box-sizing: border-box; max-height: 85dvh; padding: 16px; border: 0; border-radius: 16px; color: inherit; background: #fff; font: inherit; overflow-y: auto; }
+#timetable-screen dialog { width: min(520px, calc(100% - 24px)); box-sizing: border-box; max-height: 85dvh; padding: 0; border: 0; border-radius: 16px; color: inherit; background: var(--tt-surface); font: inherit; overflow: hidden; }
+#timetable-screen dialog[open] { display: flex; flex-direction: column; }
 #timetable-screen dialog::backdrop { background: rgba(0, 0, 0, .35); }
-#timetable-screen .tt-dialog-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+#timetable-screen .tt-dialog-heading { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--tt-line); }
 #timetable-screen .tt-dialog-heading h2 { margin: 0; }
 #timetable-screen dialog :is(section, details) { padding: 4px 0 0; margin: 0; }
-#timetable-screen dialog summary { display: none; }
+#timetable-screen .tt-dialog-body > details > summary { display: none; }
 #timetable-screen [data-tt="course-detail"] { line-height: 1.8; overflow-wrap: anywhere; }
 body.night-mode-active #timetable-screen :is(dialog, .tt-section-column, .tt-grid-heading) { background: #1c1c1e; }
 body.night-mode-active #timetable-screen .tt-course { background: #2a3c39; }
 body.night-mode-active #timetable-screen :is(.tt-course-time, .tt-course-place, .tt-badge) { color: #c1d1cb; }
 body.night-mode-active #timetable-screen .tt-view-switch button { background: #303436; }
 @media (min-width: 700px) { #timetable-screen .tt-home { max-width: 1000px; margin-inline: auto; } }
+
+/* Use the existing feature-page palette and shared .btn sizing; layout stays local. */
+#timetable-screen .btn { width: auto; margin: 0; min-width: 0; font-weight: 500; line-height: 1.5; box-shadow: none; }
+#timetable-screen .btn-primary { background: var(--primary-color, #cee4f1); color: var(--text-color, #2a3032); }
+#timetable-screen .btn-secondary { background: var(--tt-field); color: inherit; border: 1px solid var(--tt-line); }
+#timetable-screen .tt-danger { color: #ad4d5d; background: transparent; }
+#timetable-screen :is(input, select, textarea, summary):focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+#timetable-screen :is(input, select, textarea):disabled { opacity: .6; cursor: default; }
+#timetable-screen :is(input, select, textarea) { max-width: 100%; }
+#timetable-screen .tt-dialog-body { padding: 12px 16px 16px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scroll-padding-block: 12px 80px; }
+#timetable-screen .tt-dialog-body > [data-tt-panel] { min-width: 0; }
+#timetable-screen .tt-dialog-body > [data-tt-panel] > :first-child { margin-top: 0; }
+#timetable-screen [data-tt="panel-status"] { margin: 0 0 12px; padding: 10px 12px; background: var(--tt-field); border-radius: 8px; }
+#timetable-screen [data-tone="error"] { color: #ad4d5d; }
+#timetable-screen [data-tt="dialog"][aria-busy="true"] { cursor: progress; }
+#timetable-screen .tt-section-divider { border-top: 1px solid var(--tt-line); margin: 20px 0; }
+#timetable-screen .tt-sync-actions { margin-top: 14px; }
+#timetable-screen .tt-main-actions { margin-top: 18px; }
+#timetable-screen .tt-main-actions > button { flex: 1; }
+#timetable-screen .tt-bottom-actions { margin-top: 12px; border-color: var(--tt-line); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
+#timetable-screen .tt-bottom-actions button { text-align: left; color: var(--tt-muted); }
+#timetable-screen .tt-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; }
+#timetable-screen .tt-form-grid > label { min-width: 0; }
+#timetable-screen .tt-full-row { grid-column: 1 / -1; }
+#timetable-screen .tt-panel-actions { position: sticky; bottom: -16px; background: var(--tt-surface); padding: 12px 0 max(12px, env(safe-area-inset-bottom)); margin-top: 14px; border-top: 1px solid var(--tt-line); z-index: 1; }
+#timetable-screen .tt-panel-actions > button { flex: 1; }
+#timetable-screen .tt-detail-actions { border-top: 1px solid var(--tt-line); padding-top: 12px; margin-top: 16px; }
+#timetable-screen .tt-detail-actions > button { flex: 1 1 120px; }
+#timetable-screen .tt-import-target { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+#timetable-screen .tt-import-target strong { flex: 1 1 120px; min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
+#timetable-screen .tt-import-target button { background: transparent; font-size: 12px; padding-inline: 0; }
+#timetable-screen .tt-file-card { display: grid; grid-template-columns: 36px minmax(0, 1fr); align-items: start; gap: 10px 12px; padding: 16px; border: 1px solid var(--tt-line); border-radius: 12px; background: var(--tt-field); }
+#timetable-screen .tt-file-card::before { content: ''; width: 32px; height: 36px; background: var(--tt-muted); mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round' d='M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Zm0 0v6h6M8 13h8M8 17h5'/%3E%3C/svg%3E") center / contain no-repeat; }
+#timetable-screen .tt-file-copy { display: grid; gap: 6px; flex: 1 1 140px; min-width: 0; }
+#timetable-screen .tt-file-copy strong { font-weight: 600; }
+#timetable-screen .tt-file-copy :is(span, small) { overflow-wrap: anywhere; line-height: 1.6; font-size: 12px; color: var(--tt-muted); }
+#timetable-screen .tt-file-card .btn { grid-column: 2; justify-self: start; background: var(--tt-surface); padding: 8px 16px; }
+#timetable-screen details.tt-disclosure { border-top: 1px solid var(--tt-line); border-radius: 0; margin-top: 12px; padding: 0; }
+#timetable-screen .tt-disclosure > summary { display: flex; align-items: center; gap: 12px; list-style: none; margin: 0; padding: 16px 2px; min-height: 48px; box-sizing: border-box; line-height: 1.6; font-size: inherit; font-weight: 500; cursor: pointer; overflow-wrap: anywhere; }
+#timetable-screen .tt-disclosure > summary::-webkit-details-marker { display: none; }
+#timetable-screen .tt-disclosure > summary::marker { content: ''; }
+#timetable-screen .tt-disclosure > summary::after { content: '›'; margin-left: auto; color: var(--tt-muted); font-size: 22px; flex: 0 0 14px; text-align: center; }
+#timetable-screen .tt-disclosure[open] > summary::after { transform: rotate(90deg); }
+#timetable-screen .tt-disclosure > summary span { min-width: 0; }
+#timetable-screen .tt-disclosure small { display: block; color: var(--tt-muted); font-size: 12px; font-weight: 400; margin-top: 3px; }
+#timetable-screen .tt-entry-icon { width: 22px; height: 22px; flex: 0 0 22px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; color: var(--tt-muted); }
+#timetable-screen .tt-disclosure:not([open]) > :not(summary) { display: none; }
+#timetable-screen .tt-disclosure textarea { background: var(--tt-field); border-color: var(--tt-line); min-height: 120px; max-height: 40dvh; line-height: 1.6; }
+#timetable-screen .tt-preview { margin-top: 16px; }
+#timetable-screen .tt-preview h3 { margin-bottom: 6px; }
+#timetable-screen .tt-preview article { padding: 12px; margin-top: 8px; border: 1px solid var(--tt-line); border-radius: 10px; }
+#timetable-screen .tt-preview article p { margin: 6px 0 0; }
+#timetable-screen .tt-preview-row-heading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px; }
+#timetable-screen .tt-preview-row-heading strong { flex: 1 1 140px; min-width: 0; }
+#timetable-screen .tt-preview-row-heading span { color: var(--tt-muted); font-size: 12px; }
+#timetable-screen .tt-preview [data-result="ready"] { border-left: 3px solid #a6beba; }
+#timetable-screen .tt-preview :is([data-result="conflict"], [data-result="invalid"]) { border-left: 3px solid #c49d7f; }
+#timetable-screen [data-tt="course-detail"] p { border-bottom: 1px solid var(--tt-line); padding-bottom: 8px; margin-block: 8px; }
+body.night-mode-active #timetable-screen button { background: #303436; }
+body.night-mode-active #timetable-screen .btn-primary { background: #35494f; color: #e5e5e7; }
+body.night-mode-active #timetable-screen .btn-secondary { background: var(--tt-field); }
+body.night-mode-active #timetable-screen :is(.back-btn, .tt-week-nav > button, .tt-dates button, .tt-bottom-actions button, .tt-import-target button, .tt-sync-brief, .tt-danger) { background: transparent; }
+body.night-mode-active #timetable-screen .tt-dates button[aria-pressed="true"] { background: #35494f; }
+body.night-mode-active #timetable-screen :is(.tt-danger, [data-tone="error"]) { color: #efa6b3; }
+body.night-mode-active #timetable-screen .tt-course { background: #2a3c39; }
+@media (max-width: 359px) { #timetable-screen .tt-form-grid { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 600px) { #timetable-screen dialog :is(input, select, textarea) { font-size: max(16px, 1em); } }
+
+/* Match the setting rows and reading disclosures without changing native semantics. */
+#timetable-screen .tt-dialog-heading { padding-block: 14px; }
+#timetable-screen .tt-dialog-body { padding-top: 16px; }
+#timetable-screen .tt-import-target { border-bottom: 1px solid var(--tt-line); padding-bottom: 10px; margin-bottom: 14px; }
+#timetable-screen .tt-return { color: var(--tt-muted); background: transparent; padding-left: 0; margin-bottom: 12px; }
+#timetable-screen select, body.night-mode-active #timetable-screen select { appearance: none; padding-right: 30px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='1.8'%3E%3Cpath d='m8 5 7 7-7 7'/%3E%3C/svg%3E"); background-size: 12px; background-repeat: no-repeat; background-position: right 10px center; text-overflow: ellipsis; }
+#timetable-screen .tt-course-facts { margin: 16px 0; }
+#timetable-screen .tt-course-facts > div { display: grid; grid-template-columns: 60px minmax(0, 1fr); gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--tt-line); }
+#timetable-screen .tt-course-facts dt { color: var(--tt-muted); font-size: 13px; }
+#timetable-screen .tt-course-facts dd { margin: 0; overflow-wrap: anywhere; }
+#timetable-screen .tt-view-switch { background: var(--tt-field); border-radius: 10px; padding: 4px; }
+#timetable-screen .tt-view-switch button { background: transparent; flex: 1 1 auto; }
+#timetable-screen .tt-view-switch button[aria-pressed="true"] { background: var(--tt-surface); box-shadow: 0 1px 3px #00000012; }
+#timetable-screen .tt-sync-brief { color: var(--tt-muted); padding: 12px 0; border-bottom: 1px solid var(--tt-line); margin-bottom: 12px; }
+#timetable-screen .tt-preview-row-heading span { background: var(--tt-field); padding: 2px 8px; border-radius: 6px; }
+#timetable-screen .tt-empty { color: var(--tt-muted); }
+body.night-mode-active #timetable-screen .tt-return { background: transparent; }

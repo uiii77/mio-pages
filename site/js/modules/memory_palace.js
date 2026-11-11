@@ -223,12 +223,16 @@
         const p = historyProgress(job), active = historyRuns.has(character.id);
         const labels = {running:active?'正在整理':'已保存，等待继续',paused:'已暂停',failed:'本批失败',completed:'整理完成',cancelled:'已取消'};
         const summary=document.getElementById('palace-progress-open');if(summary){summary.hidden=false;summary.textContent=`${labels[job.status]||'整理进度'} · ${p.processed}/${job.total} 条 ›`;}
-        target.textContent = `${labels[job.status] || '等待继续'} · 共 ${job.total} 条，已处理 ${p.processed} 条，剩余 ${p.remaining} 条 · 批次 ${Math.min(p.completed+1,p.totalBatches)}/${p.totalBatches}（成功 ${p.completed}，失败 ${job.batches.filter(b=>b.status==='failed').length}）${job.error?' · '+job.error:''}${job.linkError?' · '+job.linkError:''}`;
+        target.textContent = `${labels[job.status] || '等待继续'} · 共 ${job.total} 条，已处理 ${p.processed} 条，剩余 ${p.remaining} 条 · 已保存 ${p.completed}/${p.totalBatches} 批 · 处理中 ${active?job.batches.filter(b=>b.status==='running').length:0} 批，待保存 ${job.batches.filter(b=>b.status==='ready').length} 批，失败 ${job.batches.filter(b=>b.status==='failed').length} 批 · 最多 ${historyConcurrency(job.concurrency)} 批并发${job.error?' · '+job.error:''}${job.linkError?' · '+job.linkError:''}`;
         const range=job.batches.filter(batch=>batch.status==='success'&&batch.completedRange).at(-1)?.completedRange;
         if(range){const entries=historyEntries(character);const start=entries.findIndex(entry=>entry.id===range.start),end=entries.findIndex(entry=>entry.id===range.end);if(start>=0&&end>=0)target.textContent+=` · 最近完成：第 ${start+1}–${end+1} 条消息范围`;}
         actions.querySelector('[data-history-action="pause"]').hidden = !active;
         const resume = actions.querySelector('[data-history-action="resume"]');
         resume.hidden = active; resume.textContent = job.status === 'failed' ? '重试失败批次' : '继续整理';
+    }
+    function historyConcurrency(value) {
+        const count=Number(value);
+        return Number.isFinite(count)&&count>=1 ? Math.min(4,Math.floor(count)) : 2;
     }
     async function createHistoryJob(character, selection) {
         if (!character.memoryPalaceEnabled) throw Error('请先开启记忆宫殿');
@@ -237,7 +241,7 @@
         const config = featureConfig('memoryProcess',character);
         if (!config) throw Error('请先配置主 API；记忆宫殿会自动继承');
         const plan = Core.planHistoryArchive(historyEntries(character), selection, config);
-        const job = {id:Core.id('mph'),chatArchiveScopeId:archiveScope(character),status:'paused',createdAt:Date.now(),selection,...plan,concurrency:Math.min(2,plan.batches.length),error:'',stored:0,merged:0};
+        const job = {id:Core.id('mph'),chatArchiveScopeId:archiveScope(character),status:'paused',createdAt:Date.now(),selection,...plan,concurrency:Math.min(historyConcurrency(selection?.concurrency),plan.batches.length),error:'',stored:0,merged:0};
         await putHistoryJob(character.id,job);
         return job;
     }
@@ -386,7 +390,7 @@
                 if(halves)job.rejectedRequests=(job.rejectedRequests||0)+(batch.metrics?.requests||0);
                 return halves?halves.map(units=>({units,status:'pending',attempts:0})): [batch];
             });
-            if(job.status==='running'&&job.batches.some(b=>b.status==='running')){
+            if(job.batches.some(b=>b.status==='running')){
                 job.batches.filter(b=>b.status==='running').forEach(batch=>{
                     batch.status='pending';batch.error='';const metrics=ensureHistoryBatchMetrics(batch);
                     metrics.interruptedRequests=(metrics.interruptedRequests||0)+1;
@@ -394,20 +398,16 @@
                 job.status='paused';job.error='上次请求中断；继续操作将只重试未保存结果的批次，该请求可能曾被服务计费';
                 await putHistoryJob(character.id,job);
             }
+            job.batches.filter(batch=>batch.status==='failed').forEach(batch=>{batch.status='pending';batch.error='';});
             job.status='running'; job.error=''; await putHistoryJob(character.id,job);
             const entries=historyEntries(character), byId=new Map(entries.map(m=>[m.id,m]));
             if (byId.size!==entries.length) throw Error('历史记录包含重复 ID，请先核对');
             nodes=await listNodes(character.id);
             const currentEntry=createLiveHistoryLookup(character),nodeTokenCache=new Map();
-            let saveQueue=Promise.resolve();
-            const checkpoint=()=>{saveQueue=saveQueue.then(()=>putHistoryJob(character.id,job));return saveQueue;};
-            while(job.batches.some(b=>b.status!=='success')) {
-                if(control.action || !character.memoryPalaceEnabled) {control.action ||= 'paused';break;}
-                const concurrency=Math.min(2,Math.max(1,Number(job.concurrency)||1));
-                const pending=job.batches.filter(b=>b.status!=='success'&&b.status!=='ready').slice(0,concurrency);
-                pending.forEach(batch=>{batch.status='running';batch.error='';ensureHistoryBatchMetrics(batch);});
-                if(pending.length)await checkpoint();
-                await Promise.all(pending.map(async batch=>{
+            // Only the coordinator writes checkpoints; request workers never write the shared job.
+            const checkpoint=()=>putHistoryJob(character.id,job);
+            const inFlight=new Map();
+            const extractBatch=async batch=>{
                     const started=performance.now();
                     const metrics=batch.metrics;
                     try {
@@ -431,7 +431,13 @@
                                 break;
                             }catch(error){
                                 // A timed-out request may already be billed. Do not silently resubmit it.
-                                if(/429|rate.limit|限流/i.test(error.message)&&attempt<2){job.concurrency=1;await new Promise(r=>setTimeout(r,1000*2**attempt));continue;}
+                                if(/429|rate.limit|限流/i.test(error.message)&&attempt<2){
+                                    job.concurrency=1;
+                                    if(control.action||!character.memoryPalaceEnabled||job.batches.some(other=>other.status==='failed')){batch.status='pending';return;}
+                                    await new Promise(r=>setTimeout(r,1000*2**attempt));
+                                    if(control.action||!character.memoryPalaceEnabled||job.batches.some(other=>other.status==='failed')){batch.status='pending';return;}
+                                    continue;
+                                }
                                 throw error;
                             }finally{metrics.apiMs+=performance.now()-apiStart;}
                         }
@@ -439,32 +445,72 @@
                         metrics.estimatedInputTokens=Math.ceil(messages.reduce((n,m)=>n+m.text.length,0)/2)+800;
                     }catch(error){batch.status='failed';batch.error=error.name==='AbortError'?'请求超时，服务可能已计费；请核对后重试':error.message||String(error);}
                     metrics.elapsedMs=(metrics.elapsedMs||0)+performance.now()-started;
-                    await checkpoint();
-                }));
+            };
+            try { while(job.batches.some(b=>b.status!=='success')) {
+                if(!character.memoryPalaceEnabled)control.action ||= 'paused';
+                // Commit only the contiguous prefix, even when later API responses arrive first.
                 for(let index=0;index<job.batches.length;index++) {
                     const batch=job.batches[index];if(batch.status==='success')continue;
-                    if(batch.status==='failed'){
-                        if(/context|token.*limit|too (?:long|large)|413|上下文/i.test(batch.error||'')){
-                            const halves=splitHistoryBatch(batch);
-                            if(halves){job.rejectedRequests=(job.rejectedRequests||0)+(batch.metrics?.requests||0);job.batches.splice(index,1,...halves.map(units=>({units,status:'pending',attempts:0})));await checkpoint();break;}
-                        }
-                        throw Error(batch.error);
-                    }
                     if(batch.status!=='ready')break;
                     const writeStart=performance.now();
                     await commitHistoryBatch(character,job,index,batch.result,batch.mergeTargets||[],nodes,currentEntry);
                     batch.metrics ||= {};batch.metrics.writeMs=(batch.metrics.writeMs||0)+performance.now()-writeStart;
                 }
+                const failed=job.batches.some(batch=>batch.status==='failed');
+                if(failed&&!inFlight.size&&!control.action){
+                    const index=job.batches.findIndex(batch=>batch.status==='failed'),batch=job.batches[index];
+                    const halves=/context|token.*limit|too (?:long|large)|413|上下文/i.test(batch.error||'')?splitHistoryBatch(batch):null;
+                    if(!halves)throw Error(batch.error);
+                    job.rejectedRequests=(job.rejectedRequests||0)+(batch.metrics?.requests||0);
+                    job.batches.splice(index,1,...halves.map(units=>({units,status:'pending',attempts:0})));
+                    await checkpoint();
+                    continue;
+                }
+                if(!control.action&&!failed){
+                    const concurrency=historyConcurrency(job.concurrency);
+                    const first=job.batches.findIndex(batch=>batch.status!=='success');
+                    // A slow early batch cannot accumulate unbounded paid results behind it.
+                    const pending=first<0?[]:job.batches.slice(first,first+concurrency*2)
+                        .filter(batch=>batch.status==='pending').slice(0,Math.max(0,concurrency-inFlight.size));
+                    pending.forEach(batch=>{batch.status='running';batch.error='';ensureHistoryBatchMetrics(batch);});
+                    if(pending.length)await checkpoint();
+                    for(const batch of pending){
+                        if(control.action||!character.memoryPalaceEnabled||job.batches.some(other=>other.status==='failed')||inFlight.size>=historyConcurrency(job.concurrency)){
+                            batch.status='pending';continue;
+                        }
+                        const request=extractBatch(batch).finally(()=>inFlight.delete(batch));
+                        inFlight.set(batch,request);
+                    }
+                }
                 await renderHistoryProgress(character);
+                if(!inFlight.size){
+                    if(control.action||job.batches.every(batch=>batch.status==='success'))break;
+                    continue;
+                }
+                await Promise.race(inFlight.values());
+                await checkpoint();
+            }} finally {
+                // Drain started requests before releasing the role lock, including storage failures.
+                await Promise.allSettled(inFlight.values());
             }
-            job.status=control.action||'completed';await putHistoryJob(character.id,job);
+            job.status=job.batches.every(batch=>batch.status==='success')?'completed':control.action||'failed';await putHistoryJob(character.id,job);
         } catch(error) {
+            const failedJobId=job?.id;
+            const completedResults=job?.batches.map(batch=>batch.status==='ready'?batch:null)||[];
             job=await getHistoryJob(character.id);
+            // A failed transaction must not discard a peer's already paid, valid response.
+            if(job?.id===failedJobId)completedResults.forEach((batch,index)=>{
+                const saved=job.batches[index];
+                if(batch&&saved&&saved.status!=='success'&&JSON.stringify(saved.units)===JSON.stringify(batch.units)){
+                    Object.assign(saved,{status:'ready',result:batch.result,mergeTargets:batch.mergeTargets,metrics:batch.metrics,attempts:batch.attempts,error:''});
+                }
+            });
             if(job){job.status=control.action||'failed';job.error=error.message||String(error);await putHistoryJob(character.id,job);}
         } finally {
             // Rebuild evidenced links even after a pause/failure. A later resume retries link maintenance, not model extraction.
-            if(job){try{const changed=job.batches.flatMap(b=>b.nodeIds||[]);if(changed.length)await refreshAutomaticLinks(character.id,[...new Set(changed)]);job.linkError='';}catch(error){job.linkError='关联更新失败：'+error.message;}await putHistoryJob(character.id,job);}
-            historyRuns.delete(character.id);archiveLocks.delete(character.id);
+            try {
+                if(job){try{const changed=job.batches.flatMap(b=>b.nodeIds||[]);if(changed.length)await refreshAutomaticLinks(character.id,[...new Set(changed)]);job.linkError='';}catch(error){job.linkError='关联更新失败：'+error.message;}await putHistoryJob(character.id,job);}
+            } finally { historyRuns.delete(character.id);archiveLocks.delete(character.id); }
             await renderHistoryProgress(character);if(character.id===ui.characterId)await render();
         }
         return job;
@@ -491,7 +537,7 @@
     async function chooseHistoryRange(character) {
         const previous=await getHistoryJob(character.id);
         if(previous&&!['completed','cancelled'].includes(previous.status)){await renderHistoryProgress(character);document.getElementById('palace-progress-modal').classList.add('visible');return;}
-        const chosen=await showAppFormDialog({title:'整理聊天记忆',message:'保留原聊天和已有记忆，整理文字及语音原文。系统会自动分批并连续处理，自动整理设置不变。',fields:[{name:'mode',label:'整理范围',type:'select',value:'all',options:[{value:'all',label:'全部历史'},{value:'custom',label:'自选范围'},{value:'recent',label:'最近消息'}]}],confirmText:'下一步'});
+        const chosen=await showAppFormDialog({title:'整理聊天记忆',message:'保留原聊天和已有记忆，自动分批、按顺序保存。并发越高，对服务额度要求越高；遇到限流会降低速度。',fields:[{name:'mode',label:'整理范围',type:'select',value:'all',options:[{value:'all',label:'全部历史'},{value:'custom',label:'自选范围'},{value:'recent',label:'最近消息'}]},{name:'concurrency',label:'整理速度',type:'select',value:'2',options:[{value:'1',label:'稳妥 · 每次 1 批'},{value:'2',label:'均衡 · 同时 2 批（默认）'},{value:'4',label:'加速 · 同时 4 批'}]}],confirmText:'下一步'});
         if(!chosen)return;
         let selection=chosen;
         if(chosen.mode==='recent'){
@@ -513,8 +559,9 @@
                 if(selection.start>selection.end)throw Error('结束范围不能早于开始范围');
             }
         }
+        selection={...selection,concurrency:historyConcurrency(chosen.concurrency)};
         const plan=Core.planHistoryArchive(historyEntries(character),selection,featureConfig('memoryProcess',character)||{});
-        const confirmed=await showAppConfirmDialog({title:'开始整理？',message:`所选 ${plan.total} 条消息，预计 ${plan.batches.length} 次提取请求。输入与输出约 ${Math.ceil(plan.characters/4+plan.batches.length*500).toLocaleString()}–${Math.ceil(plan.characters+plan.batches.length*3000).toLocaleString()} Token（估算，重试或缩小批次会增加调用）。\n可暂停并在刷新后继续；保持此页面打开可连续完成。${previous?'重新整理仅追加或合并来源，不覆盖已有记忆。':''}`,confirmText:'开始整理',cancelText:'暂不开始'});
+        const confirmed=await showAppConfirmDialog({title:'开始整理？',message:`所选 ${plan.total} 条消息，预计 ${plan.batches.length} 次提取请求，最多同时处理 ${Math.min(selection.concurrency,plan.batches.length)} 批。输入与输出约 ${Math.ceil(plan.characters/4+plan.batches.length*500).toLocaleString()}–${Math.ceil(plan.characters+plan.batches.length*3000).toLocaleString()} Token（估算，重试或缩小批次会增加调用）。\n可暂停并在刷新后继续；保持此页面打开可连续完成。${previous?'重新整理仅追加或合并来源，不覆盖已有记忆。':''}`,confirmText:'开始整理',cancelText:'暂不开始'});
         if(confirmed!==true && confirmed!=='confirm')return;
         const create=async()=>createHistoryJob(character,selection);
         if(global.navigator?.locks)await navigator.locks.request(`mio-memory-archive:${character.id}`,{ifAvailable:true},lock=>{if(!lock)throw Error('此角色正在整理，请稍后继续');return create();});
@@ -1940,7 +1987,7 @@
             const box=document.getElementById('palace-history-metrics');box.hidden=!box.hidden;if(box.hidden)return;
             const job=await getHistoryJob(ui.characterId);if(!job){box.textContent='暂无任务';return;}
             const success=job.batches.filter(b=>b.status==='success').length;
-            box.innerHTML=`<p>成功 ${success}/${job.batches.length} 批 · ${Math.round(success/job.batches.length*100)}%</p>`+job.batches.map((b,i)=>{const m=b.metrics||{};return `<p>第 ${i+1} 批 · ${b.units.filter(u=>u.last).length} 条 · ${escapeHtml(b.status)}<br>请求 ${m.transportRequests||m.requests||b.attempts||0} 次 · 模型 ${((m.apiMs||0)/1000).toFixed(2)}s · 准备 ${Math.round(m.prepareMs||0)}ms · 写入 ${Math.round(m.writeMs||0)}ms<br>${m.usageReported?`Token：输入 ${m.inputTokens} / 输出 ${m.outputTokens}`:`服务未报告用量；输入估算 ${m.estimatedInputTokens||'—'} Token`}</p>`;}).join('');
+            box.innerHTML=`<p>成功 ${success}/${job.batches.length} 批 · ${Math.round(success/job.batches.length*100)}%</p>`+job.batches.map((b,i)=>{const m=b.metrics||{};return `<p>第 ${i+1} 批 · ${historyBatchProcessed(b)} 条 · ${escapeHtml(b.status)}<br>请求 ${m.transportRequests||m.requests||b.attempts||0} 次 · 模型 ${((m.apiMs||0)/1000).toFixed(2)}s · 准备 ${Math.round(m.prepareMs||0)}ms · 写入 ${Math.round(m.writeMs||0)}ms<br>${m.usageReported?`Token：输入 ${m.inputTokens} / 输出 ${m.outputTokens}`:`服务未报告用量；输入估算 ${m.estimatedInputTokens||'—'} Token`}</p>`;}).join('');
         };
         document.getElementById('memory-palace-archive-now-btn')?.addEventListener('click', () => {
             const character=currentCharacter();

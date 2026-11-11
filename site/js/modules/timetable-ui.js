@@ -11,8 +11,16 @@
     let pendingShareRole = null;
     let pendingCalendarTarget = null;
     let importPreview = null;
-    function invalidateImport() { importPreview = null; field('import-confirm').disabled = true; field('import-results').replaceChildren(); }
-    const note = text => { field('status').textContent = text; field('panel-status').textContent = text; };
+    let returnToImport = false;
+    function invalidateImport() {
+        importPreview = null; field('import-results').replaceChildren();
+        field('import-preview-area').hidden = true; field('import-confirm').hidden = true;
+        field('import-confirm').disabled = true; field('import-preview').textContent = '检查并预览';
+        field('import-preview').classList.replace('btn-secondary', 'btn-primary');
+    }
+    const note = (text, tone = '') => {
+        for (const name of ['status', 'panel-status']) { field(name).textContent = text; field(name).dataset.tone = tone; }
+    };
     const element = (tag, text, className) => {
         const node = document.createElement(tag); node.textContent = text;
         if (className) node.className = className;
@@ -29,15 +37,21 @@
     }
     async function run(action) {
         if (busy || confirming) return;
+        const trigger = document.activeElement;
         busy = true;
+        field('dialog').setAttribute('aria-busy', 'true');
         const controls = [...document.querySelectorAll('#timetable-screen button, #timetable-screen input, #timetable-screen select, #timetable-screen textarea')];
         const previous = controls.map(control => control.disabled);
         controls.forEach(control => { control.disabled = true; });
         try { await action(); }
-        catch (error) { note(error.message || '课表操作失败，请重试'); }
+        catch (error) {
+            note(error.message || '课表操作失败，请重试', 'error');
+            if (field('dialog').open) { field('panel-status').tabIndex = -1; field('panel-status').focus(); field('panel-status').scrollIntoView?.({ block: 'start' }); }
+        }
         finally {
             controls.forEach((control, index) => { control.disabled = previous[index]; });
-            busy = false; updateControls();
+            busy = false; field('dialog').setAttribute('aria-busy', 'false'); updateControls();
+            if (document.activeElement === document.body && trigger?.isConnected && !trigger.disabled && !trigger.closest('[hidden]') && (!field('dialog').open || field('dialog').contains(trigger))) trigger.focus?.();
         }
     }
     async function confirmAction(message) {
@@ -73,6 +87,12 @@
     }
     function updateControls() {
         field('import-confirm').disabled = busy || !importPreview?.preview.courses.length || importPreview.preview.snapshotId !== selected?.id;
+        const manual = selected?.provider === 'manual';
+        field('import-preview').disabled = busy || !manual || !field('import-text').value.trim();
+        field('recognize-image').disabled = busy || !field('import-image').files?.length;
+        field('import-target').textContent = manual ? selected.semester : selected ? '请先选择手工学期' : '尚未建立手工学期';
+        field('import-create').hidden = manual;
+        field('school-actions').hidden = manual;
         connectionStatus();
         const bridge = global.TimetableBridge?.getStatus?.();
         const canRefresh = selected && api().canRefresh(selected.provider, selected.scopeKey)
@@ -107,11 +127,12 @@
             field('sections').value = course.sections.join(','); field('weeks').value = course.weeks.join(',');
         }
         field('edit-hint').textContent = selected?.provider === 'manual'
-            ? `手工学期共 ${selected.manualConfig.weekCount} 周，每天 ${selected.manualConfig.sectionCount} 节。教学周支持“1-16（单）”或“1-16（双）”；时间可选填。删除整门课请选择“取消课程”和“所有适用教学周”。`
+            ? `本学期 ${selected.manualConfig.weekCount} 周 · 每天 ${selected.manualConfig.sectionCount} 节。教学周可填“1-16（单）”或“1-16（双）”，时间选填。`
             : '只修改 Mio 中的个人安排，不回写学校课表；取消课程可在“我的调整”中撤销。';
         updateControls();
     }
-    async function createManual() {
+    async function createManual(nextPanel = 'edit') {
+        const previousPanel = panel, wasOpen = field('dialog').open;
         if (field('dialog').open) field('dialog').close();
         const start = new Date(`${api().schoolDate()}T00:00:00Z`);
         start.setUTCDate(start.getUTCDate() - (start.getUTCDay() + 6) % 7);
@@ -124,15 +145,17 @@
                 { name: 'weekCount', label: '教学周数（1–60）', type: 'number', value: draft.weekCount, min: 1, max: 60, step: 1, required: true },
                 { name: 'sectionCount', label: '每天节数（1–30）', type: 'number', value: draft.sectionCount, min: 1, max: 30, step: 1, required: true },
             ] });
-        if (!result) return;
+        if (!result) { if (wasOpen) { panel = previousPanel; field('dialog').showModal(); } return; }
         manualDraft = result;
-        const snapshot = await api().createManualSemester(result);
+        let snapshot;
+        try { snapshot = await api().createManualSemester(result); }
+        catch (error) { if (wasOpen) field('dialog').showModal(); throw error; }
         manualDraft = null; dirty = false; panel = '';
         field('semester').append(new Option(snapshot.semester, snapshot.id)); field('semester').value = snapshot.id;
         selected = snapshot; view = 'day'; field('date').value = snapshot.manualConfig.startDate; field('week').value = '1';
         await render();
-        await openPanel('edit'); field('type').value = 'add'; field('scope').value = 'all'; fillCourse();
-        note('手工课表已创建，现在可以添加课程');
+        await openPanel(nextPanel); field('type').value = 'add'; field('scope').value = 'all'; fillCourse();
+        note(nextPanel === 'import' ? '手工课表已创建，请选择文件或粘贴内容' : '手工课表已创建，现在可以添加课程');
     }
     async function render(calendarTarget = null) {
         const token = ++generation;
@@ -252,6 +275,8 @@
     async function openPanel(name) {
         if (confirming || dirty && !await confirmAction('放弃尚未保存的修改？')) return false;
         dirty = false; panel = name;
+        if (name !== 'sync') returnToImport = false;
+        field('sync-return').hidden = !returnToImport;
         const dialog = field('dialog');
         if (!dialog.open) panelTrigger = document.activeElement;
         for (const node of dialog.querySelectorAll('[data-tt-panel]')) {
@@ -262,11 +287,13 @@
         dialog.setAttribute('aria-label', field('panel-title').textContent);
         field('panel-status').textContent = '';
         if (!dialog.open) dialog.showModal();
-        dialog.scrollTop = 0;
+        dialog.scrollTop = 0; field('panel-body').scrollTop = 0;
+        if (name === 'import') updateControls();
         return true;
     }
     async function closePanel() {
         if (busy || confirming || dirty && !await confirmAction('放弃尚未保存的修改？')) return;
+        if (panel === 'sync' && returnToImport) { await openPanel('import'); return; }
         dirty = false; panel = ''; field('dialog').close(); panelTrigger?.focus?.();
     }
     function changeLabel(change) {
@@ -298,7 +325,11 @@
         detailCourse = course;
         field('delete-course').hidden = course.source !== 'manual';
         const body = field('course-detail'); body.replaceChildren(element('h3', course.name));
-        for (const [label, value] of [['时间', course.startTime && course.endTime ? `${course.startTime}–${course.endTime}` : '学校未提供具体钟点'], ['星期', '一二三四五六日'[course.weekday - 1]], ['节次', course.sections.join('、')], ['教学周', course.weeks.join('、')], ['教室', course.location || '未提供'], ['教师', course.teacher || '未提供'], ['来源', course.source === 'manual' ? '手动新增' : '学校课表（已应用个人调整）']]) body.append(element('p', `${label} · ${value}`));
+        const list = element('dl', '', 'tt-course-facts');
+        for (const [label, value] of [['时间', course.startTime && course.endTime ? `${course.startTime}–${course.endTime}` : '未填写具体时间'], ['星期', '一二三四五六日'[course.weekday - 1]], ['节次', course.sections.join('、')], ['教学周', course.weeks.join('、')], ['教室', course.location || '未提供'], ['教师', course.teacher || '未提供'], ['来源', course.source === 'manual' ? '手动新增' : '学校课表（已应用个人调整）']]) {
+            const row = element('div', ''); row.append(element('dt', label), element('dd', value)); list.append(row);
+        }
+        body.append(list);
     }
     function renderCourses(courses, covered, changes, adjustments, currentWeek, dates) {
         const host = field('courses'); host.className = view === 'week' ? 'tt-grid-scroll' : 'tt-day-list';
@@ -386,33 +417,82 @@
     function setup() {
         if (ready) return; ready = true;
         const dialog = field('dialog');
-        document.querySelectorAll('#timetable-screen [data-tt-panel]').forEach(node => dialog.append(node));
+        document.querySelectorAll('#timetable-screen [data-tt-panel]').forEach(node => field('panel-body').append(node));
         field('close-panel').onclick = closePanel;
         dialog.addEventListener('cancel', event => { event.preventDefault(); closePanel(); });
         dialog.addEventListener('input', () => { if (panel === 'edit' || panel === 'sharing' || panel === 'import') dirty = true; });
-        field('import-text').oninput = invalidateImport;
+        field('import-text').oninput = () => {
+            invalidateImport(); updateControls();
+            field('import-content-status').textContent = '内容已编辑，请重新检查并预览';
+            note('');
+        };
+        field('choose-file').onclick = () => field('import-file').click();
+        field('choose-image').onclick = () => field('import-image').click();
+        field('import-source').onclick = async () => {
+            if (await openPanel('sync')) { returnToImport = true; field('sync-return').hidden = false; }
+        };
+        field('sync-return').onclick = () => openPanel('import');
+        field('import-create').onclick = () => void run(() => createManual('import'));
         field('import-file').onchange = () => void run(async () => {
-            invalidateImport();
             const file = field('import-file').files[0];
             if (!file) return;
-            if (file.size > 1048576) throw new Error('文件不能超过 1 MB');
-            field('import-text').value = await file.text(); dirty = true;
+            invalidateImport();
+            note('正在读取课表文件…');
+            try {
+                if (file.size > 1048576) throw new Error('文件不能超过 1 MB');
+                field('import-text').value = await file.text(); dirty = true;
+                field('import-file-name').textContent = file.name;
+                field('choose-file').textContent = '更换文件';
+                field('import-file-status').textContent = `${Math.max(1, Math.ceil(file.size / 1024))} KB · 已读取`;
+                field('import-content-status').textContent = '文件已就绪，点击下方“检查并预览”';
+            } catch (error) {
+                field('import-content-status').textContent = '本次文件未读取，原有文本内容保留';
+                throw error;
+            } finally { field('import-file').value = ''; } // Allow selecting the same file after an external edit.
             note('已读取文件，请检查并预览');
+            field('panel-status').textContent = ''; // The file row already announces readiness.
         });
+        field('import-image').onchange = () => {
+            const file = field('import-image').files[0];
+            field('import-image-name').textContent = file?.name || '尚未选择图片';
+            field('choose-image').textContent = file ? '更换图片' : '选择图片';
+            updateControls();
+        };
         field('import-preview').onclick = () => void run(async () => {
             invalidateImport();
+            note('正在检查课程…');
             const rows = global.TimetableCore.parseImport(field('import-text').value);
             const preview = await api().previewCourseImport(selected?.id, rows);
             importPreview = { rows, preview };
-            for (const row of preview.rows) field('import-results').append(element('article', `${row.index + 1}. ${row.course ? `${row.course.name} · 周${row.course.weekday} · ${row.course.sections.join(',')}节 · ${row.course.weeks.join(',')}周 · ${row.course.startTime || ''}–${row.course.endTime || ''} · ${row.course.teacher || ''} · ${row.course.location || ''}` : ''} · ${row.message}`));
+            for (const row of preview.rows) {
+                const card = element('article', ''); card.dataset.result = row.status;
+                const heading = element('div', '', 'tt-preview-row-heading');
+                heading.append(element('strong', `${row.index + 1}. ${row.course?.name || '无法导入的课程'}`), element('span', ({ ready: '可导入', duplicate: '重复 · 跳过', conflict: '冲突 · 跳过', invalid: '错误 · 跳过' })[row.status]));
+                card.append(heading);
+                if (row.course) {
+                    const c = row.course;
+                    card.append(element('p', `周${'一二三四五六日'[c.weekday - 1]} · ${c.sections.join(',')} 节 · ${c.weeks.join(',')} 周`, 'tt-note'));
+                    const extra = [c.startTime && `${c.startTime}–${c.endTime}`, c.teacher, c.location].filter(Boolean).join(' · ');
+                    if (extra) card.append(element('p', extra, 'tt-note'));
+                }
+                if (row.status !== 'ready') card.append(element('p', row.message, 'tt-note'));
+                field('import-results').append(card);
+            }
+            field('import-summary').textContent = `可导入 ${preview.courses.length} 条 · 跳过 ${preview.rows.length - preview.courses.length} 条`;
+            field('import-preview-area').hidden = false;
+            field('import-confirm').hidden = false; field('import-confirm').textContent = `确认导入 ${preview.courses.length} 条`;
+            field('import-preview').textContent = '重新预览'; field('import-preview').classList.replace('btn-primary', 'btn-secondary');
             note(`目标：${selected.semester}。可导入 ${preview.courses.length} 条，跳过 ${preview.rows.length - preview.courses.length} 条；确认前不会保存。`);
-            field('import-results').scrollIntoView({ block: 'start' });
+            field('import-summary').focus({ preventScroll: true });
+            field('import-summary').scrollIntoView({ block: 'start' });
         });
         field('import-confirm').onclick = () => void run(async () => {
             if (!importPreview || importPreview.preview.snapshotId !== selected?.id) throw new Error('请重新预览');
+            note('正在导入课程…');
             const count = await api().importCourses(selected.id, importPreview.rows, importPreview.preview.baseline);
             invalidateImport(); dirty = false; field('dialog').close(); panel = '';
             await render(); note(`已导入 ${count} 条课程，已有课程保留`);
+            panelTrigger?.focus?.();
         });
         field('recognize-image').onclick = () => void run(async () => {
             const file = field('import-image').files[0];
@@ -427,7 +507,11 @@
                 { type: 'image_url', image_url: { url: data } },
             ] }] }, global.getApiConfigHeaders(config), global.getApiConfigEndpoint(config), false, { signal: AbortSignal.timeout(60000) });
             field('import-text').value = String(text).trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+            field('import-editor').open = true;
+            field('import-content-status').textContent = '当前内容来自截图识别，请人工核对后预览';
             invalidateImport(); dirty = true; note('识别完成，请人工核对内容后检查并预览');
+            const editorHeading = field('import-editor').querySelector('summary');
+            editorHeading.focus(); editorHeading.scrollIntoView({ block: 'start' });
         });
         field('create-manual').onclick = () => void run(createManual);
         field('delete-manual').onclick = () => void run(async () => {
