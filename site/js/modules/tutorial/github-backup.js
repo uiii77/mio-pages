@@ -134,41 +134,71 @@ const GitHubMgr = {
         return Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, '0')).join('');
     },
 
-    _getFileSha: async (repoPath) => {
-        try {
-            const response = await fetch(`https://api.github.com/repos/${GitHubMgr.config.repo}/contents/${encodeURIComponent(repoPath)}`, {
-                headers: { 'Authorization': `token ${GitHubMgr.config.token}` }
-            });
-            if (!response.ok) return null;
-            return (await response.json()).sha || null;
-        } catch (_) {
-            return null;
+    _backupTarget: () => {
+        const { repo, token, fileName } = GitHubMgr.config;
+        if (!token || !/^[a-z0-9-]+\/[a-z0-9._-]+$/i.test(repo) || /^\.{1,2}$/.test(repo.split('/')[1])) {
+            throw new Error('请填写 GitHub Token 和有效的私有仓库路径（用户名/仓库名）');
         }
+        return Object.freeze({ repo, token, fileName: fileName || '', url: `https://api.github.com/repos/${repo}` });
     },
 
-    _uploadJsonFile: async (repoPath, data, message) => {
+    _verifyPrivateRepo: async (target, expectedId) => {
+        const res = await fetch(target.url, {
+            headers: { 'Authorization': `token ${target.token}` },
+            redirect: 'error', cache: 'no-store'
+        });
+        if (!res.ok) {
+            if (res.status === 401) throw new Error('Token 无效或过期 (401)');
+            if (res.status === 404) throw new Error('仓库不存在或 Token 无权访问 (404)');
+            throw new Error(`仓库检查失败: ${res.status}`);
+        }
+        const info = await res.json();
+        if (info?.private !== true || (info.visibility !== undefined && info.visibility !== 'private')) {
+            throw new Error('云端备份需要私有仓库。请在 GitHub 确认仓库可见性为 Private。');
+        }
+        if (typeof info.full_name !== 'string' || info.full_name.toLowerCase() !== target.repo.toLowerCase()
+            || !Number.isSafeInteger(info.id) || info.id <= 0 || (expectedId !== undefined && info.id !== expectedId)) {
+            throw new Error('无法确认备份仓库的身份，请重新检查仓库路径');
+        }
+        if (info.permissions?.push === false) throw new Error('Token 缺少此私有仓库的写入权限');
+        return info.id;
+    },
+
+    _getFileSha: async (target, repoPath) => {
+        const response = await fetch(`${target.url}/contents/${encodeURIComponent(repoPath)}`, {
+            headers: { 'Authorization': `token ${target.token}` }, redirect: 'error', cache: 'no-store'
+        });
+        if (response.status === 404) return null;
+        if (!response.ok) throw new Error(`无法检查备份文件版本: ${response.status}`);
+        const { sha } = await response.json();
+        if (typeof sha !== 'string' || !sha) throw new Error('无法确认备份文件版本，请检查目标路径');
+        return sha;
+    },
+
+    _uploadJsonFile: async (target, repoPath, data, message) => {
         const json = JSON.stringify(data);
         const bytes = new TextEncoder().encode(json);
         const content = GitHubMgr._arrayBufferToBase64(bytes.buffer);
-        const sha = await GitHubMgr._getFileSha(repoPath);
-        return GitHubMgr._uploadOneFile(repoPath, content, message, sha);
+        const sha = await GitHubMgr._getFileSha(target, repoPath);
+        return GitHubMgr._uploadOneFile(target, repoPath, content, message, sha);
     },
 
-    _customPointerPath: () => {
-        const customName = GitHubMgr.config.fileName && GitHubMgr.config.fileName.trim();
+    _customPointerPath: (fileName) => {
+        const customName = fileName && fileName.trim();
         if (!customName) return '';
         const safeName = customName.replace(/\.ee$/i, '').replace(/[^a-zA-Z0-9._-]/g, '_');
         return `${GitHubMgr._CHUNKS_DIR}/${safeName}_latest.json`;
     },
 
-    _uploadOneFile: async (repoPath, base64ContentForApi, message, existingSha) => {
-        const url = `https://api.github.com/repos/${GitHubMgr.config.repo}/contents/${encodeURIComponent(repoPath)}`;
+    _uploadOneFile: async (target, repoPath, base64ContentForApi, message, existingSha) => {
+        const url = `${target.url}/contents/${encodeURIComponent(repoPath)}`;
+        await GitHubMgr._verifyPrivateRepo(target, target.id);
         const body = { message: message || 'Backup', content: base64ContentForApi };
         if (existingSha) body.sha = existingSha;
         const res = await fetch(url, {
-            method: 'PUT',
+            method: 'PUT', redirect: 'error',
             headers: {
-                'Authorization': `token ${GitHubMgr.config.token}`,
+                'Authorization': `token ${target.token}`,
                 'Content-Type': 'application/json',
                 'Accept': 'application/vnd.github.v3+json'
             },
@@ -182,27 +212,14 @@ const GitHubMgr = {
     },
 
     performUpload: async (onProgress) => {
-        // 1. 预检权限
-        onProgress('正在检查权限...');
-        const checkUrl = `https://api.github.com/repos/${GitHubMgr.config.repo}`;
-        const checkRes = await fetch(checkUrl, {
-            headers: { 'Authorization': `token ${GitHubMgr.config.token}` }
-        });
-        
-        if (!checkRes.ok) {
-             if (checkRes.status === 401) throw new Error('Token 无效或过期 (401)');
-             if (checkRes.status === 404) throw new Error('仓库不存在或 Token 无权访问 (404)');
-             throw new Error(`权限检查失败: ${checkRes.status}`);
-        }
-        
-        const repoInfo = await checkRes.json();
-        // 检查 push 权限
-        if (repoInfo.permissions && repoInfo.permissions.push === false) {
-            throw new Error('Token 缺少写入权限 (push)，请重新生成 Token 并勾选 repo 权限');
-        }
+        const configured = GitHubMgr._backupTarget();
+        onProgress('正在检查私有仓库...');
+        const id = await GitHubMgr._verifyPrivateRepo(configured);
+        const target = Object.freeze({ ...configured, id });
 
         onProgress('正在打包数据...');
         const compressedBlob = await createCompressedBackupBlob({
+            excludeCredentials: true,
             onProgress: progress => {
                 if (progress.processedMessages && progress.processedMessages % 500 === 0) {
                     onProgress(`正在打包 ${progress.processedMessages} 条消息...`);
@@ -211,8 +228,6 @@ const GitHubMgr = {
         });
 
         const useChunked = compressedBlob.size > GitHubMgr._SINGLE_FILE_MAX_BYTES;
-        const token = GitHubMgr.config.token;
-        const repo = GitHubMgr.config.repo;
 
         if (!useChunked) {
             // 小文件：单文件上传（兼容原有逻辑）
@@ -221,31 +236,20 @@ const GitHubMgr = {
             onProgress('正在上传至 GitHub...');
             let path = '';
             let sha = null;
-            const customName = GitHubMgr.config.fileName;
+            const customName = target.fileName;
             
             if (customName && customName.trim()) {
                 path = customName.trim();
                 if (!path.endsWith('.ee')) path += '.ee';
-                try {
-                    const checkUrl = `https://api.github.com/repos/${repo}/contents/${encodeURIComponent(path)}`;
-                    const checkRes = await fetch(checkUrl, {
-                        headers: { 'Authorization': `token ${token}` }
-                    });
-                    if (checkRes.ok) {
-                        const fileData = await checkRes.json();
-                        sha = fileData.sha;
-                    }
-                } catch(e) {
-                    console.log('File does not exist or error checking:', e);
-                }
+                sha = await GitHubMgr._getFileSha(target, path);
             } else {
                 const dateStr = new Date().toISOString().slice(0, 10);
                 path = `AutoBackup_${dateStr}_${Date.now()}.ee`;
             }
-            await GitHubMgr._uploadOneFile(path, base64Content, 'Auto backup', sha);
-            const pointerPath = GitHubMgr._customPointerPath();
+            await GitHubMgr._uploadOneFile(target, path, base64Content, 'Auto backup', sha);
+            const pointerPath = GitHubMgr._customPointerPath(target.fileName);
             if (pointerPath) {
-                await GitHubMgr._uploadJsonFile(pointerPath, {
+                await GitHubMgr._uploadJsonFile(target, pointerPath, {
                     format: 'ovo-backup-pointer',
                     mode: 'single',
                     path,
@@ -272,7 +276,7 @@ const GitHubMgr = {
                 const hash = await GitHubMgr._sha256Hex(chunk);
                 const contentForApi = await GitHubMgr._blobToBase64(chunk);
                 chunkHashes.push(hash);
-                await GitHubMgr._uploadOneFile(chunkPath, contentForApi, `Backup chunk ${i + 1}/${totalChunks}`);
+                await GitHubMgr._uploadOneFile(target, chunkPath, contentForApi, `Backup chunk ${i + 1}/${totalChunks}`);
             }
 
             const manifest = {
@@ -285,16 +289,16 @@ const GitHubMgr = {
                 totalBytes: compressedBlob.size,
                 timestamp: backupId
             };
-            const customName = GitHubMgr.config.fileName && GitHubMgr.config.fileName.trim();
+            const customName = target.fileName.trim();
             const manifestName = customName
                 ? `${customName.replace(/\.ee$/i, '').replace(/[^a-zA-Z0-9._-]/g, '_')}_manifest.json`
                 : `BackupChunk_${backupId}_manifest.json`;
             const manifestPath = `${dir}/${manifestName}`;
             onProgress('正在上传清单...');
-            await GitHubMgr._uploadJsonFile(manifestPath, manifest, 'Backup manifest');
-            const pointerPath = GitHubMgr._customPointerPath();
+            await GitHubMgr._uploadJsonFile(target, manifestPath, manifest, 'Backup manifest');
+            const pointerPath = GitHubMgr._customPointerPath(target.fileName);
             if (pointerPath) {
-                await GitHubMgr._uploadJsonFile(pointerPath, {
+                await GitHubMgr._uploadJsonFile(target, pointerPath, {
                     format: 'ovo-backup-pointer',
                     mode: 'chunks',
                     manifestPath,
@@ -303,204 +307,185 @@ const GitHubMgr = {
             }
         }
 
-        GitHubMgr.config.lastTime = Date.now();
-        localStorage.setItem('gh_config', JSON.stringify(GitHubMgr.config));
-        GitHubMgr.updateStatusText();
+        if (GitHubMgr.config.repo === target.repo && GitHubMgr.config.token === target.token && (GitHubMgr.config.fileName || '') === target.fileName) {
+            GitHubMgr.config.lastTime = Date.now();
+            localStorage.setItem('gh_config', JSON.stringify(GitHubMgr.config));
+            GitHubMgr.updateStatusText();
+        }
     },
-    
+
     checkStatus: async () => {
-        if(!GitHubMgr.config.token || !GitHubMgr.config.repo) return showToast('未配置');
-        const url = `https://api.github.com/repos/${GitHubMgr.config.repo}`;
         try {
-            const res = await fetch(url, { headers: { 'Authorization': `token ${GitHubMgr.config.token}` } });
-            if(res.ok) {
-                const data = await res.json();
-                alert(`连接成功！\n仓库: ${data.full_name}\n私有: ${data.private}\n说明: 配置有效`);
-            } else {
-                alert('连接失败，请检查 Token 或 仓库路径');
-            }
-        } catch(e) { alert('网络错误: ' + e.message); }
+            const target = GitHubMgr._backupTarget();
+            await GitHubMgr._verifyPrivateRepo(target);
+            alert(`已连接私有仓库 ${target.repo}`);
+        } catch (error) { alert(error.message); }
     },
-    
-    restoreLatest: async () => {
+
+    restoreLatest: async (btn = document.getElementById('gh-restore-btn')) => {
         if(!GitHubMgr.config.token || !GitHubMgr.config.repo) return alert('请先在配置中填写 Token 和 仓库路径');
-        if(!confirm('⚠️ 警告：这将下载最新的自动备份并覆盖当前所有数据！\n此操作不可撤销！\n\n确定要继续吗？')) return;
+        try {
+            await runWithBackupRestoreLock(async restore => {
+                if(!confirm('这将用最新的云备份覆盖当前数据，无法撤销。新版云备份不含服务密钥及自定义连接地址，恢复后需要重新填写。\n\n确定要继续吗？')) return;
+                const originalText = btn?.innerText;
+                if (btn) { btn.innerText = '恢复中...'; btn.disabled = true; }
+                try {
+                    showToast('正在连接 GitHub...');
+                    const archive = await GitHubMgr._downloadLatestBackup();
+                    const result = await restoreFullBackupFile(archive, restore, showToast);
+                    if (!result.success) throw new Error(result.error);
+                    showToast(`恢复成功！${result.message} 应用即将刷新。`);
+                    setTimeout(() => window.location.reload(), 1500);
+                } finally {
+                    if (btn) { btn.innerText = originalText; btn.disabled = false; }
+                }
+            });
+        } catch (error) {
+            showBackupRestoreError(error, '恢复失败', alert);
+        }
+    },
 
-        showToast('正在连接 GitHub...');
-        const btn = event.target;
-        const originalText = btn.innerText;
-        btn.innerText = '恢复中...';
-        btn.style.pointerEvents = 'none';
-
+    _downloadLatestBackup: async () => {
         const token = GitHubMgr.config.token;
         const repo = GitHubMgr.config.repo;
         const baseUrl = `https://api.github.com/repos/${repo}/contents`;
         const auth = { 'Authorization': `token ${token}` };
 
-        try {
-            const customName = GitHubMgr.config.fileName;
-            let restoreChunked = false;
-            let targetSingle = null;
-            let targetManifest = null;
+        const customName = GitHubMgr.config.fileName;
+        let restoreChunked = false;
+        let targetSingle = null;
+        let targetManifest = null;
 
-            if (customName && customName.trim()) {
-                let path = customName.trim();
-                if (!path.endsWith('.ee')) path += '.ee';
-                const pointerPath = GitHubMgr._customPointerPath();
-                let pointer = null;
-                if (pointerPath) {
-                    const pointerRes = await fetch(`${baseUrl}/${encodeURIComponent(pointerPath)}`, {
+        if (customName && customName.trim()) {
+            let path = customName.trim();
+            if (!path.endsWith('.ee')) path += '.ee';
+            const pointerPath = GitHubMgr._customPointerPath(customName);
+            let pointer = null;
+            if (pointerPath) {
+                const pointerRes = await fetch(`${baseUrl}/${encodeURIComponent(pointerPath)}`, {
+                    headers: { ...auth, 'Accept': 'application/vnd.github.v3.raw' }
+                });
+                if (pointerRes.ok) {
+                    try { pointer = await pointerRes.json(); } catch (_) { pointer = null; }
+                }
+            }
+            if (pointer && pointer.format === 'ovo-backup-pointer' && pointer.mode === 'chunks' && pointer.manifestPath) {
+                targetManifest = { path: pointer.manifestPath, name: pointer.manifestPath.split('/').pop() };
+                restoreChunked = true;
+            } else if (pointer && pointer.format === 'ovo-backup-pointer' && pointer.mode === 'single' && pointer.path) {
+                targetSingle = { name: pointer.path };
+            } else {
+                // 兼容此前仅保存固定文件名的备份。
+                targetSingle = { name: path };
+            }
+        } else {
+            const rootRes = await fetch(`${baseUrl}/`, { headers: auth });
+            if (!rootRes.ok) {
+                if (rootRes.status === 404) throw new Error('仓库不存在或路径错误');
+                if (rootRes.status === 401) throw new Error('Token 无效或无权限');
+                throw new Error('获取列表失败: ' + rootRes.status);
+            }
+            const rootFiles = await rootRes.json();
+            const singleBackups = rootFiles.filter(f => f.name.startsWith('AutoBackup_') && f.name.endsWith('.ee'));
+            singleBackups.sort((a, b) => {
+                const getTs = (name) => {
+                    const match = name.match(/_(\d+)\.ee$/);
+                    return match ? parseInt(match[1]) : 0;
+                };
+                return getTs(b.name) - getTs(a.name);
+            });
+            if (singleBackups.length > 0) targetSingle = { name: singleBackups[0].name, ts: singleBackups[0].name.match(/_(\d+)\.ee$/)?.[1] || 0 };
+
+            const chunksDirRes = await fetch(`${baseUrl}/${encodeURIComponent(GitHubMgr._CHUNKS_DIR)}`, { headers: auth });
+            if (chunksDirRes.ok) {
+                const chunkFiles = await chunksDirRes.json();
+                const manifests = chunkFiles.filter(f => f.name.endsWith('_manifest.json') && f.name.startsWith('BackupChunk_'));
+                if (manifests.length > 0) {
+                    manifests.sort((a, b) => {
+                        const getId = (name) => {
+                            const m = name.match(/BackupChunk_(\d+)_manifest/);
+                            return m ? parseInt(m[1]) : 0;
+                        };
+                        return getId(b.name) - getId(a.name);
+                    });
+                    targetManifest = { name: manifests[0].name, path: `${GitHubMgr._CHUNKS_DIR}/${manifests[0].name}` };
+                }
+            }
+
+            if (targetSingle && targetManifest) {
+                const singleTs = parseInt(targetSingle.ts, 10) || 0;
+                const chunkId = parseInt(targetManifest.name.match(/BackupChunk_(\d+)_manifest/)?.[1], 10) || 0;
+                restoreChunked = chunkId > singleTs;
+            } else if (targetManifest) {
+                restoreChunked = true;
+            }
+        }
+
+        let archiveBlob;
+        if (restoreChunked && targetManifest) {
+            showToast('正在下载分片清单...');
+            const manifestPath = targetManifest.path || `${GitHubMgr._CHUNKS_DIR}/${targetManifest.name}`;
+            const manifestRes = await fetch(`${baseUrl}/${encodeURIComponent(manifestPath)}`, {
+                headers: { ...auth, 'Accept': 'application/vnd.github.v3.raw' }
+            });
+            if (!manifestRes.ok) throw new Error('下载清单失败: ' + manifestRes.status);
+            const manifestText = await manifestRes.text();
+            const manifest = JSON.parse(manifestText);
+
+            if (manifest.format === 'ovo-binary-chunks') {
+                const blobParts = [];
+                let downloadedBytes = 0;
+                for (let i = 0; i < manifest.totalChunks; i++) {
+                    showToast(`正在下载分片 ${i + 1}/${manifest.totalChunks}...`);
+                    const chunkFileName = manifest.chunkPaths[i];
+                    const chunkPath = `${GitHubMgr._CHUNKS_DIR}/${chunkFileName}`;
+                    const chunkRes = await fetch(`${baseUrl}/${encodeURIComponent(chunkPath)}`, {
                         headers: { ...auth, 'Accept': 'application/vnd.github.v3.raw' }
                     });
-                    if (pointerRes.ok) {
-                        try { pointer = await pointerRes.json(); } catch (_) { pointer = null; }
+                    if (!chunkRes.ok) throw new Error('下载分片失败: ' + chunkRes.status);
+                    const chunkBlob = await chunkRes.blob();
+                    const expectedHash = manifest.chunkHashes && manifest.chunkHashes[i];
+                    if (expectedHash) {
+                        const actualHash = await GitHubMgr._sha256Hex(chunkBlob);
+                        if (actualHash && actualHash !== expectedHash) throw new Error(`分片 ${i + 1} 校验失败`);
                     }
+                    downloadedBytes += chunkBlob.size;
+                    blobParts.push(chunkBlob);
                 }
-                if (pointer && pointer.format === 'ovo-backup-pointer' && pointer.mode === 'chunks' && pointer.manifestPath) {
-                    targetManifest = { path: pointer.manifestPath, name: pointer.manifestPath.split('/').pop() };
-                    restoreChunked = true;
-                } else if (pointer && pointer.format === 'ovo-backup-pointer' && pointer.mode === 'single' && pointer.path) {
-                    targetSingle = { name: pointer.path };
-                } else {
-                    // 兼容此前仅保存固定文件名的备份。
-                    targetSingle = { name: path };
+                if (manifest.totalBytes && downloadedBytes !== manifest.totalBytes) {
+                    throw new Error('分片总大小校验失败');
                 }
+                archiveBlob = new Blob(blobParts, { type: 'application/octet-stream' });
             } else {
-                const rootRes = await fetch(`${baseUrl}/`, { headers: auth });
-                if (!rootRes.ok) {
-                    if (rootRes.status === 404) throw new Error('仓库不存在或路径错误');
-                    if (rootRes.status === 401) throw new Error('Token 无效或无权限');
-                    throw new Error('获取列表失败: ' + rootRes.status);
+                // 兼容此前将 gzip 的 Base64 文本再次分片保存的格式。
+                const base64Parts = [];
+                for (let i = 0; i < manifest.totalChunks; i++) {
+                    showToast(`正在下载分片 ${i + 1}/${manifest.totalChunks}...`);
+                    const chunkFileName = manifest.chunkPaths[i];
+                    const chunkPath = `${GitHubMgr._CHUNKS_DIR}/${chunkFileName}`;
+                    const chunkRes = await fetch(`${baseUrl}/${encodeURIComponent(chunkPath)}`, {
+                        headers: { ...auth, 'Accept': 'application/vnd.github.v3.raw' }
+                    });
+                    if (!chunkRes.ok) throw new Error('下载分片失败: ' + chunkRes.status);
+                    base64Parts.push(await chunkRes.text());
                 }
-                const rootFiles = await rootRes.json();
-                const singleBackups = rootFiles.filter(f => f.name.startsWith('AutoBackup_') && f.name.endsWith('.ee'));
-                singleBackups.sort((a, b) => {
-                    const getTs = (name) => {
-                        const match = name.match(/_(\d+)\.ee$/);
-                        return match ? parseInt(match[1]) : 0;
-                    };
-                    return getTs(b.name) - getTs(a.name);
-                });
-                if (singleBackups.length > 0) targetSingle = { name: singleBackups[0].name, ts: singleBackups[0].name.match(/_(\d+)\.ee$/)?.[1] || 0 };
-
-                const chunksDirRes = await fetch(`${baseUrl}/${encodeURIComponent(GitHubMgr._CHUNKS_DIR)}`, { headers: auth });
-                if (chunksDirRes.ok) {
-                    const chunkFiles = await chunksDirRes.json();
-                    const manifests = chunkFiles.filter(f => f.name.endsWith('_manifest.json') && f.name.startsWith('BackupChunk_'));
-                    if (manifests.length > 0) {
-                        manifests.sort((a, b) => {
-                            const getId = (name) => {
-                                const m = name.match(/BackupChunk_(\d+)_manifest/);
-                                return m ? parseInt(m[1]) : 0;
-                            };
-                            return getId(b.name) - getId(a.name);
-                        });
-                        targetManifest = { name: manifests[0].name, path: `${GitHubMgr._CHUNKS_DIR}/${manifests[0].name}` };
-                    }
-                }
-
-                if (targetSingle && targetManifest) {
-                    const singleTs = parseInt(targetSingle.ts, 10) || 0;
-                    const chunkId = parseInt(targetManifest.name.match(/BackupChunk_(\d+)_manifest/)?.[1], 10) || 0;
-                    restoreChunked = chunkId > singleTs;
-                } else if (targetManifest) {
-                    restoreChunked = true;
-                }
+                const binStr = atob(base64Parts.join(''));
+                const bytes = new Uint8Array(binStr.length);
+                for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
+                archiveBlob = new Blob([bytes], { type: 'application/octet-stream' });
             }
-
-            let archiveBlob;
-            if (restoreChunked && targetManifest) {
-                showToast('正在下载分片清单...');
-                const manifestPath = targetManifest.path || `${GitHubMgr._CHUNKS_DIR}/${targetManifest.name}`;
-                const manifestRes = await fetch(`${baseUrl}/${encodeURIComponent(manifestPath)}`, {
-                    headers: { ...auth, 'Accept': 'application/vnd.github.v3.raw' }
-                });
-                if (!manifestRes.ok) throw new Error('下载清单失败: ' + manifestRes.status);
-                const manifestText = await manifestRes.text();
-                const manifest = JSON.parse(manifestText);
-
-                if (manifest.format === 'ovo-binary-chunks') {
-                    const blobParts = [];
-                    let downloadedBytes = 0;
-                    for (let i = 0; i < manifest.totalChunks; i++) {
-                        showToast(`正在下载分片 ${i + 1}/${manifest.totalChunks}...`);
-                        const chunkFileName = manifest.chunkPaths[i];
-                        const chunkPath = `${GitHubMgr._CHUNKS_DIR}/${chunkFileName}`;
-                        const chunkRes = await fetch(`${baseUrl}/${encodeURIComponent(chunkPath)}`, {
-                            headers: { ...auth, 'Accept': 'application/vnd.github.v3.raw' }
-                        });
-                        if (!chunkRes.ok) throw new Error('下载分片失败: ' + chunkRes.status);
-                        const chunkBlob = await chunkRes.blob();
-                        const expectedHash = manifest.chunkHashes && manifest.chunkHashes[i];
-                        if (expectedHash) {
-                            const actualHash = await GitHubMgr._sha256Hex(chunkBlob);
-                            if (actualHash && actualHash !== expectedHash) throw new Error(`分片 ${i + 1} 校验失败`);
-                        }
-                        downloadedBytes += chunkBlob.size;
-                        blobParts.push(chunkBlob);
-                    }
-                    if (manifest.totalBytes && downloadedBytes !== manifest.totalBytes) {
-                        throw new Error('分片总大小校验失败');
-                    }
-                    archiveBlob = new Blob(blobParts, { type: 'application/octet-stream' });
-                } else {
-                    // 兼容此前将 gzip 的 Base64 文本再次分片保存的格式。
-                    const base64Parts = [];
-                    for (let i = 0; i < manifest.totalChunks; i++) {
-                        showToast(`正在下载分片 ${i + 1}/${manifest.totalChunks}...`);
-                        const chunkFileName = manifest.chunkPaths[i];
-                        const chunkPath = `${GitHubMgr._CHUNKS_DIR}/${chunkFileName}`;
-                        const chunkRes = await fetch(`${baseUrl}/${encodeURIComponent(chunkPath)}`, {
-                            headers: { ...auth, 'Accept': 'application/vnd.github.v3.raw' }
-                        });
-                        if (!chunkRes.ok) throw new Error('下载分片失败: ' + chunkRes.status);
-                        base64Parts.push(await chunkRes.text());
-                    }
-                    const binStr = atob(base64Parts.join(''));
-                    const bytes = new Uint8Array(binStr.length);
-                    for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
-                    archiveBlob = new Blob([bytes], { type: 'application/octet-stream' });
-                }
-            } else {
-                if (!targetSingle) throw new Error('未找到可恢复的备份文件');
-                showToast('正在下载: ' + targetSingle.name);
-                const dlRes = await fetch(`${baseUrl}/${encodeURIComponent(targetSingle.name)}`, {
-                    headers: { ...auth, 'Accept': 'application/vnd.github.v3.raw' }
-                });
-                if (!dlRes.ok) throw new Error('下载文件失败: ' + dlRes.status);
-                showToast('下载完成，正在解压...');
-                archiveBlob = await dlRes.blob();
-            }
-
-            showToast('解压完成，开始导入...');
-            const archiveInfo = await inspectBackupArchive(archiveBlob);
-            let importResult;
-            if (archiveInfo.stream) {
-                importResult = await importStreamBackupData(archiveBlob, {
-                    onProgress: message => showToast(message)
-                });
-            } else {
-                const decompressionStream = new DecompressionStream('gzip');
-                const decompressedStream = archiveBlob.stream().pipeThrough(decompressionStream);
-                const jsonString = await new Response(decompressedStream).text();
-                importResult = await importBackupData(JSON.parse(jsonString));
-            }
-
-            if (importResult.success) {
-                showToast(`恢复成功！${importResult.message} 应用即将刷新。`);
-                setTimeout(() => {
-                    window.location.reload();
-                }, 1500);
-            } else {
-                throw new Error(importResult.error);
-            }
-
-        } catch(e) {
-            console.error(e);
-            alert('恢复失败: ' + e.message);
-            btn.innerText = originalText;
-            btn.style.pointerEvents = 'auto';
+        } else {
+            if (!targetSingle) throw new Error('未找到可恢复的备份文件');
+            showToast('正在下载: ' + targetSingle.name);
+            const dlRes = await fetch(`${baseUrl}/${encodeURIComponent(targetSingle.name)}`, {
+                headers: { ...auth, 'Accept': 'application/vnd.github.v3.raw' }
+            });
+            if (!dlRes.ok) throw new Error('下载文件失败: ' + dlRes.status);
+            showToast('下载完成，正在解压...');
+            archiveBlob = await dlRes.blob();
         }
+
+        return archiveBlob;
     }
 };
 window.GitHubMgr = GitHubMgr;

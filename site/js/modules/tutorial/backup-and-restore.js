@@ -272,7 +272,7 @@ function validateEconomyBackupSnapshot(snapshot) {
 
 async function createFullBackupData() {
     const backupData = JSON.parse(JSON.stringify(db));
-    for(const key of ['mioCatalogFactsV1','mioTrpgReadingLinksV1']){const owned=await dexieDB?.globalSettings.get(key);if(owned)backupData[key]=owned.value;}
+    for(const key of ['mioCatalogFactsV1','mioTrpgReadingLinksV1','mioBackupMergeVersionsV1']){const owned=await dexieDB?.globalSettings.get(key);if(owned)backupData[key]=owned.value;}
     const keys = window.globalSettingKeysForBackup || [];
     keys.forEach(k => {
         if (db[k] !== undefined && backupData[k] === undefined) {
@@ -350,7 +350,7 @@ async function createPartialBackupData(selectedKeys) {
             result.globalSettings = {};
             keys.forEach(k => { result.globalSettings[k] = db[k] !== undefined ? JSON.parse(JSON.stringify(db[k])) : undefined; });
             economyBackupKeys().forEach(k => { delete result.globalSettings[k]; });
-            for(const key of ['mioCatalogFactsV1','mioTrpgReadingLinksV1']){const owned=await dexieDB?.globalSettings.get(key);if(owned)result.globalSettings[key]=owned.value;}
+            for(const key of ['mioCatalogFactsV1','mioTrpgReadingLinksV1','mioBackupMergeVersionsV1']){const owned=await dexieDB?.globalSettings.get(key);if(owned)result.globalSettings[key]=owned.value;}
             if (dexieDB?.naiVibeAssets) {
                 result.globalSettings.naiVibeAssets = await dexieDB.naiVibeAssets.toArray();
                 result.globalSettings.naiVibeEncodings = await dexieDB.naiVibeEncodings.toArray();
@@ -416,7 +416,7 @@ function getBackupDataKeys(selectedKeys) {
     if (Array.isArray(selectedKeys)) validateEconomyBackupKeys(selectedKeys, true);
     const allGlobalKeys = window.globalSettingKeysForBackup || [];
     const keys = new Set();
-    if(!Array.isArray(selectedKeys)||selectedKeys.includes('globalSettings'))['mioCatalogFactsV1','mioTrpgReadingLinksV1'].forEach(key=>keys.add(key));
+    if(!Array.isArray(selectedKeys)||selectedKeys.includes('globalSettings'))['mioCatalogFactsV1','mioTrpgReadingLinksV1','mioBackupMergeVersionsV1'].forEach(key=>keys.add(key));
 
     if (!Array.isArray(selectedKeys)) {
         Object.keys(db || {}).forEach(key => keys.add(key));
@@ -469,9 +469,54 @@ function estimateBackupValueBytes(value, limit = OVO_STREAM_HISTORY_BATCH_BYTES)
     return Math.min(total, limit);
 }
 
+function isBackupProviderSection(key) {
+    return /(?:api|gptImage|novelAi|googleImage|stabilityImage|tts|voice)(?:Settings|Presets)$/i.test(key)
+        || ['apiNodes', 'apiNodeRoutes', 'apiFeatureRegistry'].includes(key);
+}
+
+function omitBackupProviderCredentials(config) {
+    if (Array.isArray(config)) return config.map(omitBackupProviderCredentials);
+    if (!config || typeof config !== 'object') return config;
+    // Header names, request bodies and custom endpoint paths may each contain an arbitrary provider secret.
+    const fields = Object.entries(config).filter(([name]) => {
+        const field = name.toLowerCase().replace(/[-_]/g, '');
+        return !/^(key|authorization|proxyauthorization|cookie|headers|customheaders|extraheaders|custombody)$/.test(field)
+            && !/(apikey|token|secret|password|accesskey|url|endpoint|path)$/.test(field);
+    });
+    return Object.fromEntries(fields.map(([name, value]) => [name, omitBackupProviderCredentials(value)]));
+}
+
+function omitBackupChatCredentials(chat) {
+    if (!chat || typeof chat !== 'object') return chat;
+    const copy = { ...chat };
+    delete copy.charTheaterApiKey;
+    delete copy.charTheaterApiUrl;
+    for (const key of ['weatherSettings', 'ttsConfig', 'apiBinding', 'featureApiBindings', 'apiFeatureBindings', 'memberApiSettings']) {
+        if (copy[key]) copy[key] = omitBackupProviderCredentials(copy[key]);
+    }
+    if (Array.isArray(copy.members)) copy.members = copy.members.map(omitBackupChatCredentials);
+    return copy;
+}
+
+function omitBackupCredentials(key, value) {
+    if (key === 'magicRoom' && value && typeof value === 'object') {
+        const copy = { ...value };
+        delete copy.sysNotifServerKey;
+        delete copy.sysNotifServerUrl;
+        return copy;
+    }
+    if (isBackupProviderSection(key)) return omitBackupProviderCredentials(value);
+    if (!Array.isArray(value)) return value;
+    if (['characters', 'groups', 'phoneControlRecycleBin'].includes(key)) return value.map(omitBackupChatCredentials);
+    if (key === 'archives') return value.map(archive => archive?.snapshot
+        ? { ...archive, snapshot: omitBackupChatCredentials(archive.snapshot) } : archive);
+    return value;
+}
+
 async function* createBackupRecordStream(options = {}) {
     const selectedKeys = Array.isArray(options.selectedKeys) ? options.selectedKeys : null;
-    const dataKeys = getBackupDataKeys(selectedKeys);
+    const dataKeys = getBackupDataKeys(selectedKeys).filter(key =>
+        !(options.excludeCredentials === true && key === 'mioBackupMergeVersionsV1'));
     // Capture all five tables in one read transaction before yielding to gzip/worker tasks.
     const financial=selectedKeys?null:await readFinancialBackupUnit();
     const economySnapshot=financial?.economy || {};
@@ -502,9 +547,10 @@ async function* createBackupRecordStream(options = {}) {
             yield makeRecord({ type: 'array-end', key });
             continue;
         }
-        const value = ['mioCatalogFactsV1','mioTrpgReadingLinksV1'].includes(key) ? (await dexieDB?.globalSettings.get(key))?.value : !selectedKeys && key==='characters' ? financial.characters : !selectedKeys && key==='piggyBank' && financial.bank!==null ? financial.bank : (/^naiVibe(?:Assets|Encodings|Groups)$/.test(key) || ['recordedAudioAssets', 'memoryPalaceNodes', 'memoryPalaceVectors', 'memoryPalaceLinks', 'memoryPalaceEventBoxes', 'memoryPalaceRoomPlates', 'memoryPalaceAnticipations', 'memoryPalaceDigestReports', 'relationshipMemoryProfiles', 'dailySchedules', 'scheduleActivityLedger', 'lifePacks', 'lifeSources', 'lifeChunks', 'lifeEvents', 'sharedAssets', 'readingDocuments', 'readingDocumentChunks', 'readingSessions', 'readingLibraryEntries', 'readingAnnotations', 'readingActivities', 'readingResources', 'collaborationSessions', 'collaborationMessages', 'sharedDocuments', 'sharedDocumentBlocks', 'sharedDocumentRevisions', 'sharedDocumentComments', 'sharedDocumentSuggestions', 'watchTogetherSessions', 'exchangeDiaryEntries', 'periodRecords', 'coupleSpaces', 'coupleSpaceItems', 'trpgCampaigns', 'trpgPacks', 'trpgSources', 'trpgChunks', 'musicLibrary', 'healthRecords', 'timetableSnapshots', 'timetableAdjustments', 'timetableSyncStates', 'timetableChanges', 'personalEvents'].includes(key)) && dexieDB?.[key]
+        const source = ['mioCatalogFactsV1','mioTrpgReadingLinksV1','mioBackupMergeVersionsV1'].includes(key) ? (await dexieDB?.globalSettings.get(key))?.value : !selectedKeys && key==='characters' ? financial.characters : !selectedKeys && key==='piggyBank' && financial.bank!==null ? financial.bank : (/^naiVibe(?:Assets|Encodings|Groups)$/.test(key) || ['recordedAudioAssets', 'memoryPalaceNodes', 'memoryPalaceVectors', 'memoryPalaceLinks', 'memoryPalaceEventBoxes', 'memoryPalaceRoomPlates', 'memoryPalaceAnticipations', 'memoryPalaceDigestReports', 'relationshipMemoryProfiles', 'dailySchedules', 'scheduleActivityLedger', 'lifePacks', 'lifeSources', 'lifeChunks', 'lifeEvents', 'sharedAssets', 'readingDocuments', 'readingDocumentChunks', 'readingSessions', 'readingLibraryEntries', 'readingAnnotations', 'readingActivities', 'readingResources', 'collaborationSessions', 'collaborationMessages', 'sharedDocuments', 'sharedDocumentBlocks', 'sharedDocumentRevisions', 'sharedDocumentComments', 'sharedDocumentSuggestions', 'watchTogetherSessions', 'exchangeDiaryEntries', 'periodRecords', 'coupleSpaces', 'coupleSpaceItems', 'trpgCampaigns', 'trpgPacks', 'trpgSources', 'trpgChunks', 'musicLibrary', 'healthRecords', 'timetableSnapshots', 'timetableAdjustments', 'timetableSyncStates', 'timetableChanges', 'personalEvents'].includes(key)) && dexieDB?.[key]
             ? await dexieDB[key].toArray()
             : db[key];
+        const value = options.excludeCredentials === true ? omitBackupCredentials(key, source) : source;
         if (value === undefined) continue;
 
         if ((key === 'characters' || key === 'groups') && Array.isArray(value)) {
@@ -769,6 +815,195 @@ async function inspectBackupArchive(file) {
     }
 }
 
+async function readLegacyBackupObject(file) {
+    const stream = file.stream().pipeThrough(new DecompressionStream('gzip'));
+    return new Response(stream).json();
+}
+
+async function restoreFullBackupFile(file, restore, onProgress) {
+    const archive = await inspectBackupArchive(file);
+    return archive.stream
+        ? restore.importStreamBackupData(file, { onProgress })
+        : restore.importBackupData(await readLegacyBackupObject(file));
+}
+
+// A batch accepts both backup formats. Only fields actually present in a source participate.
+async function readMergeStream(file) {
+    const data = Object.create(null);
+    let header, footer, collection, chat, chatIndex, declared;
+    let count = 0;
+    const invalid = () => { throw new Error('流式备份的清单、记录顺序或完成标记不完整'); };
+    for await (const line of readGzipBackupLines(file)) {
+        const row = JSON.parse(line);
+        const { type, key, value } = row;
+        if (footer) invalid();
+        if (!header) {
+            if (type !== 'header' || row.format !== OVO_STREAM_BACKUP_FORMAT ||
+                row.formatRevision !== OVO_STREAM_BACKUP_FORMAT_REVISION || !Array.isArray(row.dataKeys) ||
+                !row.dataKeys.every(k => typeof k === 'string') || typeof row.partial !== 'boolean') invalid();
+            header = row;
+            declared = new Set(row.dataKeys);
+            if (declared.size !== row.dataKeys.length || (row.partial &&
+                (!Array.isArray(row.exportTables) || !row.exportTables.length ||
+                 !row.exportTables.every(key => typeof key === 'string')))) invalid();
+        } else if (type === 'footer') {
+            if (collection || row.completed !== true || row.recordCount !== count) invalid();
+            footer = row;
+        } else {
+            if (!declared.has(key)) invalid();
+            if (!collection) {
+                if (Object.hasOwn(data, key)) invalid();
+                if (type === 'value' && Object.hasOwn(row, 'value')) data[key] = value;
+                else if (type === 'array-start' || type === 'object-start') {
+                    collection = { key, array: type === 'array-start' };
+                    data[key] = collection.array ? [] : Object.create(null);
+                } else invalid();
+            } else if (collection.key !== key) invalid();
+            else if ((type === 'array-end' && collection.array && !chat) || (type === 'object-end' && !collection.array)) {
+                collection = null;
+            } else if (type === 'object-entry' && !collection.array && typeof row.property === 'string' &&
+                       Object.hasOwn(row, 'value') && !Object.hasOwn(data[key], row.property)) {
+                data[key][row.property] = value;
+            } else if (collection.array && (key === 'characters' || key === 'groups')) {
+                if (type === 'chat-start' && !chat && value && typeof value === 'object' && !Array.isArray(value)) {
+                    if (row.chatIndex !== data[key].length || Object.hasOwn(value, 'history')) invalid();
+                    chatIndex = row.chatIndex;
+                    chat = { ...value, history: [] };
+                } else if (type === 'chat-history' && chat && row.chatIndex === chatIndex && Array.isArray(value)) {
+                    for (const message of value) chat.history.push(message);
+                } else if (type === 'chat-end' && chat && row.chatIndex === chatIndex) {
+                    data[key].push(chat);
+                    chat = null;
+                } else invalid();
+            } else if (type === 'array-item' && collection.array && Object.hasOwn(row, 'value')) {
+                if (row.index !== undefined && row.index !== data[key].length) invalid();
+                data[key].push(value);
+            } else invalid();
+        }
+        count++;
+    }
+    if (!footer || economyBackupKeys().some(key => declared.has(key) && !Array.isArray(data[key]))) invalid();
+    return { data, partial: header.partial };
+}
+
+function readMergeObject(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('备份必须是数据对象');
+    const partial = String(raw._exportVersion || '').endsWith('_partial') || Object.hasOwn(raw, '_exportTables');
+    const data = Object.create(null);
+    if (partial) {
+        if (!Array.isArray(raw._exportTables) || !raw._exportTables.length) throw new Error('分类备份缺少分类清单');
+        for (const key of raw._exportTables) {
+            if (typeof key !== 'string') throw new Error('分类清单格式不正确');
+            if (!Object.hasOwn(raw, key)) continue;
+            if (key === 'globalSettings' || key === 'theaterData') {
+                const section = raw[key];
+                if (!section || typeof section !== 'object' || Array.isArray(section)) throw new Error('分类数据格式不正确');
+                Object.assign(data, section);
+            } else data[key] = raw[key];
+        }
+    } else Object.assign(data, raw);
+    if (raw._exportVersion !== '3.0') {
+        const converted = normalizeLegacyBackupHistory({ ...data, __chunks__: raw.__chunks__ });
+        if (converted.characters) data.characters = converted.characters;
+        if (converted.groups) data.groups = converted.groups;
+    }
+    for (const key of Object.keys(data)) if (key.startsWith('_export') || key === '__chunks__') delete data[key];
+    return { data, partial };
+}
+
+async function restoreMultipleBackupFiles(files, restore, onProgress, options = {}) {
+    return restore.importMultipleBackupFiles(Array.from(files), onProgress, options);
+}
+
+function getBackupMergeOptions() {
+    // Only the existing export/import mapping authorizes a real table write.
+    const tables = dexieDB.tables.filter(table => getDexieTableForBackupKey(table.name)?.name === table.name);
+    return {
+        tableKeys: Object.fromEntries(tables.map(table => [table.name, table.schema.primKey.keyPath])),
+        protectedKeys: [...economyBackupKeys(), 'piggyBank']
+    };
+}
+
+async function stageMergeSource(file, index, plan) {
+    const info = await inspectBackupArchive(file);
+    const { data, partial } = info.stream ? await readMergeStream(file) : readMergeObject(await readLegacyBackupObject(file));
+    if (plan.requirePartial && !partial) throw new Error('分类导入只接受分类备份，请使用「导入数据」合并完整备份');
+    const keys = Object.keys(data);
+    if (!keys.length) throw new Error('备份中没有可合并的数据');
+    validateEconomyBackupKeys(keys, partial);
+    if (keys.some(key => economyBackupKeys().includes(key))) validateEconomyBackupSnapshot(data);
+    if (!partial) {
+        const resourceIds = new Set((data.readingResources || []).filter(row => typeof row?.data === 'string' && row.data).map(row => row.id));
+        const checkResource = id => { if (id && !resourceIds.has(id)) throw new Error('完整备份缺少阅读原包或图片资源'); };
+        for (const document of data.readingDocuments || []) {
+            checkResource(document.sourceAssetId);
+            for (const resource of document.resources || []) checkResource(resource.assetId);
+        }
+        for (const chunk of data.readingDocumentChunks || []) checkResource(chunk.imageAssetId);
+    }
+    const sections = [];
+    for (const [key, value] of Object.entries(data)) {
+        if (key === '__proto__' || key === 'constructor' || key === 'prototype' || key === '__chunks__' || key.startsWith('_export') ||
+            dexieDB.tables.some(table => table.name === key) && !Object.hasOwn(plan.options.tableKeys, key)) {
+            throw new Error('备份包含不能直接恢复的内部数据表或设置键');
+        }
+        if (!plan.touched.has(key)) plan.touched.set(key, new Set());
+        if (Object.hasOwn(plan.options.tableKeys, key)) {
+            if (!Array.isArray(value)) throw new Error('数据表格式不正确：' + key);
+            const primaryKey = plan.options.tableKeys[key];
+            const ids = new Set();
+            for (const row of value) {
+                const id = row?.[primaryKey];
+                if (id === undefined || id === null || ids.has(id)) throw new Error('数据表主键缺失或重复：' + key);
+                ids.add(id);
+                plan.touched.get(key).add(id);
+                if ((key === 'characters' || key === 'groups') && row.history != null &&
+                    (!Array.isArray(row.history) || row.history.some(m => !m || typeof m !== 'object' || Array.isArray(m)))) {
+                    throw new Error('备份中的聊天记录格式不正确');
+                }
+                if (key === 'characters' && row.reminders?.some(reminder => hasUnfinishedReminderTask(reminder.backgroundTask))) {
+                    throw new Error('备份仍有未结束的后台提醒，请先在来源设备核对任务，再重新导出');
+                }
+            }
+        }
+        // Array keys are distinct from the string keys used by real settings.
+        const array = Array.isArray(value);
+        const parts = array ? Math.max(1, Math.ceil(value.length / 25)) : 1;
+        sections.push({ key, array, parts });
+        for (let part = 0; part < parts; part++) {
+            await dexieDB.importGlobalSettings.put({ key: [index, key, part],
+                value: array ? value.slice(part * 25, (part + 1) * 25) : value });
+        }
+    }
+    return sections;
+}
+
+async function importMultipleBackupFiles(files, onProgress, options, owner) {
+    if (!backupRestoreOwners.has(owner)) {
+        return runBackupImport(restore => restore.importMultipleBackupFiles(files, onProgress, options));
+    }
+    if (files.length < 2) return { success: false, error: '请至少选择两份备份文件' };
+    const plan = { files: [], touched: new Map(), options: getBackupMergeOptions(), requirePartial: options?.requirePartial };
+    try {
+        await clearImportStaging();
+        for (const [index, file] of files.entries()) {
+            const label = file.name || `备份 ${index + 1}`;
+            onProgress?.(`正在校验并暂存第 ${index + 1}/${files.length} 份：${label}`);
+            try {
+                plan.files.push({ label, sections: await stageMergeSource(file, index, plan) });
+            } catch (error) {
+                throw new Error(label + '：' + error.message);
+            }
+        }
+        onProgress?.('正在合并本机数据并提交…');
+        await commitImportStaging(true, null, plan);
+        return { success: true, message: `已合并 ${files.length} 份备份。合并保留的版本：${plan.variantCount} 个。` };
+    } catch (error) {
+        await clearImportStaging();
+        return { success: false, error: error.message };
+    }
+}
+
 async function validateStreamBackup(file, onProgress) {
     let header = null;
     let footer = null;
@@ -917,7 +1152,8 @@ function getImportStagingTables() {
 }
 
 async function clearImportStaging() {
-    await Promise.all(getImportStagingTables().map(table => table.clear()));
+    const tables = getImportStagingTables();
+    await dexieDB.transaction('rw', tables, () => Promise.all(tables.map(table => table.clear())));
 }
 
 async function copyDexieTableRecords(source, target,writeBatch=null) {
@@ -934,6 +1170,10 @@ async function copyDexieTableRecords(source, target,writeBatch=null) {
     }
 }
 
+function hasUnfinishedReminderTask(task) {
+    return !!task && !['succeeded', 'cancelled', 'expired', 'failed'].includes(task.status);
+}
+
 // Validate against persisted records: import callers may already release in-memory arrays.
 async function assertReminderImportSafe(isPartial) {
     const incoming=await dexieDB.importCharacters.toArray();
@@ -941,7 +1181,7 @@ async function assertReminderImportSafe(isPartial) {
     const existing=await dexieDB.characters.toArray();
     if(dexieDB.reminderExecutions) for(const entry of await dexieDB.reminderExecutions.toArray()) {
         if(isPartial && !replacements.has(entry.characterId)) continue;
-        if(entry.backgroundTask && !['succeeded','cancelled','expired','failed'].includes(entry.backgroundTask.status)) {
+        if(hasUnfinishedReminderTask(entry.backgroundTask)) {
             throw Error('恢复已暂停：执行账本仍有后台提醒，请连接原后台账号核对后重试');
         }
     }
@@ -949,14 +1189,14 @@ async function assertReminderImportSafe(isPartial) {
         if(isPartial && !replacements.has(char.id)) continue;
         for(const reminder of char.reminders || []) {
             const task=reminder.backgroundTask;
-            if(!task || ['succeeded','cancelled','expired','failed'].includes(task.status)) continue;
+            if(!hasUnfinishedReminderTask(task)) continue;
             throw Error('恢复已暂停：现有角色仍有后台提醒，请连接原后台账号，取消并确认任务后再恢复备份');
         }
     }
 }
 
-async function commitImportStaging(isPartial,providedKeys=null) {
-    const commit=()=>commitImportStagingLocked(isPartial,providedKeys);
+async function commitImportStaging(isPartial,providedKeys=null,mergePlan=null) {
+    const commit=()=>commitImportStagingLocked(isPartial,providedKeys,mergePlan);
     return navigator.locks ? navigator.locks.request('mio-reminder-execution',commit) : commit();
 }
 
@@ -978,8 +1218,123 @@ async function validateReadingImportStaging(isPartial) {
     }
 }
 
-async function commitImportStagingLocked(isPartial,providedKeys=null) {
-    await assertReminderImportSafe(isPartial);
+async function checkLocalMergeReferences(local, ambiguous, tables) {
+    if (!ambiguous.length) return;
+    const missing = ambiguous.filter(({ key, chatId, id }) => {
+        const chat = local[key]?.find(row => row.id === chatId);
+        return !chat?.history?.some(message => message.id === id);
+    });
+    if (!missing.length) return;
+    // A pre-existing attachment may point at an ID that neither chat contained on this device.
+    // Scan in bounded batches only when importing that missing ID would give it two meanings.
+    for (const table of tables) {
+        const rows = [];
+        function check() {
+            if (!rows.length) return;
+            const data = table.name === 'globalSettings'
+                ? Object.fromEntries(rows.map(row => [row.key, row.value]))
+                : { [table.name]: rows };
+            const conflict = BackupMerge.checkMessageReferences(data, missing);
+            if (conflict) throw new Error(`本机数据：${conflict.key} ${conflict.reason}`);
+            rows.length = 0;
+        }
+        await table.toCollection().each(row => {
+            rows.push(row);
+            if (rows.length === 50) check();
+        });
+        check();
+    }
+}
+
+async function checkMergeWalletSources(sources) {
+    const active = state => state?.mode === 'ledger' || !!state?.activationJournalId;
+    const backed = source => source.data.walletControl?.some(active);
+    if (!active(await dexieDB.walletControl.get('state')) && !sources.some(backed)) return;
+    // Only the live state and a validated, activated full ledger can vouch for imported money.
+    const trusted = [sources[0], ...sources.slice(1).filter(backed)];
+    const known = new Map();
+    for (const source of trusted) {
+        for (const key of ['characters', 'groups']) for (const chat of source.data[key] || []) {
+            const identity = JSON.stringify([key, chat.id]);
+            if (!known.has(identity)) known.set(identity, { ledger: false, messages: new Set() });
+            const wallet = known.get(identity);
+            if (chat.walletLedger != null) wallet.ledger = true;
+            for (const message of chat.history || []) if (BackupMerge.isFinancialMessage(message)) {
+                wallet.messages.add(message.id == null ? JSON.stringify(message) : JSON.stringify([message.id]));
+            }
+        }
+    }
+    for (const source of sources.slice(1)) {
+        if (backed(source)) continue;
+        const invalid = () => { throw new Error(source.label + '：当前已启用钱包账本，新增资金记录需要对应的完整账本备份'); };
+        if (source.data.piggyBank != null && !trusted.some(item => item.data.piggyBank != null)) invalid();
+        for (const key of ['characters', 'groups']) for (const chat of source.data[key] || []) {
+            const wallet = known.get(JSON.stringify([key, chat.id]));
+            if ((chat.walletLedger?.balance != null || chat.walletLedger?.transactions?.length) && !wallet?.ledger) invalid();
+            for (const message of chat.history || []) if (BackupMerge.isFinancialMessage(message)) {
+                const id = message.id == null ? JSON.stringify(message) : JSON.stringify([message.id]);
+                if (!wallet?.messages.has(id)) invalid();
+            }
+        }
+    }
+}
+
+async function prepareMergeCommit(plan, coreTables) {
+    const local = Object.create(null);
+    const financeKeys = economyBackupKeys();
+    if (plan.options.protectedKeys.some(key => plan.touched.has(key))) {
+        Object.assign(local, await readEconomyBackupSnapshot());
+        const bank = await dexieDB.globalSettings.get('piggyBank');
+        if (bank) local.piggyBank = bank.value;
+    }
+    for (const [key, ids] of plan.touched) {
+        if (financeKeys.includes(key)) continue;
+        if (Object.hasOwn(plan.options.tableKeys, key)) {
+            const keys = Array.from(ids);
+            const rows = [];
+            for (let i = 0; i < keys.length; i += 50) {
+                const batch = await dexieDB[key].bulkGet(keys.slice(i, i + 50));
+                for (const row of batch) if (row !== undefined) rows.push(row);
+            }
+            if (rows.length) local[key] = rows;
+        } else {
+            const row = await dexieDB.globalSettings.get(key);
+            if (row) local[key] = row.value;
+        }
+    }
+    const versions = await dexieDB.globalSettings.get('mioBackupMergeVersionsV1');
+    if (versions) local.mioBackupMergeVersionsV1 = versions.value;
+
+    const sources = [{ label: '本机数据', data: local }];
+    for (const [index, source] of plan.files.entries()) {
+        const data = Object.create(null);
+        for (const { key, array, parts } of source.sections) {
+            if (array) data[key] = [];
+            for (let part = 0; part < parts; part++) {
+                const row = await dexieDB.importGlobalSettings.get([index, key, part]);
+                if (!row) throw new Error(source.label + '：暂存分块缺失');
+                if (array) for (const item of row.value) data[key].push(item);
+                else data[key] = row.value;
+            }
+        }
+        sources.push({ label: source.label, data });
+    }
+    await checkMergeWalletSources(sources);
+    const merged = BackupMerge.mergeBackupSources(sources, plan.options);
+    if (!merged.ok) {
+        const conflict = merged.conflicts[0];
+        throw new Error(`${conflict.source}：${conflict.key} ${conflict.reason}`);
+    }
+    sources.length = 0;
+    await checkLocalMergeReferences(local, merged.ambiguousMessages, coreTables);
+    const combined = merged.data;
+    plan.variantCount = combined.mioBackupMergeVersionsV1?.length || 0;
+    await clearImportStaging();
+    await writeBackupObjectToStaging(combined, false);
+}
+
+async function commitImportStagingLocked(isPartial,providedKeys=null,mergePlan=null) {
+    if (!mergePlan) await assertReminderImportSafe(isPartial);
     const coreTables = [
         dexieDB.characters,
         dexieDB.groups,
@@ -1031,11 +1386,17 @@ async function commitImportStagingLocked(isPartial,providedKeys=null) {
         ...economyBackupKeys().map(key => dexieDB[key])
     ].filter(Boolean);
     const stagingTables = getImportStagingTables();
-    await dexieDB.transaction('rw', [...coreTables, ...stagingTables], async () => {
+    const transactionTables = [...coreTables, ...stagingTables];
+    if (mergePlan && dexieDB.reminderExecutions) transactionTables.push(dexieDB.reminderExecutions);
+    await dexieDB.transaction('rw', transactionTables, async () => {
+        if (mergePlan) {
+            await prepareMergeCommit(mergePlan, coreTables);
+            await assertReminderImportSafe(true);
+        }
         const economySnapshot = await readEconomyBackupSnapshot(true);
         const bank=(await dexieDB.importGlobalSettings.get('piggyBank'))?.value;
         if(bank)economySnapshot.piggyBank=bank;
-        if (isPartial && economyBackupKeys().some(key => economySnapshot[key].length)) throw new Error('账务数据不能分类合并');
+        if (isPartial && !mergePlan && economyBackupKeys().some(key => economySnapshot[key].length)) throw new Error('账务数据不能分类合并');
         validateEconomyBackupSnapshot(economySnapshot);
         const readingLinks=await dexieDB.importGlobalSettings.get('mioTrpgReadingLinksV1');
         if(readingLinks){if(!window.ReadingCore?.normalizeTrpgLinks)throw Error('阅读知识保护组件未加载');window.ReadingCore.normalizeTrpgLinks(readingLinks.value);if(isPartial){const existingLinks=await dexieDB.globalSettings.get('mioTrpgReadingLinksV1');if(existingLinks&&JSON.stringify(existingLinks.value)!==JSON.stringify(readingLinks.value))throw Error('阅读知识关联只能通过完整备份恢复，不能分类覆盖');}}
@@ -1047,8 +1408,9 @@ async function commitImportStagingLocked(isPartial,providedKeys=null) {
         if(isPartial && currentControl?.activationJournalId && !window.WalletStorage)throw Error('钱包保护组件未就绪，请刷新后恢复');
         await validateReadingImportStaging(isPartial);
         if (!isPartial) await Promise.all(coreTables.map(table => table.clear()));
-        await copyDexieTableRecords(dexieDB.importCharacters, dexieDB.characters,window.WalletStorage ? rows=>window.WalletStorage.saveChats(dexieDB,dexieDB.characters,rows,isPartial,true) : null);
-        await copyDexieTableRecords(dexieDB.importGroups, dexieDB.groups,window.WalletStorage ? rows=>window.WalletStorage.saveChats(dexieDB,dexieDB.groups,rows,isPartial,true) : null);
+        const preserveWalletFields = isPartial && !mergePlan;
+        await copyDexieTableRecords(dexieDB.importCharacters, dexieDB.characters,window.WalletStorage ? rows=>window.WalletStorage.saveChats(dexieDB,dexieDB.characters,rows,preserveWalletFields,true) : null);
+        await copyDexieTableRecords(dexieDB.importGroups, dexieDB.groups,window.WalletStorage ? rows=>window.WalletStorage.saveChats(dexieDB,dexieDB.groups,rows,preserveWalletFields,true) : null);
         await copyDexieTableRecords(dexieDB.importWorldBooks, dexieDB.worldBooks);
         await copyDexieTableRecords(dexieDB.importMyStickers, dexieDB.myStickers);
         if (dexieDB.archives && dexieDB.importArchives) {
@@ -1094,15 +1456,82 @@ async function commitImportStagingLocked(isPartial,providedKeys=null) {
         if (dexieDB.importCoupleSpaceItems && dexieDB.coupleSpaceItems) await copyDexieTableRecords(dexieDB.importCoupleSpaceItems, dexieDB.coupleSpaceItems);
         if (dexieDB.importTrpgCampaigns && dexieDB.trpgCampaigns) await copyDexieTableRecords(dexieDB.importTrpgCampaigns, dexieDB.trpgCampaigns);
         for (const key of ['trpgPacks', 'trpgSources', 'trpgChunks', 'musicLibrary', 'healthRecords', 'timetableSnapshots', 'timetableAdjustments', 'timetableSyncStates', 'timetableChanges', 'personalEvents']) await copyDexieTableRecords(dexieDB[`import${key[0].toUpperCase()}${key.slice(1)}`], dexieDB[key]);
-        await copyDexieTableRecords(dexieDB.importGlobalSettings, dexieDB.globalSettings,isPartial && window.WalletStorage ? rows=>Promise.all(rows.map(row=>window.WalletStorage.saveSetting(dexieDB,row.key,row.value))) : null);
-        if (!isPartial) {
+        await copyDexieTableRecords(dexieDB.importGlobalSettings, dexieDB.globalSettings,preserveWalletFields && window.WalletStorage ? rows=>Promise.all(rows.map(row=>window.WalletStorage.saveSetting(dexieDB,row.key,row.value))) : null);
+        if (!isPartial || mergePlan) {
             for (const key of economyBackupKeys()) await copyDexieTableRecords(dexieDB[EconomySchema.stagingName(key)], dexieDB[key]);
         }
         await Promise.all(stagingTables.map(table => table.clear()));
     });
 }
 
-async function importStreamBackupData(file, options = {}) {
+const backupRestoreOwners = new WeakSet();
+
+function backupRestoreLockError(code) {
+    const message = code === 'RESTORE_BUSY'
+        ? '已有备份正在恢复，请等待本次恢复完成后再试。'
+        : '当前页面无法安全锁定备份恢复。请使用支持 Web Locks 的浏览器，通过 HTTPS 或 localhost 打开后重试。';
+    return Object.assign(new Error(message), { code });
+}
+
+async function runWithBackupRestoreLock(callback) {
+    let entered = false;
+    try {
+        const locks = globalThis.navigator?.locks;
+        if (typeof locks?.request !== 'function' || typeof dexieDB === 'undefined' || !dexieDB?.name) {
+            throw backupRestoreLockError('RESTORE_LOCK_UNAVAILABLE');
+        }
+        const name = `mio-backup-restore:${dexieDB.name}`;
+        return await locks.request(name, { mode: 'exclusive', ifAvailable: true }, async lock => {
+            entered = true;
+            if (!lock) throw backupRestoreLockError('RESTORE_BUSY');
+            const owner = {};
+            backupRestoreOwners.add(owner);
+            let open = true;
+            let finished;
+            // Each scoped handle may start one import and expires when its callback returns.
+            const start = operation => {
+                if (!open) throw backupRestoreLockError('RESTORE_BUSY');
+                open = false;
+                const result = Promise.resolve().then(operation);
+                finished = result.catch(() => {});
+                return result;
+            };
+            try {
+                return await callback({
+                    importBackupData: data => start(() => importBackupData(data, owner)),
+                    importPartialBackupData: data => start(() => importPartialBackupData(data, owner)),
+                    importMultipleBackupFiles: (files, onProgress, options) => start(() => importMultipleBackupFiles(files, onProgress, options, owner)),
+                    importStreamBackupData: (file, options) => start(() => importStreamBackupData(file, options, owner)),
+                    stageBackupObject: (data, partial) => start(() => stageBackupObject(data, partial, owner))
+                });
+            } finally {
+                open = false;
+                // Keep the browser lock through cleanup even when the callback didn't await the import.
+                await finished;
+                backupRestoreOwners.delete(owner);
+            }
+        });
+    } catch (error) {
+        if (entered) throw error;
+        throw backupRestoreLockError('RESTORE_LOCK_UNAVAILABLE');
+    }
+}
+
+async function runBackupImport(callback) {
+    try {
+        return await runWithBackupRestoreLock(callback);
+    } catch (error) {
+        if (error.code === 'RESTORE_BUSY' || error.code === 'RESTORE_LOCK_UNAVAILABLE') {
+            return { success: false, error: error.message };
+        }
+        throw error;
+    }
+}
+
+async function importStreamBackupData(file, options = {}, owner) {
+    if (!backupRestoreOwners.has(owner)) {
+        return runBackupImport(restore => restore.importStreamBackupData(file, options));
+    }
     const startTime = Date.now();
     const validation = await validateStreamBackup(file, options.onProgress);
     const isPartial = !!validation.header.partial;
@@ -1241,33 +1670,40 @@ window.createCompressedBackupBlob = createCompressedBackupBlob;
 window.inspectBackupArchive = inspectBackupArchive;
 window.importStreamBackupData = importStreamBackupData;
 
-async function stageBackupObject(data, isPartial) {
+async function writeBackupObjectToStaging(data, allowYield) {
+    const tableKeys = new Set(['characters', 'groups', 'worldBooks', 'myStickers', 'archives', 'naiVibeAssets', 'naiVibeEncodings', 'naiVibeGroups', 'recordedAudioAssets', 'memoryPalaceNodes', 'memoryPalaceVectors', 'memoryPalaceLinks', 'memoryPalaceEventBoxes', 'memoryPalaceRoomPlates', 'memoryPalaceAnticipations', 'memoryPalaceDigestReports', 'relationshipMemoryProfiles', 'dailySchedules', 'scheduleActivityLedger', 'lifePacks', 'lifeSources', 'lifeChunks', 'lifeEvents', 'sharedAssets', 'readingDocuments', 'readingDocumentChunks', 'readingSessions', 'readingLibraryEntries', 'readingAnnotations', 'readingActivities', 'readingResources', 'collaborationSessions', 'collaborationMessages', 'sharedDocuments', 'sharedDocumentBlocks', 'sharedDocumentRevisions', 'sharedDocumentComments', 'sharedDocumentSuggestions', 'watchTogetherSessions', 'exchangeDiaryEntries', 'periodRecords', 'coupleSpaces', 'coupleSpaceItems', 'trpgCampaigns', 'trpgPacks', 'trpgSources', 'trpgChunks', 'musicLibrary', 'healthRecords', 'timetableSnapshots', 'timetableAdjustments', 'timetableSyncStates', 'timetableChanges', 'personalEvents']);
+    economyBackupKeys().forEach(key => tableKeys.add(key));
+    for (const [key, value] of Object.entries(data)) {
+        if (key.startsWith('_export') || key === '__chunks__' || value === undefined) continue;
+        if (tableKeys.has(key)) {
+            if (!Array.isArray(value)) continue;
+            const table = getDexieTableForBackupKey(key, true);
+            if (!table) continue;
+            for (let index = 0; index < value.length; index += 25) {
+                const batch = value.slice(index, index + 25);
+                if (key === 'characters' || key === 'groups') {
+                    batch.forEach(chat => {
+                        if (!chat.theme) chat.theme = 'white_pink';
+                    });
+                }
+                await table.bulkPut(key==='readingActivities'?batch.map(row=>window.ReadingPlayCore.activity(row,{restoring:true})):key === 'trpgCampaigns' ? batch.map(row => window.CoC7Core.campaign(row)) : batch);
+                if (allowYield) await yieldBackupTask();
+            }
+        } else {
+            await dexieDB.importGlobalSettings.put({ key, value });
+        }
+    }
+}
+
+async function stageBackupObject(data, isPartial, owner) {
+    if (!backupRestoreOwners.has(owner)) {
+        return runWithBackupRestoreLock(restore => restore.stageBackupObject(data, isPartial));
+    }
     validateEconomyBackupKeys(Object.keys(data), isPartial);
     if (economyBackupKeys().some(key => Object.hasOwn(data, key))) validateEconomyBackupSnapshot(data);
     await clearImportStaging();
-    const tableKeys = new Set(['characters', 'groups', 'worldBooks', 'myStickers', 'archives', 'naiVibeAssets', 'naiVibeEncodings', 'naiVibeGroups', 'recordedAudioAssets', 'memoryPalaceNodes', 'memoryPalaceVectors', 'memoryPalaceLinks', 'memoryPalaceEventBoxes', 'memoryPalaceRoomPlates', 'memoryPalaceAnticipations', 'memoryPalaceDigestReports', 'relationshipMemoryProfiles', 'dailySchedules', 'scheduleActivityLedger', 'lifePacks', 'lifeSources', 'lifeChunks', 'lifeEvents', 'sharedAssets', 'readingDocuments', 'readingDocumentChunks', 'readingSessions', 'readingLibraryEntries', 'readingAnnotations', 'readingActivities', 'readingResources', 'collaborationSessions', 'collaborationMessages', 'sharedDocuments', 'sharedDocumentBlocks', 'sharedDocumentRevisions', 'sharedDocumentComments', 'sharedDocumentSuggestions', 'watchTogetherSessions', 'exchangeDiaryEntries', 'periodRecords', 'coupleSpaces', 'coupleSpaceItems', 'trpgCampaigns', 'trpgPacks', 'trpgSources', 'trpgChunks', 'musicLibrary', 'healthRecords', 'timetableSnapshots', 'timetableAdjustments', 'timetableSyncStates', 'timetableChanges', 'personalEvents']);
-    economyBackupKeys().forEach(key => tableKeys.add(key));
     try {
-        for (const [key, value] of Object.entries(data)) {
-            if (key.startsWith('_export') || key === '__chunks__' || value === undefined) continue;
-            if (tableKeys.has(key)) {
-                if (!Array.isArray(value)) continue;
-                const table = getDexieTableForBackupKey(key, true);
-                if (!table) continue;
-                for (let index = 0; index < value.length; index += 25) {
-                    const batch = value.slice(index, index + 25);
-                    if (key === 'characters' || key === 'groups') {
-                        batch.forEach(chat => {
-                            if (!chat.theme) chat.theme = 'white_pink';
-                        });
-                    }
-                    await table.bulkPut(key==='readingActivities'?batch.map(row=>window.ReadingPlayCore.activity(row,{restoring:true})):key === 'trpgCampaigns' ? batch.map(row => window.CoC7Core.campaign(row)) : batch);
-                    await yieldBackupTask();
-                }
-            } else {
-                await dexieDB.importGlobalSettings.put({ key, value });
-            }
-        }
+        await writeBackupObjectToStaging(data, true);
         if (!isPartial) {
             db.characters = [];
             db.groups = [];
@@ -1284,7 +1720,10 @@ async function stageBackupObject(data, isPartial) {
 }
 
 // 分类导入：只合并文件里包含的表，不覆盖其他数据
-async function importPartialBackupData(data) {
+async function importPartialBackupData(data, owner) {
+    if (!backupRestoreOwners.has(owner)) {
+        return runBackupImport(restore => restore.importPartialBackupData(data));
+    }
     const startTime = Date.now();
     const tables = data._exportTables || [];
     if (tables.length === 0) return { success: false, error: '文件中没有可导入的分类' };
@@ -1300,7 +1739,7 @@ async function importPartialBackupData(data) {
             }
         }
         showToast('正在写入...');
-        await stageBackupObject(partialData, true);
+        await stageBackupObject(partialData, true, owner);
         const duration = Date.now() - startTime;
         return { success: true, message: `分类导入完成 (耗时${duration}ms)` };
     } catch (error) {
@@ -1309,55 +1748,65 @@ async function importPartialBackupData(data) {
     }
 }
 
+function normalizeLegacyBackupHistory(data) {
+    const isMessage = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+    const reassembleHistory = (chat, backupData) => {
+        const history = chat.history ?? [];
+        if (!Array.isArray(history)) throw new Error('旧版备份的聊天记录格式不正确');
+        if (history.every(isMessage)) return history;
+        const messages = [];
+        for (const key of history) {
+            if (typeof key !== 'string' || !backupData.__chunks__ || !Object.hasOwn(backupData.__chunks__, key)) {
+                throw new Error('旧版备份的聊天记录分块缺失或引用无效');
+            }
+            const raw = backupData.__chunks__[key];
+            if (typeof raw !== 'string') throw new Error('旧版备份的聊天记录分块格式不正确');
+            let chunk;
+            try {
+                chunk = JSON.parse(raw);
+            } catch {
+                throw new Error('旧版备份的聊天记录分块无法解析');
+            }
+            if (!Array.isArray(chunk) || !chunk.every(isMessage)) throw new Error('旧版备份的聊天记录分块格式不正确');
+            for (const message of chunk) messages.push(message);
+        }
+        return messages;
+    };
+
+    const newData = { ...data };
+
+    if (newData.characters) {
+        newData.characters = newData.characters.map(char => ({
+            ...char,
+            history: reassembleHistory(char, data)
+        }));
+    }
+    if (newData.groups) {
+        newData.groups = newData.groups.map(group => ({
+            ...group,
+            history: reassembleHistory(group, data)
+        }));
+    }
+
+    return newData;
+}
+
 // 导入备份数据
-async function importBackupData(data) {
+async function importBackupData(data, owner) {
+    if (!backupRestoreOwners.has(owner)) {
+        return runBackupImport(restore => restore.importBackupData(data));
+    }
     const startTime = Date.now();
     try {
         let convertedData = data;
+        if (String(data._exportVersion || '').endsWith('_partial') || Array.isArray(data._exportTables)) {
+            throw new Error('这是分类导出文件，请使用「分类导入」');
+        }
 
         if (data._exportVersion !== '3.0') {
             showToast('检测到旧版备份文件，正在转换格式...');
             
-            const reassembleHistory = (chat, backupData) => {
-                if (!chat.history || !Array.isArray(chat.history) || chat.history.length === 0) {
-                    return [];
-                }
-                if (typeof chat.history[0] === 'object' && chat.history[0] !== null) {
-                    return chat.history;
-                }
-                if (backupData.__chunks__ && typeof chat.history[0] === 'string') {
-                    let fullHistory = [];
-                    chat.history.forEach(key => {
-                        if (backupData.__chunks__[key]) {
-                            try {
-                                const chunk = JSON.parse(backupData.__chunks__[key]);
-                                fullHistory = fullHistory.concat(chunk);
-                            } catch (e) {
-                                console.error(`Failed to parse history chunk ${key}`, e);
-                            }
-                        }
-                    });
-                    return fullHistory;
-                }
-                return []; 
-            };
-
-            const newData = { ...data };
-
-            if (newData.characters) {
-                newData.characters = newData.characters.map(char => ({
-                    ...char,
-                    history: reassembleHistory(char, data)
-                }));
-            }
-            if (newData.groups) {
-                newData.groups = newData.groups.map(group => ({
-                    ...group,
-                    history: reassembleHistory(group, data)
-                }));
-            }
-            
-            convertedData = newData;
+            convertedData = normalizeLegacyBackupHistory(data);
         }
 
         // 从备份恢复所有键（不限于当前 db 的键），避免漏掉主题预设、屏幕预设等。
@@ -1392,7 +1841,7 @@ async function importBackupData(data) {
         if (!Array.isArray(restoredData.widgetWallpaperPresets)) restoredData.widgetWallpaperPresets = [];
 
         showToast('正在写入新数据...');
-        await stageBackupObject(restoredData, false);
+        await stageBackupObject(restoredData, false, owner);
 
         const duration = Date.now() - startTime;
         const message = `导入完成 (耗时${duration}ms)`;

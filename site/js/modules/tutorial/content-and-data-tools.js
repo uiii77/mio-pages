@@ -1,3 +1,72 @@
+function showBackupRestoreError(error, title, notify = showToast) {
+    if (error.code === 'RESTORE_BUSY' || error.code === 'RESTORE_LOCK_UNAVAILABLE') {
+        showToast(error.message);
+        return;
+    }
+    console.error(title, error);
+    notify(title + ': ' + (error.message || String(error)));
+}
+
+async function confirmBackupMerge(files, restore, button, requirePartial = false) {
+    const confirmed = await customConfirm(
+        `将把 ${files.length} 份备份合并到当前数据中。同一角色或群聊的消息会汇到一起。资料或设置优先采用本机已有版本，其次按文件顺序（从「${files[0].name}」开始）。其他版本可在「合并保留的版本」中查看。若账务记录冲突，整批导入会停止。`,
+        `合并 ${files.length} 份备份`
+    );
+    if (!confirmed) return;
+    const status = document.createElement('p');
+    status.setAttribute('role', 'status');
+    button.after(status);
+    try {
+        return await restoreMultipleBackupFiles(files, restore, message => { status.textContent = message; }, { requirePartial });
+    } finally {
+        status.remove();
+    }
+}
+
+async function showBackupMergeVersions() {
+    const record = await dexieDB.globalSettings.get('mioBackupMergeVersionsV1');
+    const versions = record?.value;
+    if (!Array.isArray(versions) || !versions.length) {
+        showToast('当前没有合并时保留的其他版本。');
+        return;
+    }
+    const dialog = document.createElement('dialog');
+    dialog.className = 'backup-merge-versions';
+    dialog.setAttribute('aria-labelledby', 'backup-merge-versions-title');
+    dialog.innerHTML = `<h3 id="backup-merge-versions-title">合并保留的版本</h3>
+        <label>来源与记录 <select></select></label>
+        <pre aria-label="所选版本内容" tabindex="0"></pre>
+        <p>导出的版本文件可能含私人资料和服务密钥。</p>
+        <div><button type="button" class="btn btn-neutral" data-export>导出全部版本</button>
+        <button type="button" class="btn btn-primary" data-close>关闭</button></div>`;
+    const select = dialog.querySelector('select');
+    const preview = dialog.querySelector('pre');
+    select.add(new Option(`选择记录（共 ${versions.length} 条）`, ''));
+    versions.forEach((version, index) => {
+        const label = [version.source, version.key, version.id, version.field]
+            .filter(part => part !== undefined && part !== null && part !== '').join(' · ');
+        select.add(new Option(label, String(index)));
+    });
+    select.onchange = () => {
+        const content = select.value === '' ? '' : JSON.stringify(versions[Number(select.value)].value, null, 2);
+        preview.textContent = content.length > 12000 ? content.slice(0, 12000) + '\n…（导出可查看全文）' : content;
+    };
+    dialog.querySelector('[data-export]').onclick = () => {
+        const url = URL.createObjectURL(new Blob([JSON.stringify(versions, null, 2)], { type: 'application/json' }));
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'Mio-合并保留的版本.json';
+        dialog.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
+    };
+    dialog.querySelector('[data-close]').onclick = () => dialog.close();
+    dialog.addEventListener('close', () => dialog.remove(), { once: true });
+    document.body.appendChild(dialog);
+    dialog.showModal();
+}
+
 function renderTutorialContent(targetId = 'tutorial-content-area') {
     const tutorialContentArea = document.getElementById(targetId);
     if (!tutorialContentArea) return;
@@ -866,51 +935,31 @@ function renderTutorialContent(targetId = 'tutorial-content-area') {
         if (modalEl) modalEl.style.display = 'flex';
     });
 
-    const importDataBtn = createActionItem('label', '导入数据', 'btn btn-neutral');
+    const importDataBtn = createActionItem('label', '导入数据（可多选）', 'btn btn-neutral');
     importDataBtn.setAttribute('for', 'import-data-input');
     // For label, we can't easily disable click via disabled attr if it has 'for', but we preserve logic
     importDataBtn.disabled = loadingBtn;
-    document.querySelector('#import-data-input').addEventListener('change', async (event) => {
-        const file = event.target.files[0];
-        if (!file) return;
-
-        const confirmed = await customConfirm('此操作将覆盖当前所有聊天记录和设置。此操作不可撤销。确定要继续吗？', '确认导入');
-        if(confirmed){
-            try {
+    document.querySelector('#import-data-input').onchange = async (event) => {
+        const files = Array.from(event.target.files);
+        if (!files.length) return;
+        try {
+            const result = await runWithBackupRestoreLock(async restore => {
+                if (files.length > 1) return confirmBackupMerge(files, restore, importDataBtn);
+                const confirmed = await customConfirm('此操作将覆盖当前所有聊天记录和设置。此操作不可撤销。确定要继续吗？', '确认导入');
+                if (!confirmed) return;
                 showToast('正在导入数据，请稍候...');
-                const archiveInfo = await inspectBackupArchive(file);
-                let importResult;
-                if (archiveInfo.stream) {
-                    importResult = await importStreamBackupData(file, {
-                        onProgress: message => showToast(message)
-                    });
-                } else {
-                    const decompressionStream = new DecompressionStream('gzip');
-                    const decompressedStream = file.stream().pipeThrough(decompressionStream);
-                    const jsonString = await new Response(decompressedStream).text();
-                    const data = JSON.parse(jsonString);
-                    importResult = await importBackupData(data);
-                }
-
-                if (importResult.success) {
-                    showToast(`数据导入成功！${importResult.message} 应用即将刷新。`);
-                    setTimeout(() => {
-                        window.location.reload();
-                    }, 1500);
-                } else {
-                    showToast(`导入失败: ${importResult.error}`);
-                }
-            } catch (error) {
-                console.error("导入失败:", error);
-                showToast(`解压或解析文件时发生错误: ${error.message}`);
-            } finally {
-                event.target.value = null;
-            }
-        }else {
+                return restoreFullBackupFile(files[0], restore, showToast);
+            });
+            if (!result) return;
+            if (!result.success) throw new Error(result.error);
+            showToast(`数据导入成功！${result.message} 应用即将刷新。`);
+            setTimeout(() => window.location.reload(), 1500);
+        } catch (error) {
+            showBackupRestoreError(error, '导入失败');
+        } finally {
             event.target.value = null;
         }
-
-    })
+    };
 
     const cleanRedundantDataBtn = createActionItem('button', '清除冗余/无用数据', 'btn btn-neutral');
     cleanRedundantDataBtn.disabled = loadingBtn;
@@ -1076,56 +1125,42 @@ function renderTutorialContent(targetId = 'tutorial-content-area') {
         }
     });
 
-    const importPartialDataBtn = createActionItem('label', '分类导入', 'btn btn-neutral');
+    const importPartialDataBtn = createActionItem('label', '分类导入（可多选）', 'btn btn-neutral');
     importPartialDataBtn.setAttribute('for', 'import-partial-data-input');
     importPartialDataBtn.disabled = loadingBtn;
     const partialInput = document.getElementById('import-partial-data-input');
     if (partialInput) {
-        partialInput.addEventListener('change', async (event) => {
-            const file = event.target.files[0];
-            if (!file) return;
+        partialInput.onchange = async (event) => {
+            const files = Array.from(event.target.files);
+            if (!files.length) return;
             if (loadingBtn) return;
             try {
-                const archiveInfo = await inspectBackupArchive(file);
-                let legacyData = null;
-                const exportTables = archiveInfo.stream
-                    ? archiveInfo.header.exportTables
-                    : await (async () => {
-                        const decompressionStream = new DecompressionStream('gzip');
-                        const decompressedStream = file.stream().pipeThrough(decompressionStream);
-                        const jsonString = await new Response(decompressedStream).text();
-                        legacyData = JSON.parse(jsonString);
-                        return legacyData._exportTables;
-                    })();
-                if (!exportTables || !Array.isArray(exportTables)) {
-                    showToast('请选择由「分类导出」生成的文件（.ee）');
-                    event.target.value = null;
-                    return;
-                }
-                const confirmed = await customConfirm('将把该文件中选中的分类数据合并到当前数据中（同名会覆盖）。是否继续？', '分类导入');
-                if (!confirmed) {
-                    event.target.value = null;
-                    return;
-                }
-                showToast('正在分类导入...');
-                const result = archiveInfo.stream
-                    ? await importStreamBackupData(file, {
-                        requirePartial: true,
-                        onProgress: message => showToast(message)
-                    })
-                    : await importPartialBackupData(legacyData);
-                if (result.success) {
-                    showToast(result.message + ' 应用即将刷新。');
-                    setTimeout(() => window.location.reload(), 1500);
-                } else {
-                    showToast('分类导入失败: ' + result.error);
-                }
+                const result = await runWithBackupRestoreLock(async restore => {
+                    if (files.length > 1) return confirmBackupMerge(files, restore, importPartialDataBtn, true);
+                    const file = files[0];
+                    const info = await inspectBackupArchive(file);
+                    const data = info.stream ? null : await readLegacyBackupObject(file);
+                    if (!Array.isArray(info.stream ? info.header.exportTables : data._exportTables)) {
+                        showToast('请选择由「分类导出」生成的文件（.ee）');
+                        return;
+                    }
+                    const confirmed = await customConfirm('将把该文件中选中的分类数据合并到当前数据中（同名会覆盖）。是否继续？', '分类导入');
+                    if (!confirmed) return;
+                    showToast('正在分类导入...');
+                    return info.stream
+                        ? restore.importStreamBackupData(file, { requirePartial: true, onProgress: showToast })
+                        : restore.importPartialBackupData(data);
+                });
+                if (!result) return;
+                if (!result.success) throw new Error(result.error);
+                showToast(result.message + ' 应用即将刷新。');
+                setTimeout(() => window.location.reload(), 1500);
             } catch (error) {
-                console.error('分类导入失败:', error);
-                showToast('解压或解析失败: ' + (error.message || String(error)));
+                showBackupRestoreError(error, '分类导入失败');
+            } finally {
+                event.target.value = null;
             }
-            event.target.value = null;
-        });
+        };
     }
     const dataContainer = isDataView
         ? tutorialContentArea
@@ -1136,6 +1171,9 @@ function renderTutorialContent(targetId = 'tutorial-content-area') {
         dataContainer.appendChild(partialExportBtn);
         dataContainer.appendChild(importDataBtn);
         dataContainer.appendChild(importPartialDataBtn);
+        const versionsBtn = createActionItem('button', '合并保留的版本', 'btn btn-neutral');
+        versionsBtn.onclick = () => showBackupMergeVersions().catch(error => showBackupRestoreError(error, '读取保留版本失败'));
+        dataContainer.appendChild(versionsBtn);
         dataContainer.appendChild(advancedCleanBtn);
         dataContainer.appendChild(charCleanBtn);
         dataContainer.appendChild(cleanLocalImagesBtn);
@@ -1165,14 +1203,15 @@ function renderTutorialContent(targetId = 'tutorial-content-area') {
                 <div style="margin-bottom:10px; margin-top:${isRabbit ? '16px' : '0'};">
                     <div style="font-size:0.81rem; color:#666; margin-bottom:5px;">GitHub Token</div>
                     <div style="position:relative;">
-                        <input type="password" id="gh-token-input" placeholder="ghp_xxxx..." style="width:100%; border:1px solid #eee; padding:8px; padding-right:35px; border-radius:4px; font-size:0.89rem;">
+                        <input type="password" id="gh-token-input" placeholder="GitHub 访问令牌" style="width:100%; border:1px solid #eee; padding:8px; padding-right:35px; border-radius:4px; font-size:0.89rem;">
                         <div id="gh-eye-btn" style="position:absolute; right:10px; top:50%; transform:translateY(-50%); color:#999; cursor:pointer; display:flex;">
                             ${iconEyeClosed}
                         </div>
                     </div>
                 </div>
                 <div style="margin-bottom:10px;">
-                    <div style="font-size:0.81rem; color:#666; margin-bottom:5px;">仓库路径 (用户名/仓库名)</div>
+                    <div style="font-size:0.81rem; color:#666; margin-bottom:5px;">私有备份仓库 (用户名/仓库名)</div>
+                    <div style="font-size:0.78rem; color:#666; margin-bottom:5px;">聊天和附件会保存到此仓库，文件未经加密。云备份不含服务密钥及自定义连接地址。</div>
                     <input type="text" id="gh-repo-input" placeholder="username/repo" style="width:100%; border:1px solid #eee; padding:8px; border-radius:4px; font-size:0.89rem;">
                 </div>
                 <div style="margin-bottom:10px;">
@@ -1362,28 +1401,28 @@ function renderTutorialContent(targetId = 'tutorial-content-area') {
         <div class="modal-window" style="width: 85%; max-height: 80vh; overflow-y: auto; background: #fff; padding: 20px; border-radius: 12px; box-shadow: 0 5px 20px rgba(0,0,0,0.2);">
             <h3 style="margin-top:0; margin-bottom:15px; text-align:center; font-size:1.1rem; color: var(--primary-color);">GitHub 配置指南</h3>
             
-            <h4 style="margin:10px 0 5px; color:#333;">1. 获取 Token</h4>
-            <ol style="padding-left:20px; font-size:0.89rem; color:#555; line-height:1.6;">
-                <li>登录 GitHub，点击头像 → <strong>Settings</strong></li>
-                <li>左侧菜单到底 → <strong>Developer settings</strong></li>
-                <li><strong>Personal access tokens</strong> → <strong>Tokens (classic)</strong></li>
-                <li>Generate new token (classic)</li>
-                <li>Expiration 选 <strong>No expiration</strong></li>
-                <li><strong style="color:#d32f2f;">Scopes 必须勾选 repo (包含所有子项)</strong></li>
-                <li>点击 Generate，复制 ghp_ 开头的字符。<br><strong style="color:#d32f2f;">一定要现在复制并保存好！一旦刷新页面，你就再也看不到它了。</strong></li>
-            </ol>
-
-            <h4 style="margin:15px 0 5px; color:#333;">2. 创建仓库</h4>
+            <h4 style="margin:15px 0 5px; color:#333;">1. 创建仓库</h4>
             <ol style="padding-left:20px; font-size:0.89rem; color:#555; line-height:1.6;">
                 <li>右上角 + 号 → <strong>New repository</strong></li>
                 <li>Repository name 填个名字</li>
-                <li>建议选 <strong>Private</strong> (私有)</li>
+                <li>选择 <strong>Private</strong>（私有），并保持私有以保护备份</li>
                 <li>点击 Create repository</li>
+            </ol>
+
+            <h4 style="margin:10px 0 5px; color:#333;">2. 获取 Token</h4>
+            <ol style="padding-left:20px; font-size:0.89rem; color:#555; line-height:1.6;">
+                <li>登录 GitHub，点击头像 → <strong>Settings</strong></li>
+                <li>左侧菜单到底 → <strong>Developer settings</strong></li>
+                <li><strong>Personal access tokens</strong> → <strong>Fine-grained tokens</strong></li>
+                <li>点击 Generate new token，设置有效期</li>
+                <li>Repository access 选择 <strong>Only select repositories</strong> 并选中备份仓库</li>
+                <li><strong style="color:#d32f2f;">Repository permissions 中将 Contents 设为 Read and write</strong></li>
+                <li>点击 Generate，复制令牌。<br><strong style="color:#d32f2f;">一定要现在复制并保存好！一旦刷新页面，你就再也看不到它了。</strong></li>
             </ol>
 
             <h4 style="margin:15px 0 5px; color:#333;">3. 填写示例</h4>
             <ul style="padding-left:20px; font-size:0.89rem; color:#555; line-height:1.6;">
-                <li>Token: <code>ghp_xxxxxxxxxxxx...</code></li>
+                <li>Token: 刚生成的访问令牌</li>
                 <li>仓库路径: <code>用户名/仓库名</code></li>
             </ul>
 
@@ -1430,7 +1469,7 @@ function renderTutorialContent(targetId = 'tutorial-content-area') {
     document.getElementById('gh-interval-select').addEventListener('change', saveHandler);
 
     document.getElementById('gh-backup-btn').addEventListener('click', () => window.GitHubMgr.testUpload());
-    document.getElementById('gh-restore-btn').addEventListener('click', () => window.GitHubMgr.restoreLatest());
+    document.getElementById('gh-restore-btn').addEventListener('click', event => window.GitHubMgr.restoreLatest(event.currentTarget));
     document.getElementById('gh-check-btn').addEventListener('click', () => window.GitHubMgr.checkStatus());
 
     // 触感反馈开关事件监听

@@ -731,3 +731,20 @@
     margin: 0 20px;
     padding-top: 10px;
 }
+
+.backup-merge-versions {
+    width: min(30rem, calc(100% - 2rem));
+    max-height: 80dvh;
+    box-sizing: border-box;
+    overflow: auto;
+    padding: 1.25rem;
+    border: 1px solid #ddd;
+    border-radius: 16px;
+    background: var(--mio-surface, white);
+    color: var(--text-color, #333);
+}
+.backup-merge-versions h3 { margin: 0 0 1rem; }
+.backup-merge-versions select { display: block; width: 100%; margin-top: .4rem; }
+.backup-merge-versions pre { max-height: 40dvh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.backup-merge-versions p { font-size: .85rem; }
+.backup-merge-versions div { display: flex; gap: .6rem; }
