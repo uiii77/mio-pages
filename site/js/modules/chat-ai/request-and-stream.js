@@ -155,16 +155,7 @@ function serializeChatHistoryForGemini(chat, chatType, historySlice, apiConfig =
             // 展开小剧场分享卡片
             const theaterShareMatch = content.match(/\[小剧场分享[：:](.+?)\]/);
             if (theaterShareMatch) {
-                const scenarioId = theaterShareMatch[1];
-                let scenario = null;
-                if (typeof db !== 'undefined' && db) {
-                    if (Array.isArray(db.theaterScenarios)) {
-                        scenario = db.theaterScenarios.find(s => s.id === scenarioId);
-                    }
-                    if (!scenario && Array.isArray(db.theaterHtmlScenarios)) {
-                        scenario = db.theaterHtmlScenarios.find(s => s.id === scenarioId);
-                    }
-                }
+                const scenario = window.MessageReference.findTheaterScenario(theaterShareMatch[1], msg.theaterScenarioMode, db)?.scenario;
                 if (scenario) {
                     let readableContent = scenario.content || '';
                     if (scenario.mode === 'html' || /<[^>]+>/.test(readableContent)) {
@@ -270,16 +261,7 @@ function serializeChatHistoryMessages(chat, chatType, historySlice, apiConfig = 
                content = prefix + msg.content;
                const theaterShareMatch = content.match(/\[小剧场分享[：:](.+?)\]/);
                if (theaterShareMatch) {
-                   const scenarioId = theaterShareMatch[1];
-                   let scenario = null;
-                   if (typeof db !== 'undefined' && db) {
-                       if (Array.isArray(db.theaterScenarios)) {
-                           scenario = db.theaterScenarios.find(s => s.id === scenarioId);
-                       }
-                       if (!scenario && Array.isArray(db.theaterHtmlScenarios)) {
-                           scenario = db.theaterHtmlScenarios.find(s => s.id === scenarioId);
-                       }
-                   }
+                   const scenario = window.MessageReference.findTheaterScenario(theaterShareMatch[1], msg.theaterScenarioMode, db)?.scenario;
                    if (scenario) {
                        let readableContent = scenario.content || '';
                        if (scenario.mode === 'html' || /<[^>]+>/.test(readableContent)) {
@@ -435,6 +417,9 @@ async function getAiReply(chatId, chatType, isBackground = false, isSummary = fa
     apiConfig = replyOptions.apiConfigSnapshot || (typeof getApiConfigForFeature === 'function' ? getApiConfigForFeature(bindingFeature, apiConfig, roleContext) : apiConfig);
     
     let {url, key, model, provider} = apiConfig;
+    const wireProtocol = getAiRequestProtocol(apiConfig);
+    if (wireProtocol === 'gemini') provider = 'gemini';
+    else if (provider === 'gemini') provider = 'newapi';
     let streamEnabled = apiConfig.streamEnabled !== undefined ? apiConfig.streamEnabled : db.apiSettings.streamEnabled;
     
     if (typeof isApiConfigReady === 'function' ? !isApiConfigReady(apiConfig) : (!url || !key || !model)) {
@@ -1048,6 +1033,7 @@ async function getAiReply(chatId, chatType, isBackground = false, isSummary = fa
                     recordLatestTurnProtectionCheck(check);
                     if (!check.valid) throw new Error('最新轮次保护校验失败：MCP 请求未以本轮用户消息作为对话触发点');
                 }
+                const nativeCalls = new Map();
                 const sendToolAwareRequest = async input => {
                     let toolRequestBody;
                     let toolEndpoint;
@@ -1057,7 +1043,9 @@ async function getAiReply(chatId, chatType, isBackground = false, isSummary = fa
                             if (message && message.role === 'tool') {
                                 let responseValue;
                                 try { responseValue = JSON.parse(message.content || '{}'); } catch (error) { responseValue = { result: String(message.content || '') }; }
-                                return { role: 'user', parts: [{ functionResponse: { name: message.name, response: responseValue } }] };
+                                const fn = nativeCalls.get(message.tool_call_id);
+                                if (responseValue === null || Array.isArray(responseValue) || typeof responseValue !== 'object') responseValue = { result: responseValue };
+                                return { role: 'user', parts: [{ functionResponse: { name: message.name || fn?.name, response: responseValue, ...(fn?.id ? { id: fn.id } : {}) } }] };
                             }
                             return { role: message.role === 'assistant' ? 'model' : 'user', parts: [{ text: typeof message.content === 'string' ? message.content : JSON.stringify(message.content || '') }] };
                         });
@@ -1103,13 +1091,17 @@ async function getAiReply(chatId, chatType, isBackground = false, isSummary = fa
                     throwAiResponseError(payload);
                     if (toolTokenRecord && typeof captureChatTokenUsage === 'function') captureChatTokenUsage(chat, payload, toolTokenRecord);
                     touchReplyProgress();
-                    if (provider === 'gemini') {
+                    if (toolPrepared.provider === 'gemini') {
                         const assistantMessage = payload.candidates?.[0]?.content || { role: 'model', parts: [] };
                         const parts = assistantMessage.parts || [];
                         return {
-                            text: parts.filter(part => part && part.text).map(part => part.text).join(''),
+                            text: parts.filter(part => part && !part.thought && part.text).map(part => part.text).join(''),
                             assistantMessage,
-                            toolCalls: parts.filter(part => part && part.functionCall).map((part, index) => ({ id: `gemini_${Date.now()}_${index}`, name: part.functionCall.name, arguments: part.functionCall.args || {} }))
+                            toolCalls: parts.filter(part => part && part.functionCall).map((part, index) => {
+                                const fn = part.functionCall, id = fn.id || `gemini_${Date.now()}_${index}`;
+                                nativeCalls.set(id, fn);
+                                return { id, name: fn.name, arguments: fn.args || {} };
+                            })
                         };
                     }
                     const assistantMessage = toolPrepared.provider === 'openai_responses' ? {
@@ -1324,43 +1316,55 @@ async function getAiReply(chatId, chatType, isBackground = false, isSummary = fa
 }
 
 async function processStream(response, chat, apiType, targetChatId, targetChatType, isBackground = false, isCharBlockedMonologue = false, replyTask = null, signal = null, onProgress = null) {
-    const reader = response.body.getReader(), decoder = new TextDecoder();
-    let fullResponse = "", fullReasoning = "", accumulatedChunk = "";
+    let fullResponse = '', fullReasoning = '';
     const tokenRecord = response._ovoTokenRecord || null;
-    let streamFinished = false;
-    const processSseBlock = block => {
-        const data = block.split(/\r?\n/)
-            .filter(line => line.startsWith('data:'))
-            .map(line => line.slice(5).replace(/^ /, ''))
-            .join('\n');
-        if (!data) return false;
-        if (data.trim() === '[DONE]') return true;
-        try {
-            const parsed = JSON.parse(data);
-            if (typeof captureChatTokenUsage === 'function') captureChatTokenUsage(chat, parsed, tokenRecord);
-            const extracted = extractAiProviderResponse(parsed, apiType, true);
+    if (apiType === 'gemini') {
+        await consumeGeminiStream(response, payload => {
+            if (typeof captureChatTokenUsage === 'function') captureChatTokenUsage(chat, payload, tokenRecord);
+            const extracted = extractAiProviderResponse(payload, apiType, true);
             fullResponse += extracted.content;
             fullReasoning += extracted.reasoning || '';
-        } catch (error) {
-            if (error.response) throw error;
-            console.warn('[ReplyStream] ignored malformed SSE event:', error);
+        }, { signal, onBytes(bytes) {
+            onProgress?.();
+            if (replyTask) window.ReplyResilience?.checkpoint(replyTask, fullResponse, fullReasoning, {
+                transportBytes: (replyTask.transportBytes || 0) + bytes
+            });
+        } });
+    } else {
+        const reader = response.body.getReader(), decoder = new TextDecoder();
+        let accumulatedChunk = '', streamFinished = false;
+        const processSseBlock = block => {
+            const data = block.split(/\r?\n/)
+                .filter(line => line.startsWith('data:'))
+                .map(line => line.slice(5).replace(/^ /, ''))
+                .join('\n');
+            if (!data) return false;
+            if (data.trim() === '[DONE]') return true;
+            try {
+                const parsed = JSON.parse(data);
+                if (typeof captureChatTokenUsage === 'function') captureChatTokenUsage(chat, parsed, tokenRecord);
+                const extracted = extractAiProviderResponse(parsed, apiType, true);
+                fullResponse += extracted.content;
+                fullReasoning += extracted.reasoning || '';
+            } catch (error) {
+                if (error.response) throw error;
+                console.warn('[ReplyStream] ignored malformed SSE event:', error);
+            }
+            return false;
+        };
+        const abortStream = () => {
+            void reader.cancel(signal && signal.reason ? signal.reason : undefined).catch(() => {});
+        };
+        if (signal) {
+            if (signal.aborted) abortStream();
+            else signal.addEventListener('abort', abortStream, { once: true });
         }
-        return false;
-    };
-    const abortStream = () => {
-        void reader.cancel(signal && signal.reason ? signal.reason : undefined).catch(() => {});
-    };
-    if (signal) {
-        if (signal.aborted) abortStream();
-        else signal.addEventListener('abort', abortStream, { once: true });
-    }
-    try {
-        for (; ;) {
-            const {done, value} = await reader.read();
-            if (done) break;
-            if (typeof onProgress === 'function') onProgress();
-            accumulatedChunk += decoder.decode(value, {stream: true});
-            if (apiType !== "gemini") {
+        try {
+            for (; ;) {
+                const {done, value} = await reader.read();
+                if (done) break;
+                if (typeof onProgress === 'function') onProgress();
+                accumulatedChunk += decoder.decode(value, {stream: true});
                 const parts = accumulatedChunk.split(/\r?\n\r?\n/);
                 accumulatedChunk = parts.pop();
                 for (const part of parts) {
@@ -1373,39 +1377,24 @@ async function processStream(response, chat, apiType, targetChatId, targetChatTy
                     await reader.cancel().catch(() => {});
                     break;
                 }
+                if (replyTask && window.ReplyResilience) {
+                    window.ReplyResilience.checkpoint(replyTask, fullResponse, fullReasoning, {
+                        transportBytes: (replyTask.transportBytes || 0) + (value ? value.byteLength : 0)
+                    });
+                }
             }
-            if (replyTask && window.ReplyResilience) {
-                window.ReplyResilience.checkpoint(replyTask, fullResponse, fullReasoning, {
-                    transportBytes: (replyTask.transportBytes || 0) + (value ? value.byteLength : 0)
-                });
+        } finally {
+            if (signal) signal.removeEventListener('abort', abortStream);
+        }
+        if (signal && signal.aborted) {
+            throw signal.reason || new DOMException('The operation was aborted.', 'AbortError');
+        }
+        accumulatedChunk += decoder.decode();
+        if (accumulatedChunk.trim() && !streamFinished) {
+            streamFinished = processSseBlock(accumulatedChunk);
+            if (streamFinished) {
+                await reader.cancel().catch(() => {});
             }
-        }
-    } finally {
-        if (signal) signal.removeEventListener('abort', abortStream);
-    }
-    if (signal && signal.aborted) {
-        throw signal.reason || new DOMException('The operation was aborted.', 'AbortError');
-    }
-    accumulatedChunk += decoder.decode();
-    if (apiType !== "gemini" && accumulatedChunk.trim() && !streamFinished) {
-        streamFinished = processSseBlock(accumulatedChunk);
-        if (streamFinished) {
-            await reader.cancel().catch(() => {});
-        }
-    }
-    if (apiType === "gemini") {
-        try {
-            const parsedStream = JSON.parse(accumulatedChunk);
-            fullResponse = parsedStream.map(item => {
-                if (typeof captureChatTokenUsage === 'function') captureChatTokenUsage(chat, item, tokenRecord);
-                const extracted = extractAiProviderResponse(item, apiType, true);
-                fullReasoning += extracted.reasoning || '';
-                return extracted.content;
-            }).join('');
-        } catch (e) {
-            console.error("Error parsing Gemini stream:", e, "Chunk:", accumulatedChunk);
-            if (!isBackground) showToast("解析Gemini响应失败");
-            throw e;
         }
     }
     if (replyTask && window.ReplyResilience) window.ReplyResilience.checkpoint(replyTask, fullResponse, fullReasoning);

@@ -307,7 +307,7 @@ function switchTheaterMode(mode) {
 
 /** HTML 模式：显示详情页（独立 DOM） */
 function showTheaterHtmlScenarioDetail(scenario) {
-    currentTheaterScenarioId = scenario.id;
+
     const detailContent = document.getElementById('theater-html-detail-content');
     if (!detailContent) return;
 
@@ -480,7 +480,7 @@ ${autoHeightScript}
     const editTitleBtn = document.getElementById('theater-html-edit-title-btn');
     if (editTitleBtn && !isEditing) {
         editTitleBtn.addEventListener('click', () => {
-            const s = getTheaterScenarios().find(s => s.id === currentTheaterScenarioId);
+            const s = getTheaterDetailScenario();
             if (s) {
                 s.isEditingTitle = true;
                 showTheaterHtmlScenarioDetail(s);
@@ -502,7 +502,7 @@ ${autoHeightScript}
             }
             if (e.key === 'Escape') {
                 e.preventDefault();
-                const s = getTheaterScenarios().find(s => s.id === currentTheaterScenarioId);
+                const s = getTheaterDetailScenario();
                 if (s) {
                     s.isEditingTitle = false;
                     showTheaterHtmlScenarioDetail(s);
@@ -514,22 +514,14 @@ ${autoHeightScript}
 
     switchScreen('theater-html-detail-screen');
 
-    // 若从聊天气泡跳转而来，将返回按钮的目标改为聊天界面
-    if (window._theaterDetailFromChat) {
-        window._theaterDetailFromChat = false;
-        const backBtn = document.querySelector('#theater-html-detail-screen .back-btn');
-        if (backBtn) backBtn.setAttribute('data-target', 'chat-room-screen');
-    } else {
-        // 恢复默认
-        const backBtn = document.querySelector('#theater-html-detail-screen .back-btn');
-        if (backBtn) backBtn.setAttribute('data-target', 'theater-screen');
-    }
+    const back = document.querySelector('#theater-html-detail-screen .back-btn');
+    if (back) back.dataset.target = theaterDetail?.backTarget || 'theater-screen';
 }
 
 /** HTML 模式：保存编辑 */
 async function saveHtmlEditScenario() {
-    if (!currentTheaterScenarioId) return;
-    const scenario = getTheaterScenarios().find(s => s.id === currentTheaterScenarioId);
+    const detail = theaterDetail;
+    const scenario = getTheaterDetailScenario();
     if (!scenario) return;
 
     const contentInput = document.getElementById('theater-html-edit-content');
@@ -549,9 +541,9 @@ async function saveHtmlEditScenario() {
     scenario.isEditing = false;
     scenario.isEditingTitle = false;
 
-    await saveData();
+    if (await saveData() === false) return;
     showToast('已保存修改');
-    showTheaterHtmlScenarioDetail(scenario);
+    refreshTheaterDetail(detail);
     renderTheaterScenarios();
 }
 

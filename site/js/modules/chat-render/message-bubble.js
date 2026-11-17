@@ -473,50 +473,10 @@ function createMessageBubbleElement(message, isContinuous = false, options = {})
             bubble.addEventListener('click', () => {
                 // 调试模式下不跳转（气泡已显示原始内容，供调试查看）
                 if (typeof isDebugMode !== 'undefined' && isDebugMode) return;
-                const scId = message.theaterScenarioId;
-                const scMode = message.theaterScenarioMode || 'text';
-                // 切换到小剧场App，然后打开对应的场景详情
-                // 标记：从聊天气泡打开，返回时需回到聊天界面
-                window._theaterDetailFromChat = true;
+                const ref = window.MessageReference.findTheaterScenario(message.theaterScenarioId, message.theaterScenarioMode, db);
+                if (!ref) { showToast('未找到该小剧场，可能已被删除'); return; }
                 if (typeof openApp === 'function') openApp('theater');
-                // 稍作延迟等待视图切换后再查找场景
-                setTimeout(() => {
-                    // 直接根据 scMode 查找对应模式的小剧场，无需切换 theaterCurrentMode
-                    let scenario = null;
-                    if (scMode === 'html') {
-                        // HTML 模式：直接从 db.theaterHtmlScenarios 查找
-                        if (typeof db !== 'undefined' && db.theaterHtmlScenarios) {
-                            scenario = db.theaterHtmlScenarios.find(s => s.id === scId);
-                        }
-                    } else {
-                        // 文本模式：直接从 db.theaterScenarios 查找
-                        if (typeof db !== 'undefined' && db.theaterScenarios) {
-                            scenario = db.theaterScenarios.find(s => s.id === scId);
-                        }
-                    }
-                    // 如果按模式找不到，尝试在两种模式中都查找（兼容旧数据）
-                    if (!scenario) {
-                        if (typeof db !== 'undefined') {
-                            if (db.theaterHtmlScenarios) {
-                                scenario = db.theaterHtmlScenarios.find(s => s.id === scId);
-                            }
-                            if (!scenario && db.theaterScenarios) {
-                                scenario = db.theaterScenarios.find(s => s.id === scId);
-                            }
-                        }
-                    }
-                    if (scenario) {
-                        // 根据 scenario.mode 或 scMode 决定调用哪个详情函数
-                        const actualMode = scenario.mode || scMode;
-                        if (actualMode === 'html' && typeof showTheaterHtmlScenarioDetail === 'function') {
-                            showTheaterHtmlScenarioDetail(scenario);
-                        } else if (typeof showTheaterScenarioDetail === 'function') {
-                            showTheaterScenarioDetail(scenario);
-                        }
-                    } else {
-                        if (typeof showToast === 'function') showToast('未找到该小剧场，可能已被删除');
-                    }
-                }, 300);
+                openTheaterDetail(ref.scenario, ref.mode, 'chat-room-screen');
             });
             wrapper.appendChild(bubble);
         } else if (message.isMomentsActivity) {
@@ -837,15 +797,8 @@ function createMessageBubbleElement(message, isContinuous = false, options = {})
     } else if (theaterShareMatch) {
         // 小剧场分享卡片渲染
         const scenarioId = theaterShareMatch[1];
-        let scenario = null;
-        if (typeof db !== 'undefined' && db) {
-            if (Array.isArray(db.theaterScenarios)) {
-            scenario = db.theaterScenarios.find(s => s.id === scenarioId);
-            }
-            if (!scenario && Array.isArray(db.theaterHtmlScenarios)) {
-                scenario = db.theaterHtmlScenarios.find(s => s.id === scenarioId);
-            }
-        }
+        const ref = window.MessageReference.findTheaterScenario(scenarioId, message.theaterScenarioMode, db);
+        const scenario = ref?.scenario;
 
         bubbleElement = document.createElement('div');
         bubbleElement.className = 'theater-share-card-bubble';
@@ -888,13 +841,9 @@ function createMessageBubbleElement(message, isContinuous = false, options = {})
         if (scenario) {
             bubbleElement.addEventListener('click', () => {
                 try {
-                    // 标记：从聊天气泡打开，返回时需回到聊天界面
-                    window._theaterDetailFromChat = true;
-                    if (scenario.mode === 'html' && typeof showTheaterHtmlScenarioDetail === 'function') {
-                        showTheaterHtmlScenarioDetail(scenario);
-                    } else if (typeof showTheaterScenarioDetail === 'function') {
-                        showTheaterScenarioDetail(scenario);
-                    }
+                    const current = window.MessageReference.findTheaterScenario(scenarioId, ref.mode, db);
+                    if (current) openTheaterDetail(current.scenario, current.mode, 'chat-room-screen');
+                    else showToast('未找到该小剧场，可能已被删除');
                 } catch (e) {
                     console.error('Failed to open theater scenario detail:', e);
                 }

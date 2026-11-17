@@ -1,6 +1,30 @@
 // --- 小剧场功能 (js/modules/theater.js) ---
 
-let currentTheaterScenarioId = null;
+let theaterDetail = null;
+let theaterFormRevision = 0;
+
+function openTheaterDetail(scenario, mode, backTarget = 'theater-screen') {
+    theaterDetail = { id: scenario.id, mode, backTarget };
+    if (mode === 'html') showTheaterHtmlScenarioDetail(scenario);
+    else showTheaterScenarioDetail(scenario);
+}
+
+function getTheaterDetailScenario(detail = theaterDetail) {
+    return detail && getTheaterScenarios(detail.mode).find(scenario => scenario.id === detail.id);
+}
+
+function isTheaterDetailVisible(detail) {
+    const screen = detail?.mode === 'html' ? 'theater-html-detail-screen' : 'theater-detail-screen';
+    return theaterDetail === detail && document.getElementById(screen)?.classList.contains('active');
+}
+
+function refreshTheaterDetail(detail) {
+    if (!isTheaterDetailVisible(detail)) return;
+    const scenario = getTheaterDetailScenario(detail);
+    if (!scenario) return;
+    if (detail.mode === 'html') showTheaterHtmlScenarioDetail(scenario);
+    else showTheaterScenarioDetail(scenario);
+}
 /** 列表多选：是否处于多选模式、已选中的 scenario id 集合 */
 let theaterMultiSelectMode = false;
 let theaterSelectedIds = new Set();
@@ -19,8 +43,8 @@ function theaterEscapeHtml(s) {
 }
 
 /** 获取当前模式的剧情列表 */
-function getTheaterScenarios() {
-    if (theaterCurrentMode === 'html') {
+function getTheaterScenarios(mode = theaterCurrentMode) {
+    if (mode === 'html') {
         if (!db.theaterHtmlScenarios) db.theaterHtmlScenarios = [];
         return db.theaterHtmlScenarios;
     }
@@ -29,8 +53,8 @@ function getTheaterScenarios() {
 }
 
 /** 设置当前模式的剧情列表 */
-function setTheaterScenarios(list) {
-    if (theaterCurrentMode === 'html') {
+function setTheaterScenarios(list, mode = theaterCurrentMode) {
+    if (mode === 'html') {
         db.theaterHtmlScenarios = list;
     } else {
         db.theaterScenarios = list;
@@ -284,11 +308,7 @@ function renderTheaterScenarios() {
                 toggleTheaterSelection(scenario.id);
                 return;
             }
-            if (theaterCurrentMode === 'html') {
-                showTheaterHtmlScenarioDetail(scenario);
-            } else {
-                showTheaterScenarioDetail(scenario);
-            }
+            openTheaterDetail(scenario, isHtml ? 'html' : 'text');
         });
 
         if (isMultiSelect) {
@@ -375,7 +395,7 @@ function theaterDeleteSelected() {
 
 // 显示详情页
 function showTheaterScenarioDetail(scenario) {
-    currentTheaterScenarioId = scenario.id;
+
     const detailContent = document.getElementById('theater-detail-content');
     if (!detailContent) return;
 
@@ -631,7 +651,7 @@ function showTheaterScenarioDetail(scenario) {
     const editTitleBtn = document.getElementById('theater-edit-title-btn');
     if (editTitleBtn && !isEditing) {
         editTitleBtn.addEventListener('click', () => {
-            const scenario = getTheaterScenarios().find(s => s.id === currentTheaterScenarioId);
+            const scenario = getTheaterDetailScenario();
             if (scenario) {
                 scenario.isEditingTitle = true;
                 showTheaterScenarioDetail(scenario);
@@ -655,7 +675,7 @@ function showTheaterScenarioDetail(scenario) {
             }
             if (e.key === 'Escape') {
                 e.preventDefault();
-                const scenario = getTheaterScenarios().find(s => s.id === currentTheaterScenarioId);
+                const scenario = getTheaterDetailScenario();
                 if (scenario) {
                     scenario.isEditingTitle = false;
                     showTheaterScenarioDetail(scenario);
@@ -667,16 +687,8 @@ function showTheaterScenarioDetail(scenario) {
     
     switchScreen('theater-detail-screen');
 
-    // 若从聊天气泡跳转而来，将返回按钮的目标改为聊天界面
-    if (window._theaterDetailFromChat) {
-        window._theaterDetailFromChat = false;
-        const backBtn = document.querySelector('#theater-detail-screen .back-btn');
-        if (backBtn) backBtn.setAttribute('data-target', 'chat-room-screen');
-    } else {
-        // 恢复默认（防止上次从聊天跳转后遗留的覆盖）
-        const backBtn = document.querySelector('#theater-detail-screen .back-btn');
-        if (backBtn) backBtn.setAttribute('data-target', 'theater-screen');
-    }
+    const back = document.querySelector('#theater-detail-screen .back-btn');
+    if (back) back.dataset.target = theaterDetail?.backTarget || 'theater-screen';
 }
 
 // 更新角色显示

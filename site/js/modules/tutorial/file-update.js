@@ -116,7 +116,10 @@
         } finally { checking = false; renderState(); }
     }
     window.OVOFileUpdate = { baseUrl, run: () => check(true), check, renderState };
-    window.addEventListener?.('pageshow', () => check());
+    window.addEventListener?.('pageshow', () => {
+        navigator.serviceWorker?.controller?.postMessage({ type: 'MIO_CLEAN_OLD_SHELLS' });
+        check();
+    });
     window.addEventListener?.('online', () => check());
     document.addEventListener?.('visibilitychange', () => check());
 })();

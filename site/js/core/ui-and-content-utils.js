@@ -1121,14 +1121,7 @@ function filterHistoryForAI(chat, historySlice, ignoreContextDisabled = false) {
                 if (!msg || !msg.content || typeof msg.content !== 'string') return;
                 const match = msg.content.match(theaterShareRegex);
                 if (!match) return;
-                const scenarioId = match[1];
-                let scenario = null;
-                if (Array.isArray(db.theaterScenarios)) {
-                    scenario = db.theaterScenarios.find(s => s.id === scenarioId);
-                }
-                if (!scenario && Array.isArray(db.theaterHtmlScenarios)) {
-                    scenario = db.theaterHtmlScenarios.find(s => s.id === scenarioId);
-                }
+                const scenario = window.MessageReference.findTheaterScenario(match[1], msg.theaterScenarioMode, db)?.scenario;
                 if (!scenario) return;
 
                 let charName = '';
@@ -1162,6 +1155,7 @@ function filterHistoryForAI(chat, historySlice, ignoreContextDisabled = false) {
 
     return filteredHistory;
 }
+
 
 function aiMessageContentToText(content) {
     if (typeof content === 'string') return content;

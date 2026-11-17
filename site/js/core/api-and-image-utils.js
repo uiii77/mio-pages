@@ -71,20 +71,8 @@ async function fetchAiResponse(settings, requestBody, headers, endpoint, forceSt
             data = JSON.parse(text);
         } catch (e) {
             // JSON 解析失败。检查是否是 SSE 格式的文本 (针对未设置 header 的流式响应)
-            if (text.includes('data: ')) {
-                console.warn("Received SSE response without header, parsing as text...");
-                let fallbackContent = "";
-                const lines = text.split('\n');
-                for (const line of lines) {
-                    if (line.startsWith('data: ') && !line.includes('[DONE]')) {
-                        try {
-                            const json = JSON.parse(line.substring(6));
-                            if (tokenRecord && typeof captureChatTokenUsage === 'function') captureChatTokenUsage(null, json, tokenRecord);
-                            fallbackContent += json.choices[0].delta?.content || "";
-                        } catch (e2) {}
-                    }
-                }
-                if (fallbackContent) return fallbackContent;
+            if (/(^|\n)(?:event:|data:)/.test(text)) {
+                return readStreamResponse(new Response(text), provider, tokenRecord, requestOptions?.onUsage);
             }
             throw new Error(`Failed to parse JSON response: ${text.substring(0, 100)}...`);
         }
@@ -96,7 +84,60 @@ async function fetchAiResponse(settings, requestBody, headers, endpoint, forceSt
     } finally { release?.(); }
 }
 
+// Native Gemini gateways may use SSE or a JSON array. Use the first payload byte
+// so generic/missing proxy Content-Type headers still work. UTF-8 is decoded incrementally.
+async function consumeGeminiStream(response, onPayload, { signal, onBytes } = {}) {
+    const reader = response.body.getReader(), decoder = new TextDecoder();
+    let buffer = '', mode, done = false;
+    function emit(block) {
+        const data = block.split(/\r?\n/).filter(line => line.startsWith('data:'))
+            .map(line => line.slice(5).replace(/^ /, '')).join('\n');
+        if (!data.trim()) return;
+        if (data.trim() === '[DONE]') { done = true; return; }
+        onPayload(JSON.parse(data));
+    }
+    function consume(text, final = false) {
+        buffer += text;
+        const prefix = buffer.trimStart();
+        if (!mode && prefix) mode = /^[\[{]/.test(prefix) ? 'json' : 'sse';
+        if (mode === 'sse') {
+            const blocks = buffer.split(/\r?\n\r?\n/);
+            buffer = blocks.pop();
+            for (const block of blocks) { emit(block); if (done) return; }
+            if (final && buffer.trim()) emit(buffer);
+        } else if (final && prefix) {
+            const data = JSON.parse(prefix);
+            for (const item of Array.isArray(data) ? data : [data]) onPayload(item);
+        }
+    }
+    const cancel = () => { void reader.cancel(signal?.reason).catch(() => {}); };
+    signal?.addEventListener('abort', cancel, { once: true });
+    try {
+        while (!done && !signal?.aborted) {
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            consume(decoder.decode(chunk.value, { stream: true }));
+            onBytes?.(chunk.value.byteLength);
+        }
+        if (signal?.aborted) throw signal.reason || new DOMException('任务已停止', 'AbortError');
+        if (!done) consume(decoder.decode(), true);
+    } finally {
+        signal?.removeEventListener('abort', cancel);
+        await reader.cancel().catch(() => {});
+        reader.releaseLock?.();
+    }
+}
+
 async function readStreamResponse(response, provider, tokenRecord = null, onUsage = null) {
+    if (provider === 'gemini') {
+        let text = '';
+        await consumeGeminiStream(response, payload => {
+            if (payload.usageMetadata) onUsage?.(payload.usageMetadata);
+            if (tokenRecord && typeof captureChatTokenUsage === 'function') captureChatTokenUsage(null, payload, tokenRecord);
+            text += extractAiProviderResponse(payload, provider, true).content;
+        });
+        return text;
+    }
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let fullResponse = "";
@@ -107,29 +148,27 @@ async function readStreamResponse(response, provider, tokenRecord = null, onUsag
         if (done) break;
         accumulatedChunk += decoder.decode(value, { stream: true });
 
-        if (provider !== 'gemini') {
-            // OpenAI / Standard SSE logic
-            const parts = accumulatedChunk.split(/\r?\n\r?\n/);
-            accumulatedChunk = parts.pop();
-            for (const part of parts) {
-                const dataLine = part.split(/\r?\n/).find(line => line.startsWith("data:"));
-                if (dataLine) {
-                    const data = dataLine.slice(5).trimStart();
-                    if (data.trim() !== "[DONE]") {
-                        try {
-                            const json = JSON.parse(data);
-                            if (json.usage || json.usageMetadata) onUsage?.(json.usage || json.usageMetadata);
-                            if (tokenRecord && typeof captureChatTokenUsage === 'function') captureChatTokenUsage(null, json, tokenRecord);
-                            fullResponse += extractAiProviderResponse(json, provider, true).content;
-                        } catch (e) { if (e.response) throw e; }
-                    }
+        // OpenAI / Standard SSE logic
+        const parts = accumulatedChunk.split(/\r?\n\r?\n/);
+        accumulatedChunk = parts.pop();
+        for (const part of parts) {
+            const dataLine = part.split(/\r?\n/).find(line => line.startsWith("data:"));
+            if (dataLine) {
+                const data = dataLine.slice(5).trimStart();
+                if (data.trim() !== "[DONE]") {
+                    try {
+                        const json = JSON.parse(data);
+                        if (json.usage || json.usageMetadata) onUsage?.(json.usage || json.usageMetadata);
+                        if (tokenRecord && typeof captureChatTokenUsage === 'function') captureChatTokenUsage(null, json, tokenRecord);
+                        fullResponse += extractAiProviderResponse(json, provider, true).content;
+                    } catch (e) { if (e.response) throw e; }
                 }
             }
         }
     }
 
     // Handle remaining chunk for OpenAI
-    if (provider !== 'gemini' && accumulatedChunk && accumulatedChunk.trim().length > 0) {
+    if (accumulatedChunk && accumulatedChunk.trim().length > 0) {
          const dataLine = accumulatedChunk.split(/\r?\n/).find(line => line.startsWith("data:"));
          if (dataLine) {
              const data = dataLine.slice(5).trimStart();
@@ -141,19 +180,6 @@ async function readStreamResponse(response, provider, tokenRecord = null, onUsag
                  } catch (e) { if (e.response) throw e; }
              }
          }
-    }
-
-    // Gemini logic (accumulate all and parse at the end)
-    if (provider === 'gemini') {
-        try {
-            // 尝试解析为 JSON 数组
-            const parsedStream = JSON.parse(accumulatedChunk);
-            if (Array.isArray(parsedStream)) {
-                fullResponse = parsedStream.map(item => { if (tokenRecord && typeof captureChatTokenUsage === 'function') captureChatTokenUsage(null, item, tokenRecord); return extractAiProviderResponse(item, provider, true).content; }).join('');
-            }
-        } catch (e) {
-            console.error("Gemini stream parsing failed", e);
-        }
     }
 
     return fullResponse;
@@ -548,6 +574,8 @@ function parseOvoImageDataUrl(value) {
 function normalizeMultimodalPart(part, protocol) {
     if (!part || typeof part !== 'object') return part;
     if (part.type === 'text') return protocol === 'gemini' ? { text: part.text || '' } : { type: 'text', text: part.text || '' };
+    if (protocol === 'gemini' && part.inlineData) return part;
+    if (protocol === 'anthropic' && part.type === 'image') return part;
     const raw = part.image_url?.url || part.url || '';
     const data = parseOvoImageDataUrl(raw);
     if (protocol === 'anthropic') {
@@ -555,6 +583,7 @@ function normalizeMultimodalPart(part, protocol) {
         return { type: 'image', source: { type: 'url', url: raw } };
     }
     if (protocol === 'gemini') {
+        if (part.type === 'image' && part.source?.type === 'base64') return { inlineData: { mimeType: part.source.media_type, data: part.source.data } };
         if (data) return { inlineData: { mimeType: data.mediaType, data: data.data } };
         return { fileData: { fileUri: raw } };
     }
@@ -606,13 +635,33 @@ function toAnthropicMessages(messages) {
 function toGeminiContents(messages) {
     const system = [];
     const contents = [];
+    const calls = new Map();
     (messages || []).forEach(message => {
         if (message.role === 'system' || message.role === 'developer') {
             const text = typeof message.content === 'string' ? message.content : (message.content || []).filter(p => p.type === 'text').map(p => p.text).join('\n');
             if (text) system.push(text); return;
         }
         const role = message.role === 'assistant' ? 'model' : 'user';
-        const parts = Array.isArray(message.content) ? message.content.map(part => normalizeMultimodalPart(part, 'gemini')) : [{ text: message.content || '' }];
+        let parts = Array.isArray(message.content) ? message.content.map(part => normalizeMultimodalPart(part, 'gemini'))
+            : message.content ? [{ text: message.content }] : [];
+        if (message.role === 'tool') {
+            const name = message.name || calls.get(message.tool_call_id);
+            if (!name) throw Error('工具响应缺少对应的函数名');
+            let response;
+            try { response = JSON.parse(message.content); } catch { response = message.content; }
+            if (!response || Array.isArray(response) || typeof response !== 'object') response = { result: response };
+            parts = [{ functionResponse: { name, response, ...(message.tool_call_id ? { id: message.tool_call_id } : {}) } }];
+        }
+        for (const call of message.tool_calls || []) {
+            const fn = call.function;
+            if (!fn?.name) throw Error('工具调用缺少函数名');
+            const args = typeof fn.arguments === 'string' ? JSON.parse(fn.arguments || '{}') : fn.arguments || {};
+            calls.set(call.id, fn.name);
+            const signature = call.extra_content?.google?.thought_signature;
+            parts.push({ functionCall: { name: fn.name, args, ...(call.id ? { id: call.id } : {}) },
+                ...(signature ? { thoughtSignature: signature } : {}) });
+        }
+        if (!parts.length) return;
         const previous = contents[contents.length - 1];
         const sourceIds = message.__ovoMessageId ? [message.__ovoMessageId] : (message.__ovoMessageIds || []);
         if (previous?.role === role) {
@@ -799,6 +848,8 @@ function applyApiGenerationParams(body, settings, protocol) {
 // valid on Chat Completions. No capability is inferred from a model name.
 function getAiRequestProtocol(settings = {}, endpoint = '') {
     const target = settings.chatEndpoint || endpoint || settings.url || '';
+    if (/\/v1(?:beta)?\/openai\/?(?:[?#]|$)/i.test(target)) return 'openai_chat';
+    if (/:(?:streamGenerateContent|generateContent)(?:[?#]|$)/i.test(target)) return 'gemini';
     if (/\/responses(?:[?#]|$)/.test(target)) return 'openai_responses';
     if (/\/chat\/completions(?:[?#]|$)/.test(target)) return (settings.apiProtocol || settings.protocol) === 'deepseek' ? 'deepseek' : 'openai_chat';
     const protocol = settings.apiProtocol || settings.protocol;
@@ -857,30 +908,131 @@ function toResponsesInput(messages) {
     });
 }
 
-function prepareAiProviderRequest(settings = {}, originalBody = {}, originalHeaders = {}, originalEndpoint = '', forceStream = false) {
-    if (settings._roleBinding) {
-        if (settings._bindingError) throw new Error(settings._bindingError);
-        originalBody = { ...originalBody, model: settings.model };
-        if (!originalBody.messages && Array.isArray(originalBody.contents)) {
-            const instruction = originalBody.systemInstruction || originalBody.system_instruction;
-            originalBody.messages = [
-                ...(instruction ? [{ role: 'system', content: (instruction.parts || []).map(part => part.text || '').join('\n') }] : []),
-                ...originalBody.contents.map(content => ({ role: content.role === 'model' ? 'assistant' : 'user', content: (content.parts || []).map(part => {
-                    if (part.text !== undefined) return { type: 'text', text: part.text };
-                    const inline = part.inlineData || part.inline_data;
-                    return inline ? { type: 'image_url', image_url: { url: `data:${inline.mimeType || inline.mime_type};base64,${inline.data}` } } : null;
-                }).filter(Boolean) }))
-            ];
-            const temperature = originalBody.generationConfig?.temperature;
-            delete originalBody.contents; delete originalBody.systemInstruction; delete originalBody.system_instruction;
-            delete originalBody.generationConfig;
-            if (temperature !== undefined) originalBody.temperature = temperature;
+const geminiGenerationFields = {
+    temperature: 'temperature', top_p: 'topP', top_k: 'topK', max_tokens: 'maxOutputTokens',
+    max_completion_tokens: 'maxOutputTokens', frequency_penalty: 'frequencyPenalty',
+    presence_penalty: 'presencePenalty', seed: 'seed', n: 'candidateCount', stop: 'stopSequences'
+};
+
+function geminiRequestBody(source, messages, settings) {
+    const native = Array.isArray(source.contents) && !Array.isArray(source.messages);
+    const body = native ? { ...source } : {};
+    if (native) {
+        for (const field of ['model', 'stream', 'stream_options', 'messages', 'response_format', 'system_instruction',
+            'tool_choice', ...Object.keys(geminiGenerationFields)]) delete body[field];
+    }
+    for (const key of ['contents','systemInstruction','tools','toolConfig','safetySettings','cachedContent','serviceTier','store']) {
+        if (source[key] !== undefined) body[key] = source[key];
+    }
+    const config = { ...(source.generationConfig || {}) };
+    for (const [name, target] of Object.entries(geminiGenerationFields)) {
+        if (source[name] !== undefined && config[target] === undefined) {
+            config[target] = name === 'stop' && typeof source.stop === 'string' ? [source.stop] : source[name];
         }
+    }
+    if (['json_object', 'json_schema'].includes(source.response_format?.type)) config.responseMimeType ||= 'application/json';
+    if (source.response_format?.json_schema?.schema) config.responseJsonSchema ||= source.response_format.json_schema.schema;
+    if (Object.keys(config).length) body.generationConfig = config;
+    if (Array.isArray(source.messages)) {
+        const { contents, systemInstruction } = toGeminiContents(messages);
+        body.contents = contents;
+        if (systemInstruction) body.systemInstruction = systemInstruction;
+        if (!body.toolConfig && source.tool_choice) {
+            const choice = source.tool_choice;
+            const modes = { auto: 'AUTO', required: 'ANY', none: 'NONE' };
+            const config = choice.function?.name ? { mode: 'ANY', allowedFunctionNames: [choice.function.name] }
+                : modes[choice] ? { mode: modes[choice] } : null;
+            if (config) body.toolConfig = { functionCallingConfig: config };
+        }
+        if (body.tools?.some(tool => tool.type === 'function')) {
+            const declarations = body.tools.filter(tool => tool.type === 'function').map(tool => tool.function);
+            body.tools = [...body.tools.filter(tool => tool.type !== 'function'), { functionDeclarations: declarations }];
+        }
+    } else {
+        if (source.system_instruction && !body.systemInstruction) body.systemInstruction = source.system_instruction;
+        body.contents = (body.contents || []).map(content => ({ ...content, parts: (content.parts || []).map(part => {
+            const inline = part.inline_data || part.inlineData;
+            if (!inline && !part.fileData && !part.file_data) return part;
+            const file = part.fileData || part.file_data;
+            const mime = inline?.mime_type || inline?.mimeType || file?.mimeType || file?.mime_type;
+            if ((!mime || mime.startsWith('image/')) && ['reject','description'].includes(settings.imageMode)) throw Error('当前 API 节点不接受未经描述的图片');
+            if (mime?.startsWith('image/') && inline && settings.imageMode === 'url') throw Error('当前 API 节点只接收图片 URL');
+            if (!part.inline_data) return part;
+            const { inline_data, ...rest } = part;
+            return { ...rest, inlineData: { mimeType: inline.mime_type || inline.mimeType, data: inline.data } };
+        }) }));
+    }
+    return { ...body, ...(settings.customBody || {}) };
+}
+
+// The primary and each fallback are prepared independently from the original history.
+// A native-to-native request never passes through this compatibility conversion.
+function geminiToChatBody(source, model) {
+    const body = { model, messages: [], __ovoThinking: source.__ovoThinking, __ovoWebSearch: source.__ovoWebSearch };
+    const instruction = source.systemInstruction || source.system_instruction;
+    if (instruction) body.messages.push({ role: 'system', content: (instruction.parts || []).map(part => part.text || '').join('\n') });
+    const pending = [];
+    for (const [turn, content] of source.contents.entries()) {
+        const parts = [], calls = [], results = [];
+        for (const [index, part] of (content.parts || []).entries()) {
+            if (part.thought) continue;
+            if (part.text !== undefined) parts.push({ type: 'text', text: part.text });
+            else if (part.inlineData || part.inline_data || part.fileData || part.file_data) {
+                const inline = part.inlineData || part.inline_data, file = part.fileData || part.file_data;
+                const mime = inline?.mimeType || inline?.mime_type || file?.mimeType || file?.mime_type;
+                if (mime && !mime.startsWith('image/')) throw Error('当前备用接口无法无损转换 Gemini 多媒体附件');
+                const url = inline ? 'data:' + (inline.mimeType || inline.mime_type) + ';base64,' + inline.data : file.fileUri || file.file_uri;
+                parts.push({ type: 'image_url', image_url: { url } });
+            } else if (part.functionCall) {
+                const call = part.functionCall;
+                const id = call.id || 'gemini_' + turn + '_' + index;
+                const fn = { id, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.args || {}) } };
+                if (part.thoughtSignature) fn.extra_content = { google: { thought_signature: part.thoughtSignature } };
+                calls.push(fn);
+                pending.push({ id, name: call.name });
+            } else if (part.functionResponse) {
+                const reply = part.functionResponse;
+                const match = pending.findIndex(call => reply.id ? call.id === reply.id : call.name === reply.name);
+                if (match < 0) throw Error('工具响应缺少对应的调用记录');
+                results.push({ role: 'tool', tool_call_id: pending.splice(match, 1)[0].id, content: JSON.stringify(reply.response) });
+            } else if (Object.keys(part).length) throw Error('当前兼容接口无法转换这条 Gemini 消息');
+        }
+        if (parts.length || calls.length) {
+            const message = { role: content.role === 'model' ? 'assistant' : 'user', content: parts };
+            if (calls.length) message.tool_calls = calls;
+            for (const key of ['__ovoMessageId', '__ovoMessageIds']) if (content[key]) message[key] = content[key];
+            body.messages.push(message);
+        }
+        body.messages.push(...results);
+    }
+    for (const [name, field] of Object.entries(geminiGenerationFields)) {
+        if (name !== 'max_completion_tokens' && source.generationConfig?.[field] !== undefined) body[name] = source.generationConfig[field];
+    }
+    if (source.generationConfig?.responseMimeType === 'application/json') body.response_format = { type: 'json_object' };
+    const declarations = (source.tools || []).flatMap(tool => tool.functionDeclarations || []);
+    if (declarations.length) body.tools = declarations.map(fn => ({ type: 'function', function: fn }));
+    const choice = source.toolConfig?.functionCallingConfig;
+    if (choice?.mode === 'ANY') {
+        body.tool_choice = choice.allowedFunctionNames?.length === 1 ?
+            { type: 'function', function: { name: choice.allowedFunctionNames[0] } } : 'required';
+    } else if (choice?.mode === 'NONE') body.tool_choice = 'none';
+    if (source.tools?.some(tool => tool.googleSearch)) body.__ovoWebSearch ||= { enabled: true };
+    return body;
+}
+
+function prepareAiProviderRequest(settings = {}, originalBody = {}, originalHeaders = {}, originalEndpoint = '', forceStream = false) {
+    if (settings._bindingError) throw new Error(settings._bindingError);
+    if (settings._roleBinding) {
         originalEndpoint = getApiConfigEndpoint(settings, forceStream);
         originalHeaders = getApiConfigHeaders(settings);
+        originalBody = { ...originalBody, model: settings.model };
     }
-    const protocol = getAiRequestProtocol(settings, settings.chatEndpoint || getApiConfigEndpoint(settings, forceStream));
-    const provider = protocol === 'openai_responses' ? 'openai_responses' : protocol === 'anthropic' ? 'anthropic' : protocol === 'gemini' ? 'gemini' : protocol === 'deepseek' ? 'deepseek' : (settings.provider || 'newapi');
+    const protocol = getAiRequestProtocol(settings);
+    const provider = ['openai_responses','anthropic','gemini','deepseek'].includes(protocol) ? protocol
+        : settings.provider === 'gemini' || settings.provider === 'claude' ? 'newapi' : settings.provider || 'newapi';
+    if (protocol !== 'gemini' && !originalBody.messages && Array.isArray(originalBody.contents)) {
+        originalBody = geminiToChatBody(originalBody, settings.model);
+    }
     let body = JSON.parse(JSON.stringify(originalBody || {}));
     let endpoint = settings.chatEndpoint || originalEndpoint || getApiConfigEndpoint(settings, forceStream);
     const legacyBase=String(settings.url||'').replace(/\/+$/,'');
@@ -896,49 +1048,41 @@ function prepareAiProviderRequest(settings = {}, originalBody = {}, originalHead
         delete headers.Authorization;
         headers['x-api-key'] ||= getRandomValue(settings.key || ''); headers['anthropic-version'] ||= '2023-06-01'; headers['Content-Type'] = 'application/json';
     } else if (protocol === 'gemini') {
-        if (messages.length) {
-            const converted = toGeminiContents(messages);
-            const { messages: _messages, __ovoThinking: _thinking, ...extras } = originalBody;
-            body = { ...extras, contents: converted.contents, ...(converted.systemInstruction ? { systemInstruction: converted.systemInstruction } : {}), generationConfig: { ...(originalBody.generationConfig || {}), ...(originalBody.temperature !== undefined ? { temperature: originalBody.temperature } : {}) }, ...(settings.customBody || {}) };
-        } else {
-            body = { ...body, ...(settings.customBody || {}) };
-            if (body.system_instruction && !body.systemInstruction) {
-                body.systemInstruction = body.system_instruction;
-                delete body.system_instruction;
-            }
-            if (Array.isArray(body.contents)) {
-                body.contents = body.contents.map(content => ({
-                    ...content,
-                    parts: (content.parts || []).map(part => {
-                        if (!part?.inline_data) return part;
-                        const inline = part.inline_data;
-                        const { inline_data: _legacyInline, ...rest } = part;
-                        return { ...rest, inlineData: { mimeType: inline.mime_type || inline.mimeType, data: inline.data } };
-                    })
-                }));
-            }
-        }
-        const method = forceStream || settings.streamEnabled ? 'streamGenerateContent' : 'generateContent';
-        if (!endpoint || !/:generateContent|:streamGenerateContent/.test(endpoint)) endpoint = `${settings.url.replace(/\/$/, '')}/v1beta/models/${encodeURIComponent(settings.model)}:${method}?key=${encodeURIComponent(getRandomValue(settings.key || ''))}`;
-        else endpoint = endpoint.replace(/:(?:streamGenerateContent|generateContent)/, `:${method}`);
+        body = geminiRequestBody(body, messages, settings);
+        headers['Content-Type'] ||= 'application/json';
+        if (!settings.customHeaders?.Authorization) delete headers.Authorization;
+        endpoint = getApiConfigEndpoint(settings, forceStream || settings.streamEnabled);
     } else {
-        body.messages = normalizeMessagesForProvider(messages, settings.provider);
+        body.messages = normalizeMessagesForProvider(messages, provider);
+        if (settings.provider === 'gemini' && (!settings.authMode || settings.authMode === 'auto') && !headers.Authorization && settings.key) headers.Authorization = 'Bearer ' + getRandomValue(settings.key);
+        if (forceStream || settings.streamEnabled) body.stream = true;
         body = { ...body, ...(settings.customBody || {}) };
     }
     if (settings.chatEndpoint) endpoint = settings.chatEndpoint.replace(/\{model\}/g, encodeURIComponent(settings.model || '')).replace(/\{key\}/g, encodeURIComponent(getRandomValue(settings.key || '')));
+    if (protocol === 'gemini') {
+        const method = forceStream || settings.streamEnabled ? 'streamGenerateContent' : 'generateContent';
+        endpoint = endpoint.replace(/:(?:streamGenerateContent|generateContent)(?=[?#]|$)/, ':' + method);
+    }
+    if (['none','custom','bearer','x-api-key'].includes(settings.authMode)) {
+        endpoint = endpoint.replace(/([?&])(?:key|api_key)=[^&#]*(?:&|(?=#|$))/gi,
+            (match, separator) => match.endsWith('&') ? separator : '').replace(/[?&](?=#|$)/, '');
+    }
     if (settings.authMode === 'none' || settings.authMode === 'custom') {
         delete headers.Authorization;
         delete headers['x-api-key'];
-        endpoint = endpoint.replace(/([?&])(?:key|api_key)=[^&]*&?/i, (match, separator) => separator === '?' ? '?' : '').replace(/[?&]$/, '');
-    }
-    if (settings.authMode === 'x-api-key') {
+        if (settings.authMode === 'custom') Object.assign(headers, settings.customHeaders || {});
+    } else if (settings.authMode === 'x-api-key') {
         delete headers.Authorization;
         headers['x-api-key'] = getRandomValue(settings.key || '');
     } else if (settings.authMode === 'bearer' && settings.key) {
         headers.Authorization = `Bearer ${getRandomValue(settings.key)}`;
-    } else if (settings.authMode === 'query' && settings.key && !/[?&](?:key|api_key)=/.test(endpoint)) {
+    } else if (settings.authMode === 'query' && settings.key) {
         delete headers.Authorization;
-        endpoint += `${endpoint.includes('?') ? '&' : '?'}key=${encodeURIComponent(getRandomValue(settings.key))}`;
+        if (!/[?&](?:key|api_key)=/.test(endpoint)) {
+            const [url, fragment] = endpoint.split('#');
+            endpoint = url + (url.includes('?') ? '&' : '?') + 'key=' + encodeURIComponent(getRandomValue(settings.key))
+                + (fragment === undefined ? '' : '#' + fragment);
+        }
     }
     applyApiGenerationParams(body, settings, protocol);
     applyNativeThinkingConfig(body, protocol, settings.model, thinking);
@@ -992,16 +1136,18 @@ function extractAiProviderResponse(data, provider, delta = false) {
 function getApiConfigEndpoint(settings, stream = false) {
     if (settings.chatEndpoint) return settings.chatEndpoint;
     const url = String(settings.url || '').replace(/\/$/, '');
-    const protocol=settings.apiProtocol||settings.protocol||(settings.provider==='claude'?'anthropic':settings.provider);
+    const protocol = getAiRequestProtocol(settings);
+    if (/:(?:streamGenerateContent|generateContent)(?:[?#]|$)|\/(?:chat\/completions|messages|responses)(?:[?#]|$)/.test(url)) return url;
+    if (/\/v1(?:beta)?\/openai$/i.test(url)) return url + '/chat/completions';
     if (protocol === 'gemini') return `${url.replace(/\/v1(?:beta)?$/,'')}/v1beta/models/${encodeURIComponent(settings.model || '')}:${stream ? 'streamGenerateContent' : 'generateContent'}?key=${encodeURIComponent(getRandomValue(settings.key || ''))}`;
-    if (/\/(chat\/completions|messages|responses)(?:\?|$)/.test(url)) return url;
     const base=/\/v\d+(?:beta)?$/.test(url)?url:url+'/v1';
     return base+(protocol==='anthropic'?'/messages':['responses','openai_responses'].includes(protocol)?'/responses':'/chat/completions');
 }
 
 function getApiConfigHeaders(settings) {
-    if (settings.apiProtocol === 'gemini' || settings.provider === 'gemini') return { 'Content-Type': 'application/json' };
-    if (settings.apiProtocol==='anthropic'||settings.protocol==='anthropic'||settings.provider==='claude') return {'Content-Type':'application/json','x-api-key':getRandomValue(settings.key||''),'anthropic-version':'2023-06-01'};
+    const protocol = getAiRequestProtocol(settings);
+    if (protocol === 'gemini') return { 'Content-Type': 'application/json' };
+    if (protocol === 'anthropic') return {'Content-Type':'application/json','x-api-key':getRandomValue(settings.key||''),'anthropic-version':'2023-06-01'};
     return { 'Content-Type': 'application/json', ...(settings.authMode==='none'||settings.provider==='openai-noauth'?{}:{Authorization: `Bearer ${getRandomValue(settings.key || '')}`}) };
 }
 

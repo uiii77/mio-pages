@@ -49,6 +49,7 @@ function updateWorldbookDisplay() {
 
 // 填充创建表单的选择器
 function populateTheaterForm() {
+    theaterFormRevision++;
     const personaSelect = document.getElementById('theater-persona-select');
     const promptPresetSelect = document.getElementById('theater-prompt-preset-select');
 
@@ -306,7 +307,9 @@ async function generateTheaterScenario() {
         const model = apiSettings.model || 'gpt-4o-mini';
 
         // 根据当前模式选择不同的系统提示词
-        const isHtmlMode = theaterCurrentMode === 'html';
+        const mode = theaterCurrentMode;
+        const formRevision = theaterFormRevision;
+        const isHtmlMode = mode === 'html';
         const systemPrompt = isHtmlMode
             ? `你精通HTML/CSS。请根据用户提供的提示词，结合可能的角色设定和世界观，以 HTML 格式输出。
 
@@ -576,16 +579,17 @@ async function generateTheaterScenario() {
                 worldBookIds: [],
                 customPrompt: customPrompt || null,
                 createdAt: Date.now(),
-                mode: theaterCurrentMode
+                mode
             };
 
-            const list = getTheaterScenarios();
+            const list = getTheaterScenarios(mode);
             list.unshift(scenario);
-            setTheaterScenarios(list);
-            await saveData();
-            
-            showToast('剧情生成成功！');
-            switchScreen('theater-screen');
+            setTheaterScenarios(list, mode);
+            if (await saveData() === false) return;
+            showToast(mode === 'html' ? '剧情已保存到 HTML 剧场' : '剧情已保存到文字剧场');
+            if (theaterFormRevision === formRevision && theaterCurrentMode === mode && document.getElementById('theater-create-screen')?.classList.contains('active')) {
+                switchScreen('theater-screen');
+            }
             renderTheaterScenarios();
         } else {
             showToast('生成失败，请重试');
@@ -601,16 +605,16 @@ async function generateTheaterScenario() {
 
 // 导出小剧场
 function exportTheaterScenario() {
-    if (!currentTheaterScenarioId) return;
+
     
-    const scenario = getTheaterScenarios().find(s => s.id === currentTheaterScenarioId);
+    const scenario = getTheaterDetailScenario();
     if (!scenario) {
         showToast('找不到该剧情');
         return;
     }
     
     // 判断是HTML模式还是纯文字模式
-    const isHtmlMode = scenario.mode === 'html' || /<[^>]+>/.test(scenario.content);
+    const isHtmlMode = theaterDetail.mode === 'html';
     
     let content = scenario.content || '';
     let filename = (scenario.title || '剧情') + (isHtmlMode ? '.html' : '.txt');

@@ -208,13 +208,10 @@ async function generateCharTheater(charId) {
             mode: mode
         };
 
-        // 存入对应模式的小剧场列表（临时切换模式，存完恢复）
-        const savedMode = theaterCurrentMode;
-        theaterCurrentMode = mode;
-        const list = getTheaterScenarios();
+        // 角色的创作格式独立于用户正在浏览的列表。
+        const list = getTheaterScenarios(mode);
         list.unshift(scenario);
-        setTheaterScenarios(list);
-        theaterCurrentMode = savedMode;
+        setTheaterScenarios(list, mode);
 
         // ── 11. 根据 charTheaterSelfAware 决定显示方式
         // 注意：历史数据里该字段可能被保存为字符串 "false"/"true"，因此这里使用严格布尔判断
@@ -225,6 +222,7 @@ async function generateCharTheater(charId) {
                 id: `msg_theater_share_${Date.now()}`,
                 role: 'assistant',
                 content: `[小剧场分享:${scenario.id}]`,
+                theaterScenarioMode: mode,
                 timestamp: Date.now() + 1,
                 hiddenFromDisplay: false
             };
@@ -395,8 +393,7 @@ function setupTheaterSystem() {
     const headerEditBtn = document.getElementById('theater-header-edit-btn');
     if (headerEditBtn) {
         headerEditBtn.addEventListener('click', () => {
-            if (!currentTheaterScenarioId) return;
-            const scenario = getTheaterScenarios().find(s => s.id === currentTheaterScenarioId);
+            const scenario = getTheaterDetailScenario();
             if (scenario) {
                 scenario.isEditing = true;
                 showTheaterScenarioDetail(scenario);
@@ -507,8 +504,7 @@ function setupTheaterSystem() {
     const htmlHeaderEditBtn = document.getElementById('theater-html-header-edit-btn');
     if (htmlHeaderEditBtn) {
         htmlHeaderEditBtn.addEventListener('click', () => {
-            if (!currentTheaterScenarioId) return;
-            const scenario = getTheaterScenarios().find(s => s.id === currentTheaterScenarioId);
+            const scenario = getTheaterDetailScenario();
             if (scenario) {
                 scenario.isEditing = true;
                 showTheaterHtmlScenarioDetail(scenario);

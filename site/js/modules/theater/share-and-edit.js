@@ -1,7 +1,7 @@
 function showShareTheaterModal() {
-    if (!currentTheaterScenarioId) return;
+    const detail = theaterDetail;
 
-    const scenario = getTheaterScenarios().find(s => s.id === currentTheaterScenarioId);
+    const scenario = getTheaterDetailScenario(detail);
     if (!scenario) {
         showToast('找不到该剧情');
         return;
@@ -182,7 +182,7 @@ function showShareTheaterModal() {
                 </div>
             `;
             item.addEventListener('click', () => {
-                shareTheaterToContact(char.id);
+                shareTheaterToContact(char.id, detail);
                 modal.classList.remove('visible');
             });
             list.appendChild(item);
@@ -211,7 +211,7 @@ function showShareTheaterModal() {
                 </div>
             `;
             item.addEventListener('click', () => {
-                shareTheaterToGroup(group.id);
+                shareTheaterToGroup(group.id, detail);
                 modal.classList.remove('visible');
             });
             list.appendChild(item);
@@ -238,10 +238,9 @@ function showShareTheaterModal() {
 }
 
 // 分享小剧场到指定联系人
-async function shareTheaterToContact(charId) {
-    if (!currentTheaterScenarioId) return;
+async function shareTheaterToContact(charId, detail = theaterDetail) {
 
-    const scenario = getTheaterScenarios().find(s => s.id === currentTheaterScenarioId);
+    const scenario = getTheaterDetailScenario(detail);
     if (!scenario) {
         showToast('找不到该剧情');
         return;
@@ -261,6 +260,7 @@ async function shareTheaterToContact(charId) {
         id: Date.now().toString(),
         role: 'user',
         content: shareText,
+        theaterScenarioMode: detail.mode,
         timestamp: Date.now()
     };
 
@@ -269,15 +269,14 @@ async function shareTheaterToContact(charId) {
     }
     char.history.push(shareMessage);
 
-    await saveData();
+    if (await saveData() === false) return;
     showToast(`已分享给 ${char.remarkName || char.realName || '联系人'}`);
 }
 
 // 分享小剧场到指定群聊
-async function shareTheaterToGroup(groupId) {
-    if (!currentTheaterScenarioId) return;
+async function shareTheaterToGroup(groupId, detail = theaterDetail) {
 
-    const scenario = getTheaterScenarios().find(s => s.id === currentTheaterScenarioId);
+    const scenario = getTheaterDetailScenario(detail);
     if (!scenario) {
         showToast('找不到该剧情');
         return;
@@ -294,6 +293,7 @@ async function shareTheaterToGroup(groupId) {
         id: Date.now().toString(),
         role: 'user',
         content: shareText,
+        theaterScenarioMode: detail.mode,
         timestamp: Date.now()
     };
 
@@ -302,15 +302,15 @@ async function shareTheaterToGroup(groupId) {
     }
     group.history.push(shareMessage);
 
-    await saveData();
+    if (await saveData() === false) return;
     showToast(`已分享至群聊「${group.name || '群聊'}」`);
 }
 
 // 保存编辑后的剧情
 async function saveEditScenario() {
-    if (!currentTheaterScenarioId) return;
+    const detail = theaterDetail;
 
-    const scenario = getTheaterScenarios().find(s => s.id === currentTheaterScenarioId);
+    const scenario = getTheaterDetailScenario(detail);
     if (!scenario) return;
 
     const contentInput = document.getElementById('theater-edit-content');
@@ -330,60 +330,55 @@ async function saveEditScenario() {
     scenario.isEditing = false;
     scenario.isEditingTitle = false;
 
-    await saveData();
+    if (await saveData() === false) return;
     showToast('已保存修改');
-    if (theaterCurrentMode === 'html') {
-        showTheaterHtmlScenarioDetail(scenario);
-    } else {
-        showTheaterScenarioDetail(scenario);
-    }
+    refreshTheaterDetail(detail);
     renderTheaterScenarios();
 }
 
 // 删除剧情
 async function deleteCurrentScenario() {
-    if (!currentTheaterScenarioId) return;
+    const detail = theaterDetail;
 
-    const scenarios = getTheaterScenarios();
-    const index = scenarios.findIndex(s => s.id === currentTheaterScenarioId);
+    if (!detail) return;
+    const scenarios = getTheaterScenarios(detail.mode);
+    const index = scenarios.findIndex(s => s.id === detail.id);
     if (index === -1) return;
 
     if (!confirm('确定要删除这条剧情吗？此操作不可撤销。')) return;
 
     scenarios.splice(index, 1);
-    setTheaterScenarios(scenarios);
-    await saveData();
+    setTheaterScenarios(scenarios, detail.mode);
+    if (await saveData() === false) return;
     
     showToast('剧情已删除');
-    switchScreen('theater-screen');
+    if (isTheaterDetailVisible(detail)) {
+        theaterDetail = null;
+        switchScreen(detail.backTarget);
+    }
     renderTheaterScenarios();
-    currentTheaterScenarioId = null;
 }
 
 // 收藏/取消收藏
 async function toggleFavoriteScenario() {
-    if (!currentTheaterScenarioId) return;
+    const detail = theaterDetail;
 
-    const scenario = getTheaterScenarios().find(s => s.id === currentTheaterScenarioId);
+    const scenario = getTheaterDetailScenario(detail);
     if (!scenario) return;
 
     scenario.isFavorite = !scenario.isFavorite;
-    await saveData();
+    if (await saveData() === false) return;
 
     showToast(scenario.isFavorite ? '已收藏' : '已取消收藏');
-    if (theaterCurrentMode === 'html') {
-        showTheaterHtmlScenarioDetail(scenario);
-    } else {
-        showTheaterScenarioDetail(scenario);
-    }
+    refreshTheaterDetail(detail);
     renderTheaterScenarios();
 }
 
 // 修改分类
 async function editScenarioCategory() {
-    if (!currentTheaterScenarioId) return;
+    const detail = theaterDetail;
 
-    const scenario = getTheaterScenarios().find(s => s.id === currentTheaterScenarioId);
+    const scenario = getTheaterDetailScenario(detail);
     if (!scenario) return;
 
     const newCategory = prompt('请输入新的分类名称：', scenario.category || '未分类');
@@ -392,13 +387,9 @@ async function editScenarioCategory() {
     const trimmed = newCategory.trim();
     scenario.category = trimmed || '未分类';
 
-    await saveData();
+    if (await saveData() === false) return;
     showToast('分类已更新');
-    if (theaterCurrentMode === 'html') {
-        showTheaterHtmlScenarioDetail(scenario);
-    } else {
-        showTheaterScenarioDetail(scenario);
-    }
+    refreshTheaterDetail(detail);
     renderTheaterScenarios();
 }
 

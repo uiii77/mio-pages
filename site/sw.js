@@ -13,6 +13,9 @@ const OVO_CACHE_PREFIX = `ovo-app-shell-${encodeURIComponent(OVO_SCOPE)}-`;
 const OVO_CACHE_NAME = `${OVO_CACHE_PREFIX}${OVO_SW_MANIFEST.version}`;
 const OVO_STATE_CACHE = `ovo-app-state-${encodeURIComponent(OVO_SCOPE)}`;
 const OVO_ACTIVE_KEY = new URL('__ovo_active_shell__', OVO_SCOPE).href;
+const OVO_INSTALL_KEY = new URL('__ovo_installed_' + OVO_SW_MANIFEST.version + '__', OVO_SCOPE).href;
+const OVO_CLIENT_PREFIX = new URL('__ovo_client_', OVO_SCOPE).href;
+const OVO_PULL_PREFIX = new URL('__ovo_pull_', OVO_SCOPE).href;
 const ovoPulls = new Map();
 // A migration requires acknowledgements from every live page, including an older uncontrolled page.
 self.addEventListener('message',event=>{
@@ -32,6 +35,68 @@ self.addEventListener('message',event=>{
     })());
 });
 let ovoInstalledShell;
+
+// The installing, waiting and active workers share caches even after their JS globals expire.
+function withShellLock(run, { shared = false, cleanup = false } = {}) {
+    const locks = self.navigator?.locks;
+    if (!locks?.request) return cleanup ? Promise.resolve() : run();
+    return locks.request('mio-shell:' + OVO_SCOPE, {
+        mode: shared ? 'shared' : 'exclusive', ifAvailable: cleanup
+    }, lock => lock ? run() : undefined);
+}
+
+async function cleanupShells() {
+    await withShellLock(async () => {
+        const registration = self.registration;
+        const unstable = () => registration.installing || registration.waiting ||
+            registration.active?.state !== 'activated';
+        if (unstable()) return;
+        const state = await caches.open(OVO_STATE_CACHE);
+        const active = await state.match(OVO_ACTIVE_KEY);
+        if (!active) return;
+        const pages = (await clients.matchAll({ type: 'window', includeUncontrolled: true }))
+            .filter(page => page.url.startsWith(OVO_SCOPE));
+        const live = new Set(pages.map(page => page.id));
+        const current = await active.json();
+        if (!current?.name?.startsWith(OVO_CACHE_PREFIX)) return;
+        const retained = new Set([current.name]);
+        for (const id of live) {
+            const pin = await state.match(OVO_CLIENT_PREFIX + id + '__');
+            // A page that hasn't finished navigation or the first installation may still lack a pin.
+            if (!pin) return;
+            const name = (await pin.json()).name;
+            if (!name?.startsWith(OVO_CACHE_PREFIX)) return;
+            retained.add(name);
+        }
+        const stale = [];
+        for (const key of await state.keys()) {
+            if (key.url.startsWith(OVO_CLIENT_PREFIX)) {
+                if (!live.has(key.url.slice(OVO_CLIENT_PREFIX.length, -2))) stale.push(key);
+            } else if (key.url.startsWith(OVO_PULL_PREFIX)) {
+                const prepared = await (await state.match(key)).json();
+                if (!prepared.name?.startsWith(OVO_CACHE_PREFIX) || typeof prepared.owner !== 'string' ||
+                    !prepared.previous?.startsWith(OVO_CACHE_PREFIX)) return;
+                if (live.has(prepared.owner) && prepared.previous === current.name) retained.add(prepared.name);
+                else stale.push(key);
+            } else if (key.url.startsWith(new URL('__ovo_installed_', OVO_SCOPE).href)) {
+                // No installing, waiting or activating worker owns this leftover descriptor.
+                stale.push(key);
+            }
+        }
+        for (const name of await caches.keys()) {
+            if (unstable()) return;
+            if (name.startsWith(OVO_CACHE_PREFIX) && !retained.has(name)) await caches.delete(name);
+        }
+        for (const key of stale) {
+            if (unstable()) return;
+            await state.delete(key);
+        }
+    }, { cleanup: true });
+}
+
+function tryCleanupShells() {
+    return cleanupShells().catch(error => console.warn('Old app cache cleanup deferred:', error));
+}
 
 async function readShell() {
     const response = await (await caches.open(OVO_STATE_CACHE)).match(OVO_ACTIVE_KEY);
@@ -138,52 +203,47 @@ async function downloadShell(manifest, name, nonce, signal, progress = () => {})
 
 self.addEventListener('install', (event) => {
     console.log('Service worker installing...');
-    event.waitUntil((async () => {
+    event.waitUntil(withShellLock(async () => {
         validateManifest(OVO_SW_MANIFEST);
         const current = await readShell();
-        const cached = await (await caches.open(current.name)).match(new URL('index.html', OVO_SCOPE).href);
+        const existing = await caches.keys();
+        const cached = existing.includes(current.name) &&
+            await (await caches.open(current.name)).match(new URL('index.html', OVO_SCOPE).href);
         if (current.protocol === 2 && current.manifest.version === OVO_SW_MANIFEST.version && cached) {
             ovoInstalledShell = current;
         } else {
+            // A rollback may target a cache that still serves an open page.
+            const name = existing.includes(OVO_CACHE_NAME)
+                ? OVO_CACHE_NAME + '-install-' + crypto.randomUUID() : OVO_CACHE_NAME;
             try {
-                await downloadShell(OVO_SW_MANIFEST, OVO_CACHE_NAME, Date.now().toString());
-                ovoInstalledShell = { name: OVO_CACHE_NAME, manifest: OVO_SW_MANIFEST };
+                await downloadShell(OVO_SW_MANIFEST, name, Date.now().toString());
+                ovoInstalledShell = { name, manifest: OVO_SW_MANIFEST };
             } catch (error) {
-                await caches.delete(OVO_CACHE_NAME);
+                await caches.delete(name);
                 throw error;
             }
         }
+        await (await caches.open(OVO_STATE_CACHE)).put(OVO_INSTALL_KEY, new Response(JSON.stringify(ovoInstalledShell)));
         // Old pages cannot acknowledge the new protocol. Bootstrap once; keep their shell pinned.
         if (!self.registration.active || !current.protocol) await self.skipWaiting();
-    })());
+    }, { shared: true }));
 });
 
 self.addEventListener('activate', (event) => {
-    event.waitUntil((async () => {
+    event.waitUntil(withShellLock(async () => {
         const previous = await readShell();
-        const shell = ovoInstalledShell || { name: OVO_CACHE_NAME, manifest: OVO_SW_MANIFEST };
-        const pages = await clients.matchAll({ type: 'window', includeUncontrolled: true });
         const state = await caches.open(OVO_STATE_CACHE);
-        const liveKeys = new Set(pages.map(page => new URL(`__ovo_client_${page.id}__`, OVO_SCOPE).href));
-        for (const key of await state.keys()) {
-            if (key.url.startsWith(new URL('__ovo_client_', OVO_SCOPE).href) && !liveKeys.has(key.url)) await state.delete(key);
-        }
+        const installed = await state.match(OVO_INSTALL_KEY);
+        const shell = ovoInstalledShell || (installed && await installed.json()) || { name: OVO_CACHE_NAME, manifest: OVO_SW_MANIFEST };
+        const pages = await clients.matchAll({ type: 'window', includeUncontrolled: true });
         for (const page of pages.filter(page => page.url.startsWith(OVO_SCOPE))) {
             const key = new URL(`__ovo_client_${page.id}__`, OVO_SCOPE).href;
             if (!await state.match(key)) await state.put(key, new Response(JSON.stringify(previous)));
         }
         await writeShell({ ...shell, protocol: 2 });
+        await state.delete(OVO_INSTALL_KEY);
         await clients.claim();
-        const retained = new Set([shell.name, previous.name]);
-        for (const page of pages) {
-            const pin = await state.match(new URL(`__ovo_client_${page.id}__`, OVO_SCOPE).href);
-            if (pin) retained.add((await pin.json()).name);
-        }
-        // Never delete another repository's caches or an in-progress pull.
-        const names = await caches.keys();
-        await Promise.all(names.filter(name => name.startsWith(OVO_CACHE_PREFIX)
-            && !retained.has(name) && !name.includes('-pull-')).map(name => caches.delete(name)));
-    })());
+    }).then(tryCleanupShells));
 });
 
 self.addEventListener('fetch', (event) => {
@@ -200,14 +260,19 @@ self.addEventListener('fetch', (event) => {
     }
     if (request.mode !== 'navigate' && !OVO_SW_MANIFEST.assets.includes(relative) && !/\.(?:js|css|json|png|svg)$/.test(relative)) return;
     event.respondWith((async () => {
-        let shell = await readShell();
         const state = await caches.open(OVO_STATE_CACHE);
+        let shell;
         if (request.mode === 'navigate' && event.resultingClientId) {
-            await state.put(new URL(`__ovo_client_${event.resultingClientId}__`, OVO_SCOPE).href, new Response(JSON.stringify(shell)));
+            shell = await withShellLock(async () => {
+                const current = await readShell();
+                await state.put(OVO_CLIENT_PREFIX + event.resultingClientId + '__', new Response(JSON.stringify(current)));
+                return current;
+            }, { shared: true });
         } else if (event.clientId) {
             const pinned = await state.match(new URL(`__ovo_client_${event.clientId}__`, OVO_SCOPE).href);
             if (pinned) shell = await pinned.json();
         }
+        if (!shell) shell = await readShell();
         const cache = await caches.open(shell.name);
         const asset = request.mode === 'navigate' ? 'index.html' : relative;
         if (!shell.manifest.assets.includes(asset)) return fetch(request);
@@ -227,6 +292,9 @@ self.addEventListener('fetch', (event) => {
 
 // A staged pull becomes active only after the page has saved its data.
 self.addEventListener('message', event => {
+    if (event.data?.type === 'MIO_CLEAN_OLD_SHELLS' && event.source?.url?.startsWith(OVO_SCOPE)) {
+        event.waitUntil(tryCleanupShells());
+    }
     if (event.data?.type === 'MIO_UPDATE_STATUS' && event.source?.url?.startsWith(OVO_SCOPE) && event.ports?.[0]) {
         event.waitUntil((async () => {
             const shell = await readShell();
@@ -243,7 +311,7 @@ self.addEventListener('message', event => {
     const port = event.ports && event.ports[0];
     if (!data || !String(data.type).startsWith('OVO_UPDATE_') || !port) return;
     if (!event.source || !event.source.url || !event.source.url.startsWith(OVO_SCOPE)) return;
-    event.waitUntil((async () => {
+    event.waitUntil(withShellLock(async () => {
         try {
             if (data.type === 'OVO_UPDATE_PING') {
                 port.postMessage({ type: 'done', protocol: 1 });
@@ -257,7 +325,13 @@ self.addEventListener('message', event => {
                 if (ovoPulls.size) throw new Error('另一个页面正在拉取，请稍后重试');
                 const controller = new AbortController();
                 ovoPulls.set(data.token, { controller, owner: event.source.id });
+                let ownsTarget = false;
                 try {
+                    if ((await caches.keys()).includes(name) || await state.match(key)) {
+                        port.postMessage({ type: 'error', message: '本次拉取已存在，请重新拉取' });
+                        return;
+                    }
+                    ownsTarget = true;
                     const response = await fetchFresh('sw-assets.js', data.token, controller.signal);
                     if (!response.ok) throw new Error('无法获取最新文件清单，请检查网络');
                     const match = (await response.text()).match(/^\s*self\.__OVO_SW_MANIFEST\s*=\s*(\{[\s\S]*\})\s*;?\s*$/);
@@ -270,8 +344,10 @@ self.addEventListener('message', event => {
                     if (controller.signal.aborted) throw new Error('已取消拉取');
                     port.postMessage({ type: 'done', version: manifest.version });
                 } catch (error) {
-                    await caches.delete(name);
-                    await state.delete(key);
+                    if (ownsTarget) {
+                        await caches.delete(name);
+                        await state.delete(key);
+                    }
                     throw error;
                 } finally {
                     ovoPulls.delete(data.token);
@@ -281,13 +357,12 @@ self.addEventListener('message', event => {
                 if (running && running.owner === event.source.id) running.controller.abort();
                 const staged = await state.match(key);
                 if (staged && (await staged.json()).owner === event.source.id) {
-                    await caches.delete(name);
                     await state.delete(key);
                 }
                 port.postMessage({ type: 'done' });
             } else if (data.type === 'OVO_UPDATE_APPLY') {
                 const staged = await state.match(key);
-                if (!staged) throw new Error('拉取结果已失效，请重新拉取');
+                if (!staged) throw new Error('拉取结果已失效或其他页面已更新，请重新拉取');
                 const prepared = await staged.json();
                 const previous = await readShell();
                 if (prepared.owner !== event.source.id || prepared.previous !== previous.name) {
@@ -304,7 +379,9 @@ self.addEventListener('message', event => {
         } catch (error) {
             port.postMessage({ type: 'error', message: error.message || '拉取失败，请检查网络后重试' });
         }
-    })());
+    }, { shared: data.type !== 'OVO_UPDATE_APPLY' }).then(() => {
+        if (data.type === 'OVO_UPDATE_APPLY' || data.type === 'OVO_UPDATE_DISCARD') return tryCleanupShells();
+    }));
 });
 
 // 接收来自页面的消息，直接显示系统通知（无需服务器，应用在前/后台时使用）

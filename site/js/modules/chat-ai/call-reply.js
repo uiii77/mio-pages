@@ -16,12 +16,12 @@ function extractCallResponseText(payload, provider, useDelta = false) {
     }
     if (typeof extractAiProviderResponse === 'function') {
         const normalized = extractAiProviderResponse(payload, provider, useDelta);
-        if (normalized.content) return normalized.content;
+        if (normalized.content || provider === 'gemini') return normalized.content;
     }
 
     const geminiText = (payload.candidates || []).map(candidate => {
         const parts = candidate && candidate.content && candidate.content.parts;
-        return Array.isArray(parts) ? parts.map(part => part && part.text || '').join('') : '';
+        return Array.isArray(parts) ? parts.filter(part => part && !part.thought).map(part => part.text || '').join('') : '';
     }).join('');
     if (provider === 'gemini' || geminiText) return geminiText;
 
@@ -94,6 +94,11 @@ function parseCallStreamBlock(rawBlock, provider) {
 }
 
 async function readCallStreamResponse(response, provider) {
+    if (provider === 'gemini' && typeof consumeGeminiStream === 'function') {
+        let text = '';
+        await consumeGeminiStream(response, data => { text += extractCallResponseText(data, provider, true); });
+        return text;
+    }
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let pending = '';

@@ -257,7 +257,18 @@
         return sameDay.sort((a,b) => timestampOf(a)-timestampOf(b))[0] || nearest;
     }
 
+    function findTheaterScenario(id, mode, state) {
+        const modes = mode === 'text' || mode === 'html' ? [mode] : ['text', 'html'];
+        for (const owner of modes) {
+            const list = owner === 'html' ? state.theaterHtmlScenarios : state.theaterScenarios;
+            const scenario = Array.isArray(list) && list.find(item => item.id === id);
+            if (scenario) return { scenario, mode: owner };
+        }
+        return null;
+    }
+
     global.MessageReference = {
+        findTheaterScenario,
         TYPE_LABELS,
         classify,
         createSnapshot,
